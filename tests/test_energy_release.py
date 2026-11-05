@@ -57,6 +57,7 @@ class DeploymentSafetyTests(unittest.TestCase):
             CPANEL_DASHBOARD_PATH=str(self.root / "protected"),
             CPANEL_SSH_HOST="synthetic.invalid",
             CPANEL_SSH_USERNAME="synthetic",
+            CPANEL_SSH_PORT="",
             DEPLOY_SHA="a" * 40,
             EXPECTED_SHA="a" * 40,
             SYNC_MARKER=str(self.root / "sync-marker"),
@@ -197,6 +198,7 @@ esac
             ("CPANEL_APP_PATH", "/tmp/unsafe;command"),
             ("CPANEL_DASHBOARD_PATH", "/tmp/unsafe path"),
             ("DEPLOY_SHA", "not-a-tested-sha"),
+            ("CPANEL_SSH_PORT", "22;command"),
         ):
             with self.subTest(key=key):
                 self.capture.unlink(missing_ok=True)
@@ -209,6 +211,24 @@ esac
                 )
                 self.assertNotEqual(result.returncode, 0)
                 self.assertFalse(self.capture.exists())
+
+    def test_optional_ssh_port_defaults_and_custom_value_reach_ssh(self):
+        arguments = self.root / "ssh-arguments"
+        self.executable(self.bin / "ssh", '#!/bin/sh\nprintf "%s\\n" "$@" > "$ARG_CAPTURE"\n')
+        for supplied, expected in ((None, "22"), ("", "22"), ("2222", "2222")):
+            with self.subTest(port=supplied):
+                env = {**self.env, "ARG_CAPTURE": str(arguments)}
+                env.pop("CPANEL_SSH_PORT", None)
+                if supplied is not None:
+                    env["CPANEL_SSH_PORT"] = supplied
+                result = subprocess.run(
+                    ["bash", "-e", "-c", self.command], env=env, capture_output=True, text=True, timeout=5
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                args = arguments.read_text().splitlines()
+                self.assertEqual(args[args.index("-p") + 1], expected)
+                self.assertIn("StrictHostKeyChecking=yes", args)
+                self.assertIn("BatchMode=yes", args)
 
     def test_only_ready_successful_pushes_enter_deployment_queue(self):
         preflight, deploy = self.workflow.split("\n  deploy:\n", 1)

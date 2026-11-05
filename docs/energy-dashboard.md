@@ -30,7 +30,7 @@ It does **not** identify appliances. Half-hourly meter data measures the whole p
 
 1. cPanel hosts a clone at `/home/iramkhan/personal-ai` outside the public web root.
 2. A server-side `.env` in that directory supplies `ACCOUNT_NUMBER` and `API_KEY`.
-3. `scripts/start-energy.sh` and `scripts/publish-energy-dashboard.sh` use `$PYTHON` or the first Python 3.10+ found by `scripts/find-python.sh`, including CloudLinux's `/opt/alt/python3*/bin/python3`, because the server's default `python3` may be older.
+3. `scripts/start-energy.sh` and `scripts/publish-energy-dashboard.sh` validate an explicit `$PYTHON` as Python 3.10+, or use the first compatible interpreter found by `scripts/find-python.sh`, including its listed CloudLinux `/opt/alt` paths, because the server's default `python3` may be older.
 4. A successful GitHub `Test` workflow for a push to this repository's `main` branch triggers `Deploy protected energy dashboard`.
 5. A configuration step checks all six deployment secrets. If any are absent, the connection and deployment steps are skipped.
 6. Only successful, configured runs proceed. Each tested commit has a separate GitHub concurrency group, so a late older completion cannot replace a different commit's pending job.
@@ -42,10 +42,11 @@ Required GitHub repository secrets:
 - `CPANEL_SSH_HOST`
 - `CPANEL_SSH_USERNAME`
 - `CPANEL_SSH_PRIVATE_KEY`
-- `CPANEL_SSH_KNOWN_HOSTS` (`ssh-keyscan -p <port> <host>` output; non-22 ports appear as `[host]:port`)
-- `CPANEL_SSH_PORT` (optional, defaults to 22)
+- `CPANEL_SSH_KNOWN_HOSTS` (verified known-host entries; non-22 ports appear as `[host]:port`)
 - `CPANEL_APP_PATH` (`/home/iramkhan/personal-ai`)
 - `CPANEL_DASHBOARD_PATH` (the protected cPanel directory for `/energy-usage`)
+
+Optional: `CPANEL_SSH_PORT`, which defaults to 22. If collecting candidate keys with `ssh-keyscan -p <port> <host>`, verify each fingerprint through a trusted hosting-provider channel before saving it. Do not trust scan output alone.
 
 Remote application and dashboard paths must be absolute and contain only letters, digits, `/`, `_`, `-` and `.`. Use Python 3.10 or newer on the server with Europe/London timezone data available. The server must provide `flock` and an actual `.git` directory; deployment fails closed if either is missing. Verify these prerequisites and the intended application path before configuring deployment; repository documentation is not evidence of an existing server clone or `.env`.
 
