@@ -5,13 +5,32 @@ import subprocess
 import tempfile
 import textwrap
 import unittest
+from html.parser import HTMLParser
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 from octopus_energy.analytics import recompute_daily_costs
 from octopus_energy.dashboard import dashboard_data, write_dashboard
 from octopus_energy.storage import connect, upsert_consumption, upsert_meter, upsert_rate
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+class DashboardTags(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.ids = {}
+        self.stylesheets = []
+        self.scripts = []
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if attrs.get("id"):
+            self.ids[attrs["id"]] = (tag, attrs)
+        if tag == "link" and attrs.get("rel") == "stylesheet":
+            self.stylesheets.append(attrs["href"])
+        if tag == "script" and attrs.get("src"):
+            self.scripts.append(attrs["src"])
 
 
 class DashboardTests(unittest.TestCase):
@@ -209,6 +228,72 @@ class DashboardTests(unittest.TestCase):
         data = json.loads((output / "data.json").read_text())
         self.assertNotIn("private-", json.dumps(data))
         self.assertEqual({path.name for path in output.iterdir()}, {"index.html", "data.json"})
+
+    def test_export_has_accessible_chart_and_documented_high_point_rule(self):
+        html = write_dashboard(self.database, self.root / "dashboard").read_text()
+        tags = DashboardTags()
+        tags.feed(html)
+        self.assertEqual(tags.ids["chart"][1]["role"], "group")
+        self.assertEqual(tags.ids["chart"][1]["viewbox"], "0 0 960 400")
+        self.assertEqual(tags.ids["chart"][1]["aria-describedby"], "chart-help chart-method")
+        self.assertEqual(tags.ids["chart-tooltip"][1]["role"], "tooltip")
+        self.assertIn("hidden", tags.ids["chart-tooltip"][1])
+        self.assertIn("Energy used (kWh)", html)
+        self.assertIn("arrows to move, Home/End for endpoints, Enter/Space to show, Escape to dismiss", html)
+        self.assertIn("strictly above mean + 2 × population standard deviation", html)
+        self.assertIn("at least 7 complete past numeric periods from the latest 90 plotted periods", html)
+        self.assertIn("including the candidate", html)
+        self.assertIn("Null, missing-date and ongoing periods are excluded", html)
+        self.assertIn("estimates, not measured devices", html)
+        self.assertIn("at least 50%", html)
+        self.assertIn("Cost unavailable", html)
+        self.assertIn("prefers-reduced-motion:reduce", html)
+        self.assertIn(":focus-visible", html)
+
+    def test_homepage_font_source_has_offline_fallbacks_and_no_script_dependency(self):
+        html = write_dashboard(self.database, self.root / "dashboard").read_text()
+        tags = DashboardTags()
+        tags.feed(html)
+        self.assertEqual(tags.scripts, [])
+        self.assertEqual(len(tags.stylesheets), 1)
+        font_url = urlsplit(tags.stylesheets[0])
+        self.assertEqual((font_url.scheme, font_url.netloc, font_url.path), ("https", "fonts.googleapis.com", "/css2"))
+        query = parse_qs(font_url.query)
+        self.assertEqual(query["display"], ["swap"])
+        self.assertEqual(
+            query["family"],
+            [
+                "Cormorant Garamond:ital,wght@0,400;0,600;0,700;1,400;1,600",
+                "DM Sans:wght@300;400;500",
+                "Syne:wght@400;500;600;700;800",
+            ],
+        )
+        # If the only font stylesheet is blocked, all stacks still end in local fonts.
+        self.assertIn("--serif:'Cormorant Garamond',Georgia,serif", html)
+        self.assertIn("--sans:'Syne',system-ui,sans-serif", html)
+        self.assertIn("--body:'DM Sans',system-ui,sans-serif", html)
+        self.assertNotIn("document.fonts", html)
+
+    def test_homepage_palette_preserves_text_and_chart_contrast(self):
+        html = write_dashboard(self.database, self.root / "dashboard").read_text()
+
+        def luminance(hex_colour):
+            values = [int(hex_colour[index : index + 2], 16) / 255 for index in (1, 3, 5)]
+            linear = [value / 12.92 if value <= 0.04045 else ((value + 0.055) / 1.055) ** 2.4 for value in values]
+            return sum(value * weight for value, weight in zip(linear, (0.2126, 0.7152, 0.0722), strict=True))
+
+        # The raised tooltip/button surface is the lightest background, so test that worst case.
+        background = luminance("#16161d")
+        for token, colour in {
+            "ink": "#f2f2f5",
+            "muted": "#a8a8c0",
+            "accent": "#c9a96e",
+            "e": "#2ee8cc",
+            "g": "#e8cc9a",
+        }.items():
+            with self.subTest(token=token):
+                self.assertIn(f"--{token}:{colour}", html)
+                self.assertGreaterEqual((luminance(colour) + 0.05) / (background + 0.05), 4.5)
 
     @unittest.skipUnless(shutil.which("node"), "Node.js is required for dashboard JavaScript checks")
     def test_dashboard_javascript(self):
