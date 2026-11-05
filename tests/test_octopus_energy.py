@@ -371,7 +371,8 @@ class SyncTests(unittest.TestCase):
         upsert_agreements(conn, meter, [(a.tariff_code, a.valid_from, a.valid_to) for a in history])
         for kind in ("standard-unit-rates", "standing-charges"):
             # The old agreement's rates already run to its end; the current tariff's rates don't cover `earlier`.
-            upsert_rate(conn, meter, kind, [rate("2026-10-15T00:00:00Z", 30)], old.tariff_code)
+            closed = {"valid_from": "2026-10-15T00:00:00Z", "valid_to": old.valid_to, "value_inc_vat": 30}
+            upsert_rate(conn, meter, kind, [closed], old.tariff_code)
             upsert_rate(conn, meter, kind, [rate("2026-11-01T00:00:00Z", 20)], current.tariff_code)
         conn.commit()
         conn.close()
@@ -395,6 +396,42 @@ class SyncTests(unittest.TestCase):
                 (current.tariff_code, current.valid_from, None),
             ],
         )
+
+    def test_rate_requests_resume_from_stored_rates_before_the_days_cutoff(self):
+        ended = Agreement("E-1R-OLD-26-01-01-A", "2020-01-01T00:00:00Z", "2026-11-01T00:00:00Z")
+        current = Agreement("E-1R-GO-V1-22-01-01-A", "2026-11-01T00:00:00Z", None)
+        meters = [Meter("electricity", MPAN, ELECTRIC_SERIAL, ended.tariff_code, ended.valid_from, None, (ended,))]
+        conn = connect(self.db)
+        meter = upsert_meter(
+            conn,
+            fuel="electricity",
+            point_id=MPAN,
+            serial=ELECTRIC_SERIAL,
+            tariff_code=current.tariff_code,
+            valid_from=current.valid_from,
+            valid_to=None,
+            synced_at="2026-11-05T00:00:00Z",
+        )
+        upsert_agreements(conn, meter, [(ended.tariff_code, ended.valid_from, ended.valid_to)])
+        for kind in ("standard-unit-rates", "standing-charges"):
+            # Open-ended when stored, so a later price change before the agreement ended may be missing.
+            upsert_rate(conn, meter, kind, [rate("2021-01-01T00:00:00Z", 30)], ended.tariff_code)
+        conn.commit()
+        conn.close()
+        requested = []
+
+        def tariff_rates(client, meter, kind, period_from=None, period_to=None, tariff_code=None):
+            requested.append((tariff_code, period_from, period_to))
+            return iter([])
+
+        with (
+            patch.object(FakeSyncClient, "meters", lambda client, account: meters),
+            patch.object(FakeSyncClient, "tariff_rates", tariff_rates),
+        ):
+            # The stored rate starts well before the --days cutoff and must still be the resume point.
+            cli.sync(self.db, ACCOUNT, "key", days=365)
+        expected = (ended.tariff_code, "2021-01-01T00:00:00Z", ended.valid_to)
+        self.assertEqual(requested, [expected, expected])
 
     def test_consumption_lookback_is_clamped_to_days_window(self):
         resume = cli._consumption_resume_from

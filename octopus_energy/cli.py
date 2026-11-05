@@ -101,14 +101,17 @@ def sync(database: Path, account_number: str, api_key: str, days: int = 400) -> 
                 window_to = utc_iso(agreement.valid_to)
                 if window_to and _parse(window_to) <= _parse(window_from):
                     continue
+                agreement_from = utc_iso(agreement.valid_from) or ""
                 for kind in ("standard-unit-rates", "standing-charges"):
-                    # Only this agreement's window counts: the same tariff code can recur in another agreement.
+                    # Only rates overlapping this agreement count: the same tariff code can recur in another agreement.
                     latest = conn.execute(
                         "SELECT valid_from, valid_to FROM tariff_rates WHERE meter_id=? AND tariff_code=? AND kind=?"
-                        " AND valid_from>=? AND (? IS NULL OR valid_from<?) ORDER BY valid_from DESC LIMIT 1",
-                        (meter_id, agreement.tariff_code, kind, window_from, window_to, window_to),
+                        " AND (? IS NULL OR valid_from<?) AND (valid_to IS NULL OR valid_to>?)"
+                        " ORDER BY valid_from DESC LIMIT 1",
+                        (meter_id, agreement.tariff_code, kind, window_to, window_to, agreement_from),
                     ).fetchone()
-                    if latest and window_to and (latest[1] is None or latest[1] >= window_to):
+                    # An open-ended stored rate may have been superseded before the agreement ended, so refetch it.
+                    if latest and window_to and latest[1] and latest[1] >= window_to:
                         continue
                     rates_from = latest[0] if latest else window_from
                     rates = client.tariff_rates(
