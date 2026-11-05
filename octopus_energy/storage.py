@@ -40,7 +40,12 @@ def _normalize_consumption_times(conn: sqlite3.Connection) -> None:
         conn.execute(
             "DELETE FROM consumption WHERE meter_id=? AND interval_start=? AND interval_end=?", (meter_id, start, end)
         )
-        upsert_consumption(conn, meter_id, [{"interval_start": start, "interval_end": end, "consumption": kwh}])
+        # A reading already stored in canonical form wins, since it may be a later correction.
+        conn.execute(
+            "INSERT INTO consumption(meter_id,interval_start,interval_end,consumption_kwh) VALUES(?,?,?,?)"
+            " ON CONFLICT(meter_id,interval_start,interval_end) DO NOTHING",
+            (meter_id, utc_iso(start), utc_iso(end), kwh),
+        )
     if rows:
         conn.commit()
 
