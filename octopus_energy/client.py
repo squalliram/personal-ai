@@ -3,14 +3,16 @@ from __future__ import annotations
 import base64
 import json
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Iterator
+from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urljoin, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 BASE_URL = "https://api.octopus.energy/v1/"
+PAGE_SIZE = 25000
 
 
 class OctopusAPIError(RuntimeError):
@@ -77,7 +79,14 @@ class OctopusClient:
         if params:
             url += ("&" if "?" in url else "?") + urlencode(params)
         for attempt in range(self.retries + 1):
-            request = Request(url, headers={"Authorization": self._auth, "Accept": "application/json", "User-Agent": "personal-ai-octopus-readonly/1.0"})
+            request = Request(
+                url,
+                headers={
+                    "Authorization": self._auth,
+                    "Accept": "application/json",
+                    "User-Agent": "personal-ai-octopus-readonly/1.0",
+                },
+            )
             try:
                 with self._opener.open(request, timeout=self.timeout) as response:
                     return json.loads(response.read().decode("utf-8"))
@@ -88,12 +97,12 @@ class OctopusClient:
             except (URLError, TimeoutError, json.JSONDecodeError) as exc:
                 if attempt == self.retries:
                     raise OctopusAPIError(f"Octopus API request failed ({type(exc).__name__})") from None
-            time.sleep(min(8, 2 ** attempt))
+            time.sleep(min(8, 2**attempt))
         raise AssertionError("unreachable")
 
     def paginated(self, path: str, params: dict[str, str] | None = None) -> Iterator[dict[str, Any]]:
         next_url: str | None = path
-        next_params = {"page_size": "1000", **(params or {})}
+        next_params: dict[str, str] | None = {"page_size": str(PAGE_SIZE), **(params or {})}
         while next_url:
             page = self.get(next_url, next_params)
             yield from page.get("results", [])
@@ -109,35 +118,72 @@ class OctopusClient:
         earliest = datetime.min.replace(tzinfo=timezone.utc)
         latest = datetime.max.replace(tzinfo=timezone.utc)
         for prop in account.get("properties", []):
-            for fuel, point_key, id_key in (("electricity", "electricity_meter_points", "mpan"), ("gas", "gas_meter_points", "mprn")):
+            for fuel, point_key, id_key in (
+                ("electricity", "electricity_meter_points", "mpan"),
+                ("gas", "gas_meter_points", "mprn"),
+            ):
                 for point in prop.get(point_key, []):
-                    agreements = tuple(TariffAgreement(a["tariff_code"], _timestamp(_instant(a["valid_from"])) if a.get("valid_from") else None, _timestamp(_instant(a["valid_to"])) if a.get("valid_to") else None) for a in point.get("agreements", []) if a.get("tariff_code"))
-                    active = [a for a in agreements if (_instant(a.valid_from) if a.valid_from else earliest) <= now < (_instant(a.valid_to) if a.valid_to else latest)]
-                    agreement = max(active, key=lambda a: _instant(a.valid_from) if a.valid_from else earliest, default=None)
+                    agreements = tuple(
+                        TariffAgreement(
+                            a["tariff_code"],
+                            _timestamp(_instant(a["valid_from"])) if a.get("valid_from") else None,
+                            _timestamp(_instant(a["valid_to"])) if a.get("valid_to") else None,
+                        )
+                        for a in point.get("agreements", [])
+                        if a.get("tariff_code")
+                    )
+                    active = [
+                        a
+                        for a in agreements
+                        if (_instant(a.valid_from) if a.valid_from else earliest)
+                        <= now
+                        < (_instant(a.valid_to) if a.valid_to else latest)
+                    ]
+                    agreement = max(
+                        active, key=lambda a: _instant(a.valid_from) if a.valid_from else earliest, default=None
+                    )
                     for meter in point.get("meters", []):
                         serial = meter.get("serial_number")
                         if serial and point.get(id_key):
-                            found.append(Meter(fuel, str(point[id_key]), str(serial), agreement.tariff_code if agreement else None, agreement.valid_from if agreement else None, agreement.valid_to if agreement else None, agreements))
+                            found.append(
+                                Meter(
+                                    fuel,
+                                    str(point[id_key]),
+                                    str(serial),
+                                    agreement.tariff_code if agreement else None,
+                                    agreement.valid_from if agreement else None,
+                                    agreement.valid_to if agreement else None,
+                                    agreements,
+                                )
+                            )
         return found
 
-    def consumption(self, meter: Meter, period_from: str | None = None, period_to: str | None = None) -> Iterator[dict[str, Any]]:
+    def consumption(
+        self, meter: Meter, period_from: str | None = None, period_to: str | None = None
+    ) -> Iterator[dict[str, Any]]:
         endpoint = f"{meter.fuel}-meter-points/{meter.point_id}/meters/{meter.serial_number}/consumption/"
         params = {key: value for key, value in {"period_from": period_from, "period_to": period_to}.items() if value}
         yield from self.paginated(endpoint, params)
 
-    def tariff_rates(self, meter: Meter, kind: str, period_from: str | None = None, period_to: str | None = None) -> Iterator[dict[str, Any]]:
+    def tariff_rates(
+        self, meter: Meter, kind: str, period_from: str | None = None, period_to: str | None = None
+    ) -> Iterator[dict[str, Any]]:
         earliest = datetime.min.replace(tzinfo=timezone.utc)
         latest = datetime.max.replace(tzinfo=timezone.utc)
         requested_from = _instant(period_from) if period_from else earliest
         requested_to = _instant(period_to) if period_to else latest
-        agreements = meter.agreements or ((TariffAgreement(meter.tariff_code, meter.valid_from, meter.valid_to),) if meter.tariff_code else ())
+        agreements = meter.agreements or (
+            (TariffAgreement(meter.tariff_code, meter.valid_from, meter.valid_to),) if meter.tariff_code else ()
+        )
         for agreement in agreements:
             start = _instant(agreement.valid_from) if agreement.valid_from else earliest
             end = _instant(agreement.valid_to) if agreement.valid_to else latest
             query_from, query_to = max(start, requested_from), min(end, requested_to)
             if query_from >= query_to:
                 continue
-            endpoint = f"products/{product_code(agreement.tariff_code)}/{meter.fuel}-tariffs/{agreement.tariff_code}/{kind}/"
+            endpoint = (
+                f"products/{product_code(agreement.tariff_code)}/{meter.fuel}-tariffs/{agreement.tariff_code}/{kind}/"
+            )
             params = {}
             if query_from != earliest:
                 params["period_from"] = _timestamp(query_from)
@@ -149,7 +195,11 @@ class OctopusClient:
                 if rate_from >= rate_to or rate_to <= requested_from or rate_from >= requested_to:
                     continue
                 # Preserve true rate boundaries across repeated sync windows.
-                yield {**rate, "valid_from": _timestamp(rate_from), "valid_to": _timestamp(rate_to) if rate_to != latest else None}
+                yield {
+                    **rate,
+                    "valid_from": _timestamp(rate_from),
+                    "valid_to": _timestamp(rate_to) if rate_to != latest else None,
+                }
 
 
 def product_code(tariff_code: str) -> str:

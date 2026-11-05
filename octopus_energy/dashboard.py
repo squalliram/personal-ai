@@ -1,4 +1,5 @@
-"""Privacy-preserving static dashboard export."""
+"""Privacy-preserving static, interactive dashboard export."""
+
 from __future__ import annotations
 
 import json
@@ -17,11 +18,14 @@ def dashboard_data(database: Path) -> dict:
     try:
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(daily_costs)")}
         quality = ",cost_status,cost_reason" if {"cost_status", "cost_reason"} <= columns else ""
-        daily = [dict(row) for row in conn.execute(
-            "SELECT date,fuel,ROUND(consumption_kwh,3) kwh,"
-            "ROUND(total_cost_gbp,2) cost,unit_cost_gbp,standing_charge_gbp"
-            f"{quality} FROM daily_costs ORDER BY date,fuel"
-        )]
+        daily = [
+            dict(row)
+            for row in conn.execute(
+                "SELECT date,fuel,ROUND(consumption_kwh,3) kwh,"
+                "ROUND(total_cost_gbp,2) cost,unit_cost_gbp,standing_charge_gbp"
+                f"{quality} FROM daily_costs ORDER BY date,fuel"
+            )
+        ]
         for row in daily:
             unit_cost, standing_cost = row.pop("unit_cost_gbp"), row.pop("standing_charge_gbp")
             if not quality:
@@ -97,7 +101,8 @@ def dashboard_data(database: Path) -> dict:
 
 SCRIPT = Path(__file__).with_name("dashboard.js").read_text(encoding="utf-8")
 
-HTML = '''<!doctype html>
+HTML = (
+    """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Energy intelligence</title><style>
@@ -133,7 +138,10 @@ For Power Up or Happy Hour, move flexible demand into the exact window confirmed
 Never turn off medical, frost-protection or essential devices. Do not increase usage just to chase a reward.</p>
 <p><a href="https://octopus.energy/saving-sessions/" target="_blank" rel="noopener noreferrer">Octopus event guidance</a></p></article>
 <article class="card"><h2>Device insight</h2><p id="notice" class="muted"></p></article></section>
-<noscript>Enable JavaScript to load this private dashboard.</noscript></main><script>''' + SCRIPT + "</script></body></html>"
+<noscript>Enable JavaScript to load this private dashboard.</noscript></main><script>"""
+    + SCRIPT
+    + "</script></body></html>"
+)
 
 
 def write_dashboard(database: Path, output_dir: Path) -> Path:

@@ -25,11 +25,13 @@ class _Rates:
     def __init__(self, conn: sqlite3.Connection) -> None:
         self.rows: dict[tuple[int, str], list[tuple]] = defaultdict(list)
         for row in conn.execute("SELECT * FROM tariff_rates"):
-            self.rows[row["meter_id"], row["kind"]].append((
-                _instant(row["valid_from"]),
-                _instant(row["valid_to"]) if row["valid_to"] else None,
-                float(row["value_inc_vat"]),
-            ))
+            self.rows[row["meter_id"], row["kind"]].append(
+                (
+                    _instant(row["valid_from"]),
+                    _instant(row["valid_to"]) if row["valid_to"] else None,
+                    float(row["value_inc_vat"]),
+                )
+            )
         for rows in self.rows.values():
             rows.sort(key=lambda row: row[0])
         self.starts = {key: [row[0] for row in rows] for key, rows in self.rows.items()}
@@ -41,8 +43,7 @@ class _Rates:
         cursor, value = start, None
         while True:
             index = bisect_right(starts, cursor) - 1
-            applicable = next((row for row in reversed(rows[:index + 1])
-                               if row[1] is None or row[1] > cursor), None)
+            applicable = next((row for row in reversed(rows[: index + 1]) if row[1] is None or row[1] > cursor), None)
             if applicable is None:
                 return None
             if value is not None and applicable[2] != value:
@@ -78,8 +79,12 @@ def recompute_daily_costs(conn: sqlite3.Connection) -> None:
         for row in readings:
             points[row["point_id"]].append(row)
             if unit_cost is not None:
-                rate = rates.value(row["meter_id"], "standard-unit-rates",
-                                   _instant(row["interval_start"]), _instant(row["interval_end"]))
+                rate = rates.value(
+                    row["meter_id"],
+                    "standard-unit-rates",
+                    _instant(row["interval_start"]),
+                    _instant(row["interval_end"]),
+                )
                 unit_cost = unit_cost + row["consumption_kwh"] * rate / 100 if rate is not None else None
         standing = 0.0
         midnight = datetime.fromisoformat(day).replace(tzinfo=LONDON).astimezone(timezone.utc)
@@ -101,45 +106,64 @@ def summary(conn: sqlite3.Connection, start: str | None = None, end: str | None 
     where, params = "", []
     filters = []
     if start:
-        filters.append("date>=?"); params.append(start)
+        filters.append("date>=?")
+        params.append(start)
     if end:
-        filters.append("date<?"); params.append(end)
+        filters.append("date<?")
+        params.append(end)
     if filters:
         where = " WHERE " + " AND ".join(filters)
-    return [dict(row) for row in conn.execute(
-        "SELECT fuel, CASE WHEN COUNT(consumption_kwh)=COUNT(*) THEN SUM(consumption_kwh) END consumption_kwh,"
-        " CASE WHEN COUNT(total_cost_gbp)=COUNT(*) THEN ROUND(SUM(total_cost_gbp),2) END total_cost_gbp"
-        " FROM daily_costs" + where + " GROUP BY fuel", params)]
+    return [
+        dict(row)
+        for row in conn.execute(
+            "SELECT fuel, CASE WHEN COUNT(consumption_kwh)=COUNT(*) THEN SUM(consumption_kwh) END consumption_kwh,"
+            " CASE WHEN COUNT(total_cost_gbp)=COUNT(*) THEN ROUND(SUM(total_cost_gbp),2) END total_cost_gbp"
+            " FROM daily_costs" + where + " GROUP BY fuel",
+            params,
+        )
+    ]
 
 
 def expensive_days(conn: sqlite3.Connection, fuel: str | None = None, limit: int = 10) -> list[dict]:
     sql, params = "SELECT * FROM daily_costs WHERE total_cost_gbp IS NOT NULL", []
     if fuel:
-        sql += " AND fuel=?"; params.append(fuel)
-    sql += " ORDER BY total_cost_gbp DESC LIMIT ?"; params.append(limit)
+        sql += " AND fuel=?"
+        params.append(fuel)
+    sql += " ORDER BY total_cost_gbp DESC LIMIT ?"
+    params.append(limit)
     return [dict(row) for row in conn.execute(sql, params)]
 
 
 def anomalies(conn: sqlite3.Connection, fuel: str | None = None) -> list[dict]:
     sql, params = "SELECT date, fuel, consumption_kwh FROM daily_costs WHERE consumption_kwh IS NOT NULL", []
     if fuel:
-        sql += " AND fuel=?"; params.append(fuel)
+        sql += " AND fuel=?"
+        params.append(fuel)
     data = [dict(r) for r in conn.execute(sql, params)]
     grouped: dict[str, list[dict]] = defaultdict(list)
-    for row in data: grouped[row["fuel"]].append(row)
+    for row in data:
+        grouped[row["fuel"]].append(row)
     found = []
-    for kind, rows in grouped.items():
+    for rows in grouped.values():
         values = [r["consumption_kwh"] for r in rows]
-        if len(values) < 7 or pstdev(values) == 0: continue
+        if len(values) < 7 or pstdev(values) == 0:
+            continue
         threshold = mean(values) + 2 * pstdev(values)
         found.extend({**r, "threshold_kwh": round(threshold, 3)} for r in rows if r["consumption_kwh"] > threshold)
     return found
 
 
 def overnight_baseline(conn: sqlite3.Connection) -> list[dict]:
-    rows = conn.execute("SELECT m.fuel, c.interval_start, c.consumption_kwh FROM consumption c JOIN meters m ON m.id=c.meter_id WHERE m.fuel='electricity'").fetchall()
+    rows = conn.execute(
+        "SELECT m.fuel, c.interval_start, c.consumption_kwh FROM consumption c JOIN meters m ON m.id=c.meter_id WHERE m.fuel='electricity'"
+    ).fetchall()
     groups: dict[str, list[float]] = defaultdict(list)
     for row in rows:
         hour = datetime.fromisoformat(row["interval_start"].replace("Z", "+00:00")).astimezone(LONDON).hour
-        if 0 <= hour < 5: groups[row["fuel"]].append(row["consumption_kwh"])
-    return [{"fuel": fuel, "average_interval_kwh": round(mean(values), 4), "intervals": len(values)} for fuel, values in groups.items() if values]
+        if 0 <= hour < 5:
+            groups[row["fuel"]].append(row["consumption_kwh"])
+    return [
+        {"fuel": fuel, "average_interval_kwh": round(mean(values), 4), "intervals": len(values)}
+        for fuel, values in groups.items()
+        if values
+    ]

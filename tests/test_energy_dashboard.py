@@ -1,14 +1,14 @@
 import json
 import os
-from pathlib import Path
 import shutil
 import subprocess
 import tempfile
 import textwrap
 import unittest
+from pathlib import Path
 
-from octopus_energy.dashboard import dashboard_data, write_dashboard
 from octopus_energy.analytics import recompute_daily_costs
+from octopus_energy.dashboard import dashboard_data, write_dashboard
 from octopus_energy.storage import connect, upsert_consumption, upsert_meter
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,16 +23,27 @@ class DashboardTests(unittest.TestCase):
         self.conn = connect(self.database)
         self.addCleanup(self.conn.close)
         self.meter = upsert_meter(
-            self.conn, fuel="electricity", point_id="private-point", serial="private-serial",
-            tariff_code="private-tariff", valid_from=None, valid_to=None,
+            self.conn,
+            fuel="electricity",
+            point_id="private-point",
+            serial="private-serial",
+            tariff_code="private-tariff",
+            valid_from=None,
+            valid_to=None,
             synced_at="2026-11-01T00:00:00Z",
         )
         self.conn.commit()
 
     def reading(self, start, end, kwh):
-        upsert_consumption(self.conn, self.meter, {
-            "interval_start": start, "interval_end": end, "consumption": kwh,
-        })
+        upsert_consumption(
+            self.conn,
+            self.meter,
+            {
+                "interval_start": start,
+                "interval_end": end,
+                "consumption": kwh,
+            },
+        )
         self.conn.commit()
 
     def test_empty_export_does_not_claim_recent_readings_or_sync(self):
@@ -52,10 +63,13 @@ class DashboardTests(unittest.TestCase):
 
     def test_intervals_are_split_at_clock_hour_boundaries(self):
         self.reading("2026-11-01T11:45:00Z", "2026-11-01T12:15:00Z", 2)
-        self.assertEqual(dashboard_data(self.database)["hourly"], [
-            {"fuel": "electricity", "hour": 11, "kwh": 4},
-            {"fuel": "electricity", "hour": 12, "kwh": 4},
-        ])
+        self.assertEqual(
+            dashboard_data(self.database)["hourly"],
+            [
+                {"fuel": "electricity", "hour": 11, "kwh": 4},
+                {"fuel": "electricity", "hour": 12, "kwh": 4},
+            ],
+        )
 
     def test_london_dst_repeated_hour_is_duration_weighted(self):
         self.reading("2026-10-25T00:00:00Z", "2026-10-25T01:00:00Z", 1)
@@ -66,27 +80,52 @@ class DashboardTests(unittest.TestCase):
     def test_concurrent_electricity_meters_add_energy_not_duplicate_time(self):
         self.reading("2026-11-01T12:00:00Z", "2026-11-01T12:30:00Z", 1)
         other = upsert_meter(
-            self.conn, fuel="electricity", point_id="second-synthetic-point", serial="second-synthetic",
-            tariff_code="synthetic", valid_from=None, valid_to=None, synced_at="2026-11-01T00:00:00Z",
+            self.conn,
+            fuel="electricity",
+            point_id="second-synthetic-point",
+            serial="second-synthetic",
+            tariff_code="synthetic",
+            valid_from=None,
+            valid_to=None,
+            synced_at="2026-11-01T00:00:00Z",
         )
-        upsert_consumption(self.conn, other, {
-            "interval_start": "2026-11-01T12:00:00Z",
-            "interval_end": "2026-11-01T12:30:00Z", "consumption": 2,
-        })
+        upsert_consumption(
+            self.conn,
+            other,
+            {
+                "interval_start": "2026-11-01T12:00:00Z",
+                "interval_end": "2026-11-01T12:30:00Z",
+                "consumption": 2,
+            },
+        )
         self.conn.commit()
-        self.assertEqual(dashboard_data(self.database)["hourly"], [
-            {"fuel": "electricity", "hour": 12, "kwh": 6},
-        ])
+        self.assertEqual(
+            dashboard_data(self.database)["hourly"],
+            [
+                {"fuel": "electricity", "hour": 12, "kwh": 6},
+            ],
+        )
 
     def test_raw_gas_volume_is_not_exported_as_an_hourly_kwh_profile(self):
         gas = upsert_meter(
-            self.conn, fuel="gas", point_id="synthetic-gas", serial="synthetic-gas",
-            tariff_code="synthetic", valid_from=None, valid_to=None, synced_at="2026-11-01T00:00:00Z",
+            self.conn,
+            fuel="gas",
+            point_id="synthetic-gas",
+            serial="synthetic-gas",
+            tariff_code="synthetic",
+            valid_from=None,
+            valid_to=None,
+            synced_at="2026-11-01T00:00:00Z",
         )
-        upsert_consumption(self.conn, gas, {
-            "interval_start": "2026-11-01T12:00:00Z",
-            "interval_end": "2026-11-01T12:30:00Z", "consumption": 2,
-        })
+        upsert_consumption(
+            self.conn,
+            gas,
+            {
+                "interval_start": "2026-11-01T12:00:00Z",
+                "interval_end": "2026-11-01T12:30:00Z",
+                "consumption": 2,
+            },
+        )
         recompute_daily_costs(self.conn)
         self.conn.commit()
         data = dashboard_data(self.database)
@@ -102,7 +141,7 @@ class DashboardTests(unittest.TestCase):
         self.reading("2026-11-01T12:00:00Z", "2026-11-01T12:30:00Z", 1)
         recompute_daily_costs(self.conn)
         self.conn.commit()
-        row, = dashboard_data(self.database)["daily"]
+        (row,) = dashboard_data(self.database)["daily"]
         self.assertEqual(row["kwh"], 1)
         self.assertIsNone(row["cost"])
         self.assertEqual(row["cost_status"], "incomplete")
@@ -134,8 +173,11 @@ class DashboardTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which("node"), "Node.js is required for dashboard JavaScript checks")
     def test_dashboard_javascript(self):
         result = subprocess.run(
-            ["node", str(ROOT / "tests/dashboard.test.js")], cwd=ROOT,
-            capture_output=True, text=True, timeout=30,
+            ["node", str(ROOT / "tests/dashboard.test.js")],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
@@ -157,8 +199,12 @@ class PublishDashboardTests(unittest.TestCase):
     def publish(self):
         env = dict(os.environ, DASHBOARD_DIR=str(self.source), DASHBOARD_TARGET=str(self.target))
         return subprocess.run(
-            [str(ROOT / "scripts/publish-energy-dashboard.sh")], cwd=ROOT,
-            env=env, capture_output=True, text=True, timeout=10,
+            [str(ROOT / "scripts/publish-energy-dashboard.sh")],
+            cwd=ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
 
     def protection(self, extra=""):
@@ -215,12 +261,17 @@ class PublishDashboardTests(unittest.TestCase):
 
 class DeploymentWorkflowTests(unittest.TestCase):
     def test_secret_configuration_gate_without_exposing_values(self):
+        from test_energy_release import workflow_run_block
+
         workflow = (ROOT / ".github/workflows/deploy-dashboard.yml").read_text()
-        configuration = workflow.split("      - name: Check deployment configuration\n", 1)[1].split("      - name: Configure deployment key\n", 1)[0]
-        command = textwrap.dedent(configuration.split("        run: |\n", 1)[1])
+        command = textwrap.dedent(workflow_run_block(workflow, "Check deployment configuration"))
         names = (
-            "CPANEL_SSH_HOST", "CPANEL_SSH_USERNAME", "CPANEL_SSH_PRIVATE_KEY",
-            "CPANEL_SSH_KNOWN_HOSTS", "CPANEL_APP_PATH", "CPANEL_DASHBOARD_PATH",
+            "CPANEL_SSH_HOST",
+            "CPANEL_SSH_USERNAME",
+            "CPANEL_SSH_PRIVATE_KEY",
+            "CPANEL_SSH_KNOWN_HOSTS",
+            "CPANEL_APP_PATH",
+            "CPANEL_DASHBOARD_PATH",
         )
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "github-output"

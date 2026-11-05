@@ -10,12 +10,15 @@ permissions:
   contents: read
 
 jobs:
-  deploy:
+  # Secrets are available to steps, not job-level conditions.
+  preflight:
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'push' &&
       github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
+    outputs:
+      ready: ${{ steps.configuration.outputs.ready }}
     steps:
       - name: Check deployment configuration
         id: configuration
@@ -35,8 +38,17 @@ jobs:
             fi
           done
           echo "ready=true" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    needs: preflight
+    if: needs.preflight.outputs.ready == 'true'
+    runs-on: ubuntu-latest
+    # Only successful, configured runs enter the deployment queue.
+    concurrency:
+      group: deploy-dashboard
+      cancel-in-progress: false
+    steps:
       - name: Configure deployment key
-        if: steps.configuration.outputs.ready == 'true'
         env:
           SSH_PRIVATE_KEY: ${{ secrets.CPANEL_SSH_PRIVATE_KEY }}
           SSH_KNOWN_HOSTS: ${{ secrets.CPANEL_SSH_KNOWN_HOSTS }}
@@ -46,7 +58,6 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
       - name: Update, refresh, and publish dashboard
-        if: steps.configuration.outputs.ready == 'true'
         env:
           CPANEL_SSH_HOST: ${{ secrets.CPANEL_SSH_HOST }}
           CPANEL_SSH_USERNAME: ${{ secrets.CPANEL_SSH_USERNAME }}
@@ -55,12 +66,15 @@ jobs:
           DEPLOY_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           # Remote paths are configuration, never executable shell fragments.
-          [[ "$CPANEL_APP_PATH" =~ ^/[a-zA-Z0-9_./-]+$ ]]
-          [[ "$CPANEL_DASHBOARD_PATH" =~ ^/[a-zA-Z0-9_./-]+$ ]]
-          [[ "$DEPLOY_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$CPANEL_APP_PATH" =~ ^/[a-zA-Z0-9_./-]+$ ]] || exit 1
+          [[ "$CPANEL_DASHBOARD_PATH" =~ ^/[a-zA-Z0-9_./-]+$ ]] || exit 1
+          [[ "$DEPLOY_SHA" =~ ^[a-f0-9]{40}$ ]] || exit 1
           ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes -o StrictHostKeyChecking=yes \
             "$CPANEL_SSH_USERNAME@$CPANEL_SSH_HOST" \
             "cd '$CPANEL_APP_PATH' && test -z \"\$(git status --porcelain)\" && \
-            git pull --ff-only origin main && test \"\$(git rev-parse HEAD)\" = '$DEPLOY_SHA' && \
+            test \"\$(git branch --show-current)\" = main && git fetch --no-tags origin main && \
+            if [ \"\$(git rev-parse origin/main)\" != '$DEPLOY_SHA' ]; then \
+            echo 'origin/main has moved past the tested commit; skipping deploy.'; exit 0; fi && \
+            git merge --ff-only '$DEPLOY_SHA' && test \"\$(git rev-parse HEAD)\" = '$DEPLOY_SHA' && \
             ./scripts/start-energy.sh --days 90 && \
             DASHBOARD_TARGET='$CPANEL_DASHBOARD_PATH' ./scripts/publish-energy-dashboard.sh"

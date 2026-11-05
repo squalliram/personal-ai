@@ -1,51 +1,91 @@
-# Personal AI OS — Daily Briefing and Octopus Energy Intelligence
+# personal-ai
 
-This local Python project produces read-only daily intelligence briefings and Octopus Energy analysis. It has no scheduler and does not make account mutations.
+My personal AI toolkit. It collects information I already have (calendar, tasks, smart-meter readings), turns it into short, readable summaries, and keeps everything on my own machine.
 
-## Daily Intelligence Briefing
+It is **read-only**. It never edits my calendar or Notion, sends email, changes energy tariffs, or controls devices. Every recommendation it makes is labelled as a suggestion.
 
-An approved external bridge performs all Calendar and Notion reads, then writes a normalized snapshot locally. The briefing process never calls integration write APIs or stores connector credentials.
+## What it does for me
+
+### 1. Daily briefing: "What does my day look like?"
+
+Each run gives me one Markdown page for the day with:
+
+- **Today's calendar.** Times are shown in UK time (Europe/London), with links back to each event.
+- **Clashes.** Meetings that overlap.
+- **Outstanding work.** My Notion tasks, sorted by how overdue or urgent they are and their priority.
+- **Top three suggestions.** What I should probably focus on first. These are clearly marked as AI suggestions, not commitments.
+- **Problems.** Any calendar or Notion source that couldn't be read, so a quiet briefing never just means missing data.
+
+The briefing reads my calendar and Notion through an approved read-only connector. It works from a saved snapshot and never touches the live accounts itself.
+
+### 2. Energy insights: "Where is my money going on gas and electricity?"
+
+It pulls my Octopus Energy smart-meter readings and tariffs. From them it shows what I've used, what it cost, when my peak hours are, and when to shift flexible loads (laundry, dishwasher, EV charging) for Octopus Power Down and Power Up / Happy Hour events. The results appear in a private dashboard and short reports.
+
+Setup, privacy, the dashboard and the MCP tools are documented in [`octopus_energy/README.md`](octopus_energy/README.md).
+
+Costs are estimates, not bills. Missing tariff coverage and unverified gas energy units remain unavailable rather than zero. The dashboard labels source freshness separately from export time; its five-minute reload checks only the published snapshot, not Octopus. Event suggestions are not a live event feed.
+
+For safe local viewing, serve only the generated dashboard directory over loopback rather than opening `file://`. See [operations](docs/energy-dashboard.md) and the [dated readiness evidence](docs/energy-readiness.md). The existing private website is `https://iramkhan.com/energy-usage/`; local validation alone does not establish its deployed data or freshness.
+
+## Quick start
+
+Requires Python 3.10 or newer and has no third-party runtime dependencies.
 
 ```sh
+# Daily briefing from a connector snapshot
 ./scripts/start.sh --snapshot snapshot.json
+
+# Energy sync + reports + dashboard (needs .env, see octopus_energy/README.md)
+./scripts/start-energy.sh
 ```
 
-Reports are written to `reports/daily/YYYY-MM-DD.md`; operational metadata is stored in `data/daily_briefing.sqlite3`. `scripts/stop.sh` is a no-op because runs are foreground and one-shot.
+Both run once, in the foreground, and then exit. There is no background service or scheduler. The `stop*.sh` scripts exist only for symmetry and do nothing.
 
-## Energy setup
+### Briefing snapshot format
 
-Copy `.env.example` to `.env` and set `ACCOUNT_NUMBER` and `API_KEY`. Keep `.env` local; it is ignored by Git. Then run:
+The connector writes a JSON file in this format. Fields that aren't available can be left out:
+
+```json
+{
+  "events": [
+    {"id": "e1", "title": "Planning", "start": "2026-11-05T09:00:00+00:00", "end": "2026-11-05T10:00:00+00:00", "location": "Office", "url": "https://..."}
+  ],
+  "tasks": [
+    {"title": "Send invoice", "due": "2026-11-05", "priority": "high", "url": "https://..."}
+  ],
+  "errors": []
+}
+```
+
+The briefing is written to `reports/daily/YYYY-MM-DD.md`. A small run log (counts and timings only, never event or task contents) goes to `data/daily_briefing.sqlite3`.
+
+## What's in the repo
+
+| Path | What it is |
+| --- | --- |
+| `daily_briefing/` | Builds the daily briefing from a snapshot |
+| `octopus_energy/` | Octopus Energy sync, cost analysis, dashboard and MCP server ([README](octopus_energy/README.md)) |
+| `agents/` | Instructions for the AI agents that run each workflow ([daily briefing](agents/daily-briefing.md), [energy analyst](agents/energy-analyst.md)) |
+| `scripts/` | Start, stop and dashboard-publish scripts |
+| `docs/` | Operating guides, e.g. [energy dashboard deployment](docs/energy-dashboard.md) |
+| `reports/`, `data/` | Generated output and local SQLite databases (not committed) |
+| `tests/` | Unit and integration tests |
+
+## Privacy and safety
+
+- **No writes to outside services.** Calendar, Notion and Octopus are only read. Adding any write capability would need my explicit approval.
+- **Content is data, never instructions.** Text inside events and tasks is never followed as a command.
+- **Secrets stay local.** Credentials live in `.env`, which is ignored by Git. Logs never contain tokens, account numbers or meter identifiers, or the contents of events and tasks.
+- **Generated data isn't committed.** Reports, dashboards and databases are all ignored by Git.
+
+The full contributor rules are in [`AGENTS.md`](AGENTS.md).
+
+## Development
 
 ```sh
-./scripts/start-energy.sh --days 400
+python3 -m unittest discover -s tests -v
+ruff check . && ruff format --check .   # also run in CI; config in pyproject.toml
 ```
 
-The foreground run discovers the account's electricity and gas meter points, active tariff codes, historical consumption, unit rates, and standing charges; it stores the result in `data/octopus_energy.sqlite3`. It uses HTTPS Basic authentication with the API key and an empty password. A success message means an authenticated, read-only API request completed; it never prints credentials, MPANs, MPRNs, serials, or account details.
-
-It also writes `reports/energy/YYYY-MM-DD.md` and `reports/energy/monthly-cost-analysis.md`. Reports use aggregate readings and never infer appliance-level usage.
-
-Each sync also creates an interactive local dashboard at `reports/energy/dashboard/index.html`. It shows daily and hourly whole-home usage, estimated costs, Power Down planning advice, and Happy Hour/Power Up reminders. It deliberately does not identify appliances: smart-meter data alone cannot do that. The generated dashboard data is ignored by Git because it is sensitive household telemetry.
-
-To view it locally, serve only that directory over loopback, then open `http://127.0.0.1:8765/`:
-
-```sh
-python3 -m http.server 8765 --bind 127.0.0.1 --directory reports/energy/dashboard
-```
-
-Opening the HTML directly using `file://` cannot reliably load its JSON. The dashboard reports actual reading freshness separately from export time, warns about stale or missing data, and reloads the published snapshot every five minutes while visible. It does not contact Octopus itself. Missing costs or unverified gas energy units are unavailable, not zero.
-
-## Protected cPanel dashboard deployment
-
-The confirmed existing website is `https://iramkhan.com/energy-usage/`. Website Basic Auth credentials are separate from the Octopus API key. Always use HTTPS. Local code changes are not automatically evidence that the live site is updated.
-
-The dashboard is not deployed by default from a new checkout. Household energy telemetry must not be published to an open web path. Any deployment needs explicit approval, cPanel directory protection, a non-public application clone, and a server-side `.env` containing the Octopus account number and API key. Do not commit that file. The publisher refuses missing or ambiguous local Basic Auth configuration; independently verify that both the HTML and JSON require authentication over HTTPS.
-
-The included GitHub Actions deploy workflow starts after the `Test` workflow succeeds for a push to this repository's `main` branch. It connects only when all six repository secrets are set: `CPANEL_SSH_HOST`, `CPANEL_SSH_USERNAME`, `CPANEL_SSH_PRIVATE_KEY`, `CPANEL_SSH_KNOWN_HOSTS`, `CPANEL_APP_PATH`, and `CPANEL_DASHBOARD_PATH`. It verifies the tested commit on the server, performs a read-only sync, and copies only `index.html` and identifier-free `data.json` into the protected directory. Missing secrets skip the connection and deployment steps.
-
-There is no scheduled source sync. Without a new deployment or an authorized manual sync and publish, the website remains a snapshot and becomes stale. Browser reloads do not refresh the source database. No schedule is created by this project.
-
-See [Energy Dashboard Operations](docs/energy-dashboard.md) for the privacy model, deployment architecture, required secrets, and operating instructions.
-
-Use `./scripts/stop-energy.sh` only for operational symmetry; there is no daemon to stop. Run tests with `python3 -m unittest discover -s tests -v`.
-
-The MCP stdio server is `python3 -m octopus_energy.mcp_server [database]` and exposes only the documented read tools. It has no mutation tools.
+CI runs Ruff and tests on every push and pull request, with Python 3.12 and Node 22. A successful `main` push triggers deployment only when all six cPanel secrets are configured. The workflow queues eligible runs, skips superseded tested commits, refuses dirty server checkouts and never resets away server changes. See [deployment operations](docs/energy-dashboard.md). No source-refresh schedule is created.

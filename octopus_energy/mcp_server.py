@@ -1,4 +1,5 @@
 """Read-only energy tools over the MCP stdio transport."""
+
 from __future__ import annotations
 
 import json
@@ -9,7 +10,16 @@ from pathlib import Path
 
 from .analytics import anomalies, expensive_days, overnight_baseline, summary
 
-TOOLS = ("get_energy_summary", "get_daily_consumption", "get_monthly_bill_comparison", "get_tariff_details", "get_expensive_days", "get_overnight_baseline", "detect_energy_anomalies", "get_savings_recommendations")
+TOOLS = (
+    "get_energy_summary",
+    "get_daily_consumption",
+    "get_monthly_bill_comparison",
+    "get_tariff_details",
+    "get_expensive_days",
+    "get_overnight_baseline",
+    "detect_energy_anomalies",
+    "get_savings_recommendations",
+)
 PROTOCOL_VERSIONS = ("2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25")
 DATE_SCHEMA = {"type": "string", "format": "date", "description": "Europe/London date, YYYY-MM-DD; end is exclusive."}
 FUEL_SCHEMA = {"type": "string", "enum": ["electricity", "gas"]}
@@ -18,7 +28,10 @@ TOOL_PROPERTIES = {
     "get_daily_consumption": {"start": DATE_SCHEMA, "end": DATE_SCHEMA},
     "get_monthly_bill_comparison": {},
     "get_tariff_details": {},
-    "get_expensive_days": {"fuel": FUEL_SCHEMA, "limit": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 10}},
+    "get_expensive_days": {
+        "fuel": FUEL_SCHEMA,
+        "limit": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 10},
+    },
     "get_overnight_baseline": {},
     "detect_energy_anomalies": {"fuel": FUEL_SCHEMA},
     "get_savings_recommendations": {},
@@ -40,30 +53,56 @@ class RefreshRequiredError(RuntimeError):
 
 
 def dispatch(name: str, arguments: dict, database: Path) -> list[dict]:
-    if name not in TOOLS: raise ValueError("Unknown read-only energy tool")
-    if not isinstance(arguments, dict): raise ValueError("Arguments must be an object")
+    if name not in TOOLS:
+        raise ValueError("Unknown read-only energy tool")
+    if not isinstance(arguments, dict):
+        raise ValueError("Arguments must be an object")
     conn = sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     try:
-        if any(row["notnull"] for row in conn.execute("PRAGMA table_info(daily_costs)")
-               if row["name"] not in {"date", "fuel"}):
+        if any(
+            row["notnull"]
+            for row in conn.execute("PRAGMA table_info(daily_costs)")
+            if row["name"] not in {"date", "fuel"}
+        ):
             # Read tools must not migrate legacy derived zeros/gas quantities.
             raise RefreshRequiredError
-        if name == "get_energy_summary": return summary(conn, arguments.get("start"), arguments.get("end"))
+        if name == "get_energy_summary":
+            return summary(conn, arguments.get("start"), arguments.get("end"))
         if name == "get_daily_consumption":
-            return [dict(r) for r in conn.execute("SELECT date,fuel,consumption_kwh,total_cost_gbp FROM daily_costs WHERE date>=? AND date<? ORDER BY date", (arguments["start"], arguments["end"]))]
+            return [
+                dict(r)
+                for r in conn.execute(
+                    "SELECT date,fuel,consumption_kwh,total_cost_gbp FROM daily_costs WHERE date>=? AND date<? ORDER BY date",
+                    (arguments["start"], arguments["end"]),
+                )
+            ]
         if name == "get_monthly_bill_comparison":
-            return [dict(r) for r in conn.execute(
-                "SELECT substr(date,1,7) month,fuel,"
-                " CASE WHEN COUNT(consumption_kwh)=COUNT(*) THEN SUM(consumption_kwh) END consumption_kwh,"
-                " CASE WHEN COUNT(total_cost_gbp)=COUNT(*) THEN ROUND(SUM(total_cost_gbp),2) END total_cost_gbp"
-                " FROM daily_costs GROUP BY month,fuel ORDER BY month DESC")]
-        if name == "get_tariff_details": return [dict(r) for r in conn.execute("SELECT fuel,tariff_code,valid_from,valid_to FROM meters")]
-        if name == "get_expensive_days": return expensive_days(conn, arguments.get("fuel"), int(arguments.get("limit", 10)))
-        if name == "get_overnight_baseline": return overnight_baseline(conn)
-        if name == "detect_energy_anomalies": return anomalies(conn, arguments.get("fuel"))
-        return [dict(r) for r in conn.execute("SELECT category,recommendation,estimated_gbp FROM savings_recommendations ORDER BY created_at DESC")]
-    finally: conn.close()
+            return [
+                dict(r)
+                for r in conn.execute(
+                    "SELECT substr(date,1,7) month,fuel,"
+                    " CASE WHEN COUNT(consumption_kwh)=COUNT(*) THEN SUM(consumption_kwh) END consumption_kwh,"
+                    " CASE WHEN COUNT(total_cost_gbp)=COUNT(*) THEN ROUND(SUM(total_cost_gbp),2) END total_cost_gbp"
+                    " FROM daily_costs GROUP BY month,fuel ORDER BY month DESC"
+                )
+            ]
+        if name == "get_tariff_details":
+            return [dict(r) for r in conn.execute("SELECT fuel,tariff_code,valid_from,valid_to FROM meters")]
+        if name == "get_expensive_days":
+            return expensive_days(conn, arguments.get("fuel"), int(arguments.get("limit", 10)))
+        if name == "get_overnight_baseline":
+            return overnight_baseline(conn)
+        if name == "detect_energy_anomalies":
+            return anomalies(conn, arguments.get("fuel"))
+        return [
+            dict(r)
+            for r in conn.execute(
+                "SELECT category,recommendation,estimated_gbp FROM savings_recommendations ORDER BY created_at DESC"
+            )
+        ]
+    finally:
+        conn.close()
 
 
 def tool_definitions() -> list[dict]:
@@ -72,8 +111,14 @@ def tool_definitions() -> list[dict]:
         schema = {"type": "object", "properties": TOOL_PROPERTIES[name], "additionalProperties": False}
         if name == "get_daily_consumption":
             schema["required"] = ["start", "end"]
-        definitions.append({"name": name, "description": TOOL_DESCRIPTIONS[name], "inputSchema": schema,
-                            "annotations": {"readOnlyHint": True, "openWorldHint": False}})
+        definitions.append(
+            {
+                "name": name,
+                "description": TOOL_DESCRIPTIONS[name],
+                "inputSchema": schema,
+                "annotations": {"readOnlyHint": True, "openWorldHint": False},
+            }
+        )
     return definitions
 
 
@@ -112,8 +157,11 @@ class MCPServer:
         if not isinstance(request, dict):
             return error_response(None, -32600, "Invalid request")
         request_id = request.get("id")
-        if (request.get("jsonrpc") != "2.0" or not isinstance(request.get("method"), str)
-                or ("id" in request and type(request_id) not in (str, int))):
+        if (
+            request.get("jsonrpc") != "2.0"
+            or not isinstance(request.get("method"), str)
+            or ("id" in request and type(request_id) not in (str, int))
+        ):
             return error_response(None, -32600, "Invalid request")
         method = request["method"]
         if "id" not in request:
@@ -125,16 +173,22 @@ class MCPServer:
             return error_response(request_id, -32602, "Invalid parameters")
         if method == "initialize":
             info = params.get("clientInfo")
-            if (self.negotiated or not isinstance(params.get("protocolVersion"), str)
-                    or not params["protocolVersion"] or not isinstance(params.get("capabilities"), dict)
-                    or not isinstance(info, dict)
-                    or not all(isinstance(info.get(key), str) and info[key] for key in ("name", "version"))):
+            if (
+                self.negotiated
+                or not isinstance(params.get("protocolVersion"), str)
+                or not params["protocolVersion"]
+                or not isinstance(params.get("capabilities"), dict)
+                or not isinstance(info, dict)
+                or not all(isinstance(info.get(key), str) and info[key] for key in ("name", "version"))
+            ):
                 return error_response(request_id, -32602, "Invalid initialization parameters")
             version = params["protocolVersion"]
             self.negotiated = True
-            result = {"protocolVersion": version if version in PROTOCOL_VERSIONS else PROTOCOL_VERSIONS[-1],
-                      "capabilities": {"tools": {"listChanged": False}},
-                      "serverInfo": {"name": "personal-ai-octopus-energy", "version": "1.0.0"}}
+            result = {
+                "protocolVersion": version if version in PROTOCOL_VERSIONS else PROTOCOL_VERSIONS[-1],
+                "capabilities": {"tools": {"listChanged": False}},
+                "serverInfo": {"name": "personal-ai-octopus-energy", "version": "1.0.0"},
+            }
         elif method == "ping":
             result = {}
         elif method not in ("tools/list", "tools/call"):
@@ -153,7 +207,15 @@ class MCPServer:
                 rows = dispatch(name, arguments, self.database)
                 result = {"content": [{"type": "text", "text": json.dumps(rows, allow_nan=False)}]}
             except RefreshRequiredError:
-                result = {"content": [{"type": "text", "text": "Energy database requires a local refresh before queries are available."}], "isError": True}
+                result = {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Energy database requires a local refresh before queries are available.",
+                        }
+                    ],
+                    "isError": True,
+                }
             except (OSError, sqlite3.Error):
                 result = {"content": [{"type": "text", "text": "Energy database is unavailable."}], "isError": True}
         return {"jsonrpc": "2.0", "id": request_id, "result": result}
@@ -181,4 +243,5 @@ def main() -> int:
     return 0
 
 
-if __name__ == "__main__": raise SystemExit(main())
+if __name__ == "__main__":
+    raise SystemExit(main())

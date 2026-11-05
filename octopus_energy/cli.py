@@ -6,11 +6,11 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from .analytics import anomalies, expensive_days, recompute_daily_costs, summary
+from .analytics import recompute_daily_costs
 from .client import OctopusAPIError, OctopusClient, utc_now
-from .storage import connect, upsert_account, upsert_consumption, upsert_meter, upsert_rate
-from .reports import write_reports
 from .dashboard import write_dashboard
+from .reports import write_reports
+from .storage import connect, upsert_account, upsert_consumption, upsert_meter, upsert_rate
 
 
 def load_env(path: Path) -> dict[str, str]:
@@ -21,8 +21,33 @@ def load_env(path: Path) -> dict[str, str]:
         return values
     for line in lines:
         if "=" in line and not line.lstrip().startswith("#"):
-            key, value = line.split("=", 1); values[key.strip()] = value.strip().strip("\"'")
+            key, value = line.split("=", 1)
+            values[key.strip()] = value.strip().strip("\"'")
     return values
+
+
+def _watermark(conn: sqlite3.Connection, query: str, params: tuple, default: str) -> str:
+    """Resume from the newest stored timestamp; overlap is safe because writes are upserts."""
+    return conn.execute(query, params).fetchone()[0] or default
+
+
+CONSUMPTION_LOOKBACK = timedelta(days=7)
+
+
+def _iso_utc(instant: datetime) -> str:
+    return instant.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _consumption_resume_from(watermark: str | None, default_from: str) -> str:
+    """Re-read a short window before the watermark so late backfilled intervals are picked up.
+
+    The lookback never reaches earlier than the --days window, unless the watermark itself is older.
+    """
+    if not watermark:
+        return default_from
+    mark = datetime.fromisoformat(watermark.replace("Z", "+00:00"))
+    floor = datetime.fromisoformat(default_from.replace("Z", "+00:00"))
+    return _iso_utc(min(mark, max(mark - CONSUMPTION_LOOKBACK, floor)))
 
 
 def sync(database: Path, account_number: str, api_key: str, days: int = 400) -> dict:
@@ -30,8 +55,10 @@ def sync(database: Path, account_number: str, api_key: str, days: int = 400) -> 
         raise ValueError("Sync days must be positive")
     if not account_number.strip() or not api_key.strip():
         raise ValueError("Octopus account number and API key are required")
-    started = utc_now(); conn = connect(database)
-    conn.execute("INSERT INTO sync_history(started_at,status) VALUES(?,?)", (started, "running")); sync_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    started = utc_now()
+    conn = connect(database)
+    conn.execute("INSERT INTO sync_history(started_at,status) VALUES(?,?)", (started, "running"))
+    sync_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
     conn.commit()
     counts = {"electricity": 0, "gas": 0}
     empty_meters = 0
@@ -39,36 +66,85 @@ def sync(database: Path, account_number: str, api_key: str, days: int = 400) -> 
         client = OctopusClient(api_key)
         account = client.account(account_number)
         meters = client.meters(account)
-        if not meters: raise OctopusAPIError("Account returned no supported smart meters")
+        if not meters:
+            raise OctopusAPIError("Account returned no supported smart meters")
         upsert_account(conn, account_number, started)
         period_to = started
-        period_from = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat().replace("+00:00", "Z")
+        default_from = _iso_utc(datetime.now(timezone.utc) - timedelta(days=days))
         for meter in meters:
-            meter_id = upsert_meter(conn, fuel=meter.fuel, point_id=meter.point_id, serial=meter.serial_number, tariff_code=meter.tariff_code, valid_from=meter.valid_from, valid_to=meter.valid_to, synced_at=started)
-            meter_records = 0
-            for reading in client.consumption(meter, period_from=period_from):
-                upsert_consumption(conn, meter_id, reading); counts[meter.fuel] += 1; meter_records += 1
+            meter_id = upsert_meter(
+                conn,
+                fuel=meter.fuel,
+                point_id=meter.point_id,
+                serial=meter.serial_number,
+                tariff_code=meter.tariff_code,
+                valid_from=meter.valid_from,
+                valid_to=meter.valid_to,
+                synced_at=started,
+            )
+            watermark = conn.execute(
+                "SELECT MAX(interval_start) FROM consumption WHERE meter_id=?", (meter_id,)
+            ).fetchone()[0]
+            consumption_from = _consumption_resume_from(watermark, default_from)
+            meter_records = upsert_consumption(conn, meter_id, client.consumption(meter, period_from=consumption_from))
+            counts[meter.fuel] += meter_records
             if not meter_records:
                 empty_meters += 1
                 continue
-            conn.execute("DELETE FROM tariff_rates WHERE meter_id=? AND julianday(valid_from)<julianday(?) AND (valid_to IS NULL OR julianday(valid_to)>julianday(?))", (meter_id, period_to, period_from))
             for kind in ("standard-unit-rates", "standing-charges"):
-                for rate in client.tariff_rates(meter, kind, period_from=period_from, period_to=period_to): upsert_rate(conn, meter_id, kind, rate)
+                rates_from = _watermark(
+                    conn,
+                    "SELECT MAX(valid_from) FROM tariff_rates WHERE meter_id=? AND kind=?",
+                    (meter_id, kind),
+                    default_from,
+                )
+                if meter.agreements:
+                    # Account history repairs tariff changes missed by older syncs.
+                    rates_from = default_from
+                conn.execute(
+                    "DELETE FROM tariff_rates WHERE meter_id=? AND kind=? "
+                    "AND julianday(valid_from)<julianday(?) "
+                    "AND (valid_to IS NULL OR julianday(valid_to)>julianday(?))",
+                    (meter_id, kind, period_to, rates_from),
+                )
+                upsert_rate(
+                    conn,
+                    meter_id,
+                    kind,
+                    client.tariff_rates(meter, kind, period_from=rates_from, period_to=period_to),
+                )
         if empty_meters:
             status = "partial" if sum(counts.values()) else "no_data"
             conn.rollback()
-            conn.execute("UPDATE sync_history SET ended_at=?,status=?,electricity_records=?,gas_records=? WHERE id=?", (utc_now(), status, counts["electricity"], counts["gas"], sync_id))
+            conn.execute(
+                "UPDATE sync_history SET ended_at=?,status=?,electricity_records=?,gas_records=? WHERE id=?",
+                (utc_now(), status, counts["electricity"], counts["gas"], sync_id),
+            )
             conn.commit()
-            return {"status": status, "meters": len(meters), "has_readings": bool(sum(counts.values())), "empty_meters": empty_meters, **counts}
+            return {
+                "status": status,
+                "meters": len(meters),
+                "has_readings": bool(sum(counts.values())),
+                "empty_meters": empty_meters,
+                **counts,
+            }
         recompute_daily_costs(conn)
-        conn.execute("UPDATE sync_history SET ended_at=?,status=?,electricity_records=?,gas_records=? WHERE id=?", (utc_now(), "success", counts["electricity"], counts["gas"], sync_id))
+        conn.execute(
+            "UPDATE sync_history SET ended_at=?,status=?,electricity_records=?,gas_records=? WHERE id=?",
+            (utc_now(), "success", counts["electricity"], counts["gas"], sync_id),
+        )
         conn.commit()
         return {"status": "success", "meters": len(meters), "has_readings": True, "empty_meters": 0, **counts}
     except Exception as exc:
         conn.rollback()
-        conn.execute("UPDATE sync_history SET ended_at=?,status=?,error_category=? WHERE id=?", (utc_now(), "failed", type(exc).__name__, sync_id)); conn.commit()
+        conn.execute(
+            "UPDATE sync_history SET ended_at=?,status=?,error_category=? WHERE id=?",
+            (utc_now(), "failed", type(exc).__name__, sync_id),
+        )
+        conn.commit()
         raise
-    finally: conn.close()
+    finally:
+        conn.close()
 
 
 def main() -> int:
@@ -94,4 +170,5 @@ def main() -> int:
         return 1
 
 
-if __name__ == "__main__": raise SystemExit(main())
+if __name__ == "__main__":
+    raise SystemExit(main())

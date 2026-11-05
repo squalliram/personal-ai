@@ -13,9 +13,9 @@ Local collection, analysis, dashboard generation and read-only MCP tools are val
 - Eight read-only MCP tools with initialization, discovery, validated calls and safe errors. MCP does not create or migrate databases; legacy derived schemas require a local refresh first.
 - Protected cPanel publication safeguards, strict SSH host-key checks and tested-commit verification. These checks are not evidence that publication happened.
 
-## Validation evidence
+## Validation before upstream reconciliation
 
-Independent final checks on this working tree:
+Independent checks on the pre-reconciliation readiness checkpoint:
 
 - `python3 -m unittest discover -s tests -v`: **76 tests passed**, 1.257 seconds. This includes dashboard JavaScript checks and 15 MCP subprocess tests.
 - Python AST parsing: all 15 files in `octopus_energy/` and `tests/` passed.
@@ -25,6 +25,28 @@ Independent final checks on this working tree:
 - Independent MCP review passed: all eight tools, unchanged legacy database on refusal, then real report migration with unavailable gas values and preserved raw readings.
 
 The integration owner separately reports a successful fresh-process **default 400-day** `./scripts/start-energy.sh` run: exit 0 in **40.37 seconds**, no stderr, both fuels accessible, successful history and generated temporary reports/dashboard. The original checkout data was untouched. An earlier 180-second timeout was resolved by bounded 1,000-record API pages. This live check is separate from the synthetic tests above.
+
+## Validation after upstream reconciliation
+
+Final checks on the reconciled application and workflow safety changes:
+
+- Python 3.12 `-m unittest discover -s tests -v`: **94 tests passed**, 6.107 seconds.
+- Required `python3 -m unittest discover -s tests -v`: **94 tests passed**, 6.741 seconds.
+- Pinned Ruff **0.16.10** lint and formatting checks: passed across all 27 Python files.
+- Dashboard Node tests, JavaScript syntax and all three energy shell-script syntax checks: passed.
+- Nine isolated release tests exercise the real workflow commands without network access. They cover valid deployment, dirty/wrong-branch/divergent checkouts, superseded or mismatched commits, sync failure, invalid paths/SHA and deployment-queue guards. Invalid configuration explicitly exits before SSH, including on macOS Bash 3.2.
+- Independent merged-backend review passed fresh/incremental/repeated ingestion, backfill, historical tariffs, WAL snapshots, rollback and unavailable gas-value checks.
+- No unresolved merge paths or conflict markers remain. Repository checks pass; publication and deployment remain blocked on the hosting prerequisites below.
+
+The integration owner reports the merged fresh-process **default 400-day** collection completing in **6.45 seconds**, followed by an idempotent repeat in **4.84 seconds**, with independent provider interval-count checks. These are read-only live-source checks, not website deployment evidence.
+
+## Release preparation
+
+Deployment through GitHub is now separately authorized, but no release or deployment has occurred. Reconciliation preserves incremental collection, seven-day backfill, WAL/batched writes, Python 3.10+ and pinned Ruff checks. Merged tests and fresh-process collection measurements pass; hosting prerequisites remain the release blocker.
+
+GitHub read-only checks found no configured deployment secrets: `CPANEL_SSH_HOST`, `CPANEL_SSH_USERNAME`, `CPANEL_SSH_PRIVATE_KEY`, `CPANEL_SSH_KNOWN_HOSTS`, `CPANEL_APP_PATH` and `CPANEL_DASHBOARD_PATH` are all absent. The latest green deployment workflow skipped its deployment job; it did not update the website.
+
+At **13:28:15 Europe/London**, the hosting owner verified an authenticated cPanel session and the expected private repository clone with the correct GitHub origin. Its displayed commit, `7bec26d4bfd822cd7e52f77ab3cb2f7ab6ddf35a`, predates the readiness work. Python version, environment-file presence, target protection/artifacts and a usable deployment mechanism are still being checked read-only. No pull/deploy control was activated. Public dashboard authentication is not a substitute for this hosting access.
 
 ## Existing website verification
 
@@ -43,11 +65,11 @@ Earlier embedded-browser retries reopened and selected the confirmed HTTPS tab. 
 
 The user subsequently reported signing in. At **13:12:11 Europe/London on 5 November 2026**, the read-only checker found that this agent's assigned browser context was not on the confirmed HTTPS origin or dashboard path. Its same-origin guard therefore made **no page or JSON requests**. A minimal tab-metadata check found no existing tab at the confirmed dashboard URL in that assigned session. This is a browser-context mismatch, not evidence that the user's credentials failed. No unrelated page content, credentials or household values were read.
 
-Authenticated page/JSON status, schema, export time, per-fuel reading freshness, authenticated cache headers and deployed source linkage remain **unverified** until the signed-in dashboard is available in the same authorized browser context. No server SSH credentials or session are available, so the server-side `.env` and actual server refresh/deploy configuration also remain unverified. Website verification does not authorize a source-refresh schedule or deployment.
+Authenticated page/JSON status, schema, export time, per-fuel reading freshness, authenticated cache headers and deployed source linkage remain **unverified** until the signed-in dashboard is available in the same authorized browser context. Hosting sign-in has since been verified, as noted above, but server-side `.env` and the actual refresh/deploy configuration remain under read-only inspection. Website verification does not authorize a source-refresh schedule or deployment.
 
 After separate authorization, one new pinned tab was requested at the confirmed HTTPS URL in the same assigned embedded browser to reuse any existing login. That attempt did not expose a usable dashboard tab. An offline browser diagnostic passed, and the subsequent assigned-session tab listing still contained no confirmed dashboard tab. Tab creation was not retried, and no authenticated HTML/JSON requests were made.
 
-Verification stopped there. No alternate browser/profile was opened, no authentication guesses or cookie/state exports were attempted, and no server or security configuration was changed.
+That dashboard-browser verification stopped there. No alternate browser/profile was opened, no authentication guesses or cookie/state exports were attempted, and no server or security configuration was changed.
 
 ## Limits and outstanding work
 
