@@ -30,7 +30,7 @@ It does **not** identify appliances. Half-hourly meter data measures the whole p
 
 1. cPanel hosts a clone at `/home/iramkhan/personal-ai` outside the public web root.
 2. A server-side `.env` in that directory supplies `ACCOUNT_NUMBER` and `API_KEY`.
-3. `scripts/start-energy.sh` uses `$PYTHON` or the first Python 3.10+ it finds, including CloudLinux's `/opt/alt/python3*/bin/python3`, because the server's default `python3` may be older.
+3. `scripts/start-energy.sh` and `scripts/publish-energy-dashboard.sh` use `$PYTHON` or the first Python 3.10+ found by `scripts/find-python.sh`, including CloudLinux's `/opt/alt/python3*/bin/python3`, because the server's default `python3` may be older.
 4. A successful GitHub `Test` workflow for a push to this repository's `main` branch triggers `Deploy protected energy dashboard`.
 5. A configuration step checks all six deployment secrets. If any are absent, the connection and deployment steps are skipped.
 6. Only successful, configured runs proceed. Each tested commit has a separate GitHub concurrency group, so a late older completion cannot replace a different commit's pending job.
