@@ -9,10 +9,6 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: deploy-dashboard
-  cancel-in-progress: false
-
 jobs:
   # The secrets context is not available in job-level `if:`, so check presence here.
   preflight:
@@ -46,6 +42,10 @@ jobs:
     needs: preflight
     if: needs.preflight.outputs.ready == 'true'
     runs-on: ubuntu-latest
+    # Job-level so only runs that passed Test and preflight wait in the deploy queue.
+    concurrency:
+      group: deploy-dashboard
+      cancel-in-progress: false
     steps:
       - name: Configure deployment key
         env:
@@ -62,9 +62,14 @@ jobs:
           CPANEL_SSH_USERNAME: ${{ secrets.CPANEL_SSH_USERNAME }}
           CPANEL_APP_PATH: ${{ secrets.CPANEL_APP_PATH }}
           CPANEL_DASHBOARD_PATH: ${{ secrets.CPANEL_DASHBOARD_PATH }}
+          # Deploy exactly the commit Test checked; a newer main commit is deployed by its own run.
+          DEPLOY_SHA: ${{ github.event.workflow_run.head_sha }}
         run: >-
           ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes
           "$CPANEL_SSH_USERNAME@$CPANEL_SSH_HOST"
-          "cd '$CPANEL_APP_PATH' && git fetch origin main && git reset --hard origin/main &&
+          "cd '$CPANEL_APP_PATH' && git fetch origin main &&
+          if [ \"\$(git rev-parse origin/main)\" != '$DEPLOY_SHA' ]; then
+          echo 'origin/main has moved past the tested commit; skipping deploy.'; exit 0; fi &&
+          git reset --hard '$DEPLOY_SHA' &&
           ./scripts/start-energy.sh --days 90 &&
           DASHBOARD_TARGET='$CPANEL_DASHBOARD_PATH' ./scripts/publish-energy-dashboard.sh"
