@@ -62,6 +62,8 @@ jobs:
         env:
           CPANEL_SSH_HOST: ${{ secrets.CPANEL_SSH_HOST }}
           CPANEL_SSH_USERNAME: ${{ secrets.CPANEL_SSH_USERNAME }}
+          # Optional; defaults to 22.
+          CPANEL_SSH_PORT: ${{ secrets.CPANEL_SSH_PORT }}
           CPANEL_APP_PATH: ${{ secrets.CPANEL_APP_PATH }}
           CPANEL_DASHBOARD_PATH: ${{ secrets.CPANEL_DASHBOARD_PATH }}
           DEPLOY_SHA: ${{ github.event.workflow_run.head_sha }}
@@ -70,7 +72,8 @@ jobs:
           [[ "$CPANEL_APP_PATH" =~ ^/[a-zA-Z0-9_./-]+$ ]] || exit 1
           [[ "$CPANEL_DASHBOARD_PATH" =~ ^/[a-zA-Z0-9_./-]+$ ]] || exit 1
           [[ "$DEPLOY_SHA" =~ ^[a-f0-9]{40}$ ]] || exit 1
-          ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes -o StrictHostKeyChecking=yes \
+          [[ "${CPANEL_SSH_PORT:-22}" =~ ^[0-9]+$ ]] || exit 1
+          ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes -o StrictHostKeyChecking=yes -p "${CPANEL_SSH_PORT:-22}" \
             "$CPANEL_SSH_USERNAME@$CPANEL_SSH_HOST" \
             "cd '$CPANEL_APP_PATH' && command -v flock >/dev/null && test -d .git && \
             exec 9>.git/energy-dashboard.deploy.lock && flock -x 9 && \

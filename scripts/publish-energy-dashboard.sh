@@ -5,8 +5,9 @@ set -eu
 
 dashboard_dir="${DASHBOARD_DIR:-reports/energy/dashboard}"
 target_dir="${DASHBOARD_TARGET:?Set DASHBOARD_TARGET to the protected web directory}"
+. "$(dirname "$0")/find-python.sh"
 
-python3 - "$dashboard_dir" "$target_dir" <<'PY'
+"$PYTHON" - "$dashboard_dir" "$target_dir" <<'PY'
 import os
 from pathlib import Path
 import shlex

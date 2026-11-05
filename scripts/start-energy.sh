@@ -1,3 +1,4 @@
 #!/bin/sh
 set -eu
-exec python3 -m octopus_energy.cli "$@"
+. "$(dirname "$0")/find-python.sh"
+exec "$PYTHON" -m octopus_energy.cli "$@"

@@ -30,18 +30,20 @@ It does **not** identify appliances. Half-hourly meter data measures the whole p
 
 1. cPanel hosts a clone at `/home/iramkhan/personal-ai` outside the public web root.
 2. A server-side `.env` in that directory supplies `ACCOUNT_NUMBER` and `API_KEY`.
-3. A successful GitHub `Test` workflow for a push to this repository's `main` branch triggers `Deploy protected energy dashboard`.
-4. A configuration step checks all six deployment secrets. If any are absent, the connection and deployment steps are skipped.
-5. Only successful, configured runs proceed. Each tested commit has a separate GitHub concurrency group, so a late older completion cannot replace a different commit's pending job.
-6. The job SSHes with strict pinned host-key checking and acquires an exclusive `flock` on `.git/energy-dashboard.deploy.lock`. This server lock covers checkout checks, collection and publication. It refuses a dirty checkout or a branch other than `main`, fetches `main`, and skips a run if remote `main` has moved past its tested commit. It fast-forwards the clean clone to the exact tested commit, never resetting away server changes. A divergent checkout fails closed.
-7. It runs a read-only incremental sync (90-day window on the first run), generates the dashboard, and fetches `main` again. A failed sync/fetch, changed checkout, or `main` moving during collection prevents publication. It copies only `index.html` and `data.json` to the protected web directory. Each file is replaced atomically; `.htaccess` and other existing files are preserved.
+3. `scripts/start-energy.sh` and `scripts/publish-energy-dashboard.sh` use `$PYTHON` or the first Python 3.10+ found by `scripts/find-python.sh`, including CloudLinux's `/opt/alt/python3*/bin/python3`, because the server's default `python3` may be older.
+4. A successful GitHub `Test` workflow for a push to this repository's `main` branch triggers `Deploy protected energy dashboard`.
+5. A configuration step checks all six deployment secrets. If any are absent, the connection and deployment steps are skipped.
+6. Only successful, configured runs proceed. Each tested commit has a separate GitHub concurrency group, so a late older completion cannot replace a different commit's pending job.
+7. The job SSHes with strict pinned host-key checking and acquires an exclusive `flock` on `.git/energy-dashboard.deploy.lock`. This server lock covers checkout checks, collection and publication. It refuses a dirty checkout or a branch other than `main`, fetches `main`, and skips a run if remote `main` has moved past its tested commit. It fast-forwards the clean clone to the exact tested commit, never resetting away server changes. A divergent checkout fails closed.
+8. It runs a read-only incremental sync (90-day window on the first run), generates the dashboard, and fetches `main` again. A failed sync/fetch, changed checkout, or `main` moving during collection prevents publication. It copies only `index.html` and `data.json` to the protected web directory. Each file is replaced atomically; `.htaccess` and other existing files are preserved.
 
 Required GitHub repository secrets:
 
 - `CPANEL_SSH_HOST`
 - `CPANEL_SSH_USERNAME`
 - `CPANEL_SSH_PRIVATE_KEY`
-- `CPANEL_SSH_KNOWN_HOSTS`
+- `CPANEL_SSH_KNOWN_HOSTS` (`ssh-keyscan -p <port> <host>` output; non-22 ports appear as `[host]:port`)
+- `CPANEL_SSH_PORT` (optional, defaults to 22)
 - `CPANEL_APP_PATH` (`/home/iramkhan/personal-ai`)
 - `CPANEL_DASHBOARD_PATH` (the protected cPanel directory for `/energy-usage`)
 
