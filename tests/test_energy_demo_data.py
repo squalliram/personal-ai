@@ -14,6 +14,9 @@ from pathlib import Path
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
+from octopus_energy.cli import sync
+from octopus_energy.client import Meter
+
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "energy-demo-data.py"
 SPEC = importlib.util.spec_from_file_location("energy_demo_data", SCRIPT)
@@ -28,8 +31,34 @@ class EnergyDemoDataTests(unittest.TestCase):
         self.root = Path(self.directory.name)
 
     def snapshot(self, database):
-        with sqlite3.connect(database) as conn:
+        with contextlib.closing(sqlite3.connect(database)) as conn:
             return tuple(conn.iterdump())
+
+    def assert_force_refuses_without_changes(self, database, output, *, cli=False):
+        before = self.snapshot(database)
+        database_bytes = database.read_bytes()
+        wal = Path(str(database) + "-wal")
+        wal_bytes = wal.read_bytes() if wal.exists() else None
+        files = {path.name: path.read_bytes() for path in output.iterdir()}
+        if cli:
+            argv = [str(SCRIPT), "--database", str(database), "--output-dir", str(output), "--force"]
+            with (
+                patch.object(sys, "argv", argv),
+                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(io.StringIO()) as stderr,
+                self.assertRaises(SystemExit) as exited,
+            ):
+                runpy.run_path(str(SCRIPT), run_name="__main__")
+            self.assertEqual(exited.exception.code, 2)
+            self.assertIn("not exclusively synthetic demo data", stderr.getvalue())
+        else:
+            with self.assertRaisesRegex(FileExistsError, "not exclusively synthetic demo data"):
+                DEMO.generate_demo(database, output, force=True)
+        self.assertEqual(self.snapshot(database), before)
+        self.assertEqual(database.read_bytes(), database_bytes)
+        if wal_bytes:
+            self.assertEqual(wal.read_bytes(), wal_bytes)
+        self.assertEqual({path.name: path.read_bytes() for path in output.iterdir()}, files)
 
     def test_cli_generates_both_fuels_anomalies_and_public_safe_exports_without_network(self):
         database, output = self.root / "demo.sqlite3", self.root / "site"
@@ -116,6 +145,139 @@ class EnergyDemoDataTests(unittest.TestCase):
         with self.assertRaises(FileExistsError):
             DEMO.generate_demo(database, self.root / "site")
         self.assertEqual(database.read_bytes(), before)
+
+    def test_force_preserves_non_demo_data_added_by_real_sync_even_in_wal(self):
+        for hold_wal in (False, True):
+            with self.subTest(hold_wal=hold_wal), contextlib.ExitStack() as stack:
+                database = self.root / f"mixed-{hold_wal}.sqlite3"
+                output = self.root / f"site-{hold_wal}"
+                DEMO.generate_demo(database, output)
+                if hold_wal:
+                    keeper = stack.enter_context(contextlib.closing(sqlite3.connect(database)))
+                    keeper.execute("PRAGMA wal_autocheckpoint=0")
+                    keeper.execute("SELECT COUNT(*) FROM accounts").fetchone()
+                with (
+                    patch("octopus_energy.cli.OctopusClient") as client,
+                    patch("octopus_energy.cli.utc_now", return_value="2026-11-05T12:00:00Z"),
+                    patch("socket.socket.connect", side_effect=AssertionError("No network")),
+                    patch("socket.create_connection", side_effect=AssertionError("No network")),
+                ):
+                    client.return_value.account.return_value = {}
+                    client.return_value.meters.return_value = [
+                        Meter("electricity", "non-demo-point", "non-demo-meter", "non-demo-tariff", None, None)
+                    ]
+                    client.return_value.consumption.return_value = [
+                        {
+                            "interval_start": "2026-11-04T12:00:00Z",
+                            "interval_end": "2026-11-04T12:30:00Z",
+                            "consumption": 1.25,
+                        }
+                    ]
+                    client.return_value.tariff_rates.return_value = [
+                        {
+                            "valid_from": "2020-01-01T00:00:00Z",
+                            "valid_to": None,
+                            "value_inc_vat": 21,
+                        }
+                    ]
+                    result = sync(database, "non-demo-account", "test-key", 2, gas_units="kwh")
+                self.assertEqual(result["status"], "success")
+                with contextlib.closing(sqlite3.connect(database)) as conn:
+                    self.assertEqual(
+                        conn.execute("SELECT value FROM energy_settings WHERE name='synthetic_demo'").fetchone(),
+                        (DEMO.DEMO_MARKER,),
+                    )
+                    self.assertEqual(
+                        conn.execute(
+                            "SELECT account_number FROM accounts WHERE account_number='non-demo-account'"
+                        ).fetchone(),
+                        ("non-demo-account",),
+                    )
+                    self.assertEqual(
+                        conn.execute(
+                            "SELECT c.consumption_kwh FROM consumption c JOIN meters m ON m.id=c.meter_id "
+                            "WHERE m.point_id='non-demo-point'"
+                        ).fetchone(),
+                        (1.25,),
+                    )
+                if hold_wal:
+                    self.assertGreater(Path(str(database) + "-wal").stat().st_size, 0)
+                self.assertFalse(DEMO._is_demo_database(database))
+                self.assert_force_refuses_without_changes(database, output, cli=hold_wal)
+
+    def test_force_requires_exact_demo_identities_and_no_other_identity_storage(self):
+        source, output = self.root / "source.sqlite3", self.root / "site"
+        DEMO.generate_demo(source, output)
+        pristine = source.read_bytes()
+        mutations = {
+            "extra-account": "INSERT INTO accounts VALUES('non-demo-account','{}','test')",
+            "similar-demo-account": "UPDATE accounts SET account_number='DEMO-ACCOUNT-NOT-REAL-OTHER'",
+            "missing-account": "DELETE FROM accounts",
+            "account-payload": """UPDATE accounts SET payload_json='{"account":"non-demo-account"}'""",
+            "extra-meter": (
+                "INSERT INTO meters(fuel,point_id,serial_number,tariff_code,synced_at) "
+                "VALUES('gas','DEMO-OTHER-POINT','DEMO-OTHER-METER','DEMO-OTHER-TARIFF','test')"
+            ),
+            "meter-point": "UPDATE meters SET point_id='non-demo-point' WHERE id=1",
+            "meter-serial": "UPDATE meters SET serial_number='non-demo-meter' WHERE id=1",
+            "meter-tariff": "UPDATE meters SET tariff_code='non-demo-tariff' WHERE id=1",
+            "missing-meter": "DELETE FROM meters WHERE id=2",
+            "other-settings": "INSERT INTO energy_settings VALUES('account_number','non-demo-account')",
+            "other-identity-table": (
+                "CREATE TABLE other_accounts(account_number TEXT);INSERT INTO other_accounts VALUES('non-demo-account')"
+            ),
+            "sqlite-like-identity-table": (
+                "CREATE TABLE sqliteXaccounts(account_number TEXT);"
+                "INSERT INTO sqliteXaccounts VALUES('non-demo-account')"
+            ),
+            "orphan-consumption": (
+                "INSERT INTO consumption VALUES(999,'2026-11-04T12:00:00Z','2026-11-04T12:30:00Z',1)"
+            ),
+            "orphan-tariff": (
+                "INSERT INTO tariff_rates VALUES(999,'standard-unit-rates','2026-11-04T12:00:00Z',NULL,1)"
+            ),
+            "other-history": "INSERT INTO sync_history(started_at,status) VALUES('test','failed')",
+            "other-anomaly": (
+                "INSERT INTO anomalies(detected_at,date,fuel,kind,detail) "
+                "VALUES('test','2026-11-04','electricity','test','non-demo detail')"
+            ),
+            "other-recommendation": (
+                "INSERT INTO savings_recommendations(created_at,category,recommendation) "
+                "VALUES('test','test','non-demo recommendation')"
+            ),
+        }
+        for name, mutation in mutations.items():
+            with self.subTest(name=name):
+                database = self.root / f"{name}.sqlite3"
+                database.write_bytes(pristine)
+                with contextlib.closing(sqlite3.connect(database)) as conn:
+                    conn.executescript(mutation)
+                self.assert_force_refuses_without_changes(database, output)
+
+    def test_force_rechecks_identities_after_preflight_before_deleting(self):
+        database, output = self.root / "race.sqlite3", self.root / "site"
+        DEMO.generate_demo(database, output)
+        original_check = DEMO._is_demo_database
+        expected = None
+        files = {path.name: path.read_bytes() for path in output.iterdir()}
+
+        def add_account_after_preflight(path):
+            nonlocal expected
+            self.assertTrue(original_check(path))
+            with contextlib.closing(sqlite3.connect(path)) as conn:
+                conn.execute("INSERT INTO accounts VALUES('non-demo-account','{}','test')")
+                conn.commit()
+            expected = self.snapshot(path)
+            return True
+
+        with (
+            patch.object(DEMO, "_is_demo_database", side_effect=add_account_after_preflight),
+            self.assertRaisesRegex(FileExistsError, "not exclusively synthetic demo data"),
+        ):
+            DEMO.generate_demo(database, output, force=True)
+        self.assertIsNotNone(expected)
+        self.assertEqual(self.snapshot(database), expected)
+        self.assertEqual({path.name: path.read_bytes() for path in output.iterdir()}, files)
 
 
 if __name__ == "__main__":

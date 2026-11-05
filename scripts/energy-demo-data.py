@@ -21,18 +21,97 @@ LONDON = ZoneInfo("Europe/London")
 DEFAULT_END_DATE = date(2026, 11, 4)
 DEMO_MARKER = "energy-demo-data-v1"
 DAYS = 400
+DEMO_ACCOUNT = "DEMO-ACCOUNT-NOT-REAL"
+DEMO_METERS = {
+    fuel: (f"DEMO-{fuel.upper()}-POINT", f"DEMO-{fuel.upper()}-METER", f"DEMO-{fuel.upper()}-FIXED")
+    for fuel in ("electricity", "gas")
+}
+DEMO_TABLES = (
+    "consumption",
+    "tariff_rates",
+    "daily_costs",
+    "anomalies",
+    "savings_recommendations",
+    "meters",
+    "accounts",
+    "sync_history",
+    "energy_settings",
+)
+REFUSE_OVERWRITE = "Refusing to overwrite a database that is not exclusively synthetic demo data."
 
 
 def _utc(value: datetime) -> str:
     return value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _has_only_demo_data(conn: sqlite3.Connection) -> bool:
+    """Fail closed if a sync or another application has added non-demo data."""
+    try:
+        objects = {
+            tuple(row) for row in conn.execute("SELECT type,name FROM sqlite_master WHERE name NOT GLOB 'sqlite_*'")
+        }
+        if objects != {("table", name) for name in DEMO_TABLES}:
+            return False
+        settings = dict(conn.execute("SELECT name,value FROM energy_settings"))
+        if set(settings) != {"synthetic_demo", "demo_seed", "demo_end_date", "gas_units"}:
+            return False
+        if settings["synthetic_demo"] != DEMO_MARKER or settings["gas_units"] != "kwh":
+            return False
+        end_date = date.fromisoformat(settings["demo_end_date"])
+        if (
+            end_date.isoformat() != settings["demo_end_date"]
+            or str(int(settings["demo_seed"])) != settings["demo_seed"]
+        ):
+            return False
+        start = datetime.combine(end_date - timedelta(days=DAYS - 1), datetime.min.time(), LONDON)
+        stop = datetime.combine(end_date + timedelta(days=1), datetime.min.time(), LONDON)
+        synced_at = _utc(stop + timedelta(hours=1))
+        accounts = [tuple(row) for row in conn.execute("SELECT account_number,payload_json,synced_at FROM accounts")]
+        if accounts != [(DEMO_ACCOUNT, "{}", synced_at)]:
+            return False
+        meters = [
+            tuple(row)
+            for row in conn.execute(
+                "SELECT id,fuel,point_id,serial_number,tariff_code,valid_from,valid_to,synced_at FROM meters ORDER BY id"
+            )
+        ]
+        expected_meters = [
+            (index, fuel, *identity, _utc(start), None, synced_at)
+            for index, (fuel, identity) in enumerate(DEMO_METERS.items(), 1)
+        ]
+        if meters != expected_meters or conn.execute("PRAGMA foreign_key_check").fetchone():
+            return False
+        intervals = int((stop.astimezone(timezone.utc) - start.astimezone(timezone.utc)).total_seconds() / 1800)
+        for table, count in (("consumption", intervals), ("tariff_rates", 4)):
+            counts = [
+                tuple(row)
+                for row in conn.execute(f"SELECT meter_id,COUNT(*) FROM {table} GROUP BY meter_id ORDER BY meter_id")
+            ]
+            if counts != [(1, count), (2, count)]:
+                return False
+        history = [
+            tuple(row)
+            for row in conn.execute(
+                "SELECT started_at,ended_at,status,electricity_records,gas_records,error_category FROM sync_history"
+            )
+        ]
+        if history != [(synced_at, synced_at, "success", intervals, intervals, None)]:
+            return False
+        for table in ("anomalies", "savings_recommendations"):
+            if conn.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone():
+                return False
+        return not conn.execute("SELECT 1 FROM daily_costs WHERE fuel NOT IN ('electricity','gas') LIMIT 1").fetchone()
+    except (sqlite3.DatabaseError, ValueError, TypeError, OverflowError):
+        return False
+
+
 def _is_demo_database(database: Path) -> bool:
     try:
-        conn = sqlite3.connect(database.resolve().as_uri() + "?mode=ro&immutable=1", uri=True)
+        # Immutable mode ignores a live WAL and can miss newly synced identities.
+        conn = sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True)
         try:
-            row = conn.execute("SELECT value FROM energy_settings WHERE name='synthetic_demo'").fetchone()
-            return row == (DEMO_MARKER,)
+            conn.execute("BEGIN")
+            return _has_only_demo_data(conn)
         finally:
             conn.close()
     except (sqlite3.DatabaseError, OSError):
@@ -71,11 +150,12 @@ def generate_demo(
     force: bool = False,
 ) -> dict:
     """Write deterministic fake data, then use the real report/export entry points."""
-    if database.exists():
+    replacing = database.exists()
+    if replacing:
         if not force:
             raise FileExistsError("Database exists; use --force only to regenerate a synthetic demo.")
         if not _is_demo_database(database):
-            raise FileExistsError("Refusing to overwrite a database not created by this demo generator.")
+            raise FileExistsError(REFUSE_OVERWRITE)
 
     # Support invocation by absolute path from outside the repository.
     root = str(Path(__file__).resolve().parents[1])
@@ -95,31 +175,30 @@ def generate_demo(
     conn = connect(database)
     try:
         with conn:
+            # Revalidate after locking out writers, not just in the read-only preflight.
+            conn.execute("BEGIN IMMEDIATE")
+            if replacing and not _has_only_demo_data(conn):
+                raise FileExistsError(REFUSE_OVERWRITE)
             conn.execute("CREATE TABLE IF NOT EXISTS energy_settings (name TEXT PRIMARY KEY, value TEXT NOT NULL)")
-            for table in (
-                "consumption",
-                "tariff_rates",
-                "daily_costs",
-                "anomalies",
-                "savings_recommendations",
-                "meters",
-                "accounts",
-                "sync_history",
-                "energy_settings",
+            if not replacing and any(
+                conn.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone() for table in DEMO_TABLES
             ):
+                raise FileExistsError(REFUSE_OVERWRITE)
+            for table in DEMO_TABLES:
                 conn.execute(f"DELETE FROM {table}")
             conn.executemany(
                 "INSERT INTO energy_settings(name,value) VALUES(?,?)",
                 (("synthetic_demo", DEMO_MARKER), ("demo_seed", str(seed)), ("demo_end_date", end_date.isoformat())),
             )
-            upsert_account(conn, "DEMO-ACCOUNT-NOT-REAL", synced_at)
+            upsert_account(conn, DEMO_ACCOUNT, synced_at)
             for fuel, prices in (("electricity", ((24.5, 58), (26.2, 62))), ("gas", ((6.3, 31), (6.8, 32)))):
+                point_id, serial, tariff_code = DEMO_METERS[fuel]
                 meter = upsert_meter(
                     conn,
                     fuel=fuel,
-                    point_id=f"DEMO-{fuel.upper()}-POINT",
-                    serial=f"DEMO-{fuel.upper()}-METER",
-                    tariff_code=f"DEMO-{fuel.upper()}-FIXED",
+                    point_id=point_id,
+                    serial=serial,
+                    tariff_code=tariff_code,
                     valid_from=_utc(start),
                     valid_to=None,
                     synced_at=synced_at,

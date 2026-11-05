@@ -62,7 +62,7 @@ python3 -m http.server 8765 --bind 127.0.0.1 --directory /tmp/energy-demo-dashbo
 
 Open `http://127.0.0.1:8765/` and look for **SYNTHETIC DEMO · FAKE DATA**. The SQLite file stays outside the served directory. Stop the server with Ctrl-C before reusing its port.
 
-Keep these separate demo paths: generated files in the output directory are replaced, so never point it at real reports. To regenerate an existing demo, add `--force` to the generator command; it refuses to overwrite a database not marked as its own synthetic demo.
+Keep these separate demo paths: generated files in the output directory are replaced, so never point it at real reports. To regenerate an existing demo, add `--force` to the generator command. It verifies the demo marker and exact fake identities again under a database write lock, refusing mixed or real data even if an old demo marker remains.
 
 The seed and end date reproduce the fake readings, not export timestamps. This fixed historical end date can produce stale-reading warnings later; that is expected. Longer-period views may have too few complete periods for a high-point assessment.
 
@@ -136,6 +136,8 @@ Missing required tariff coverage makes costs unavailable, never zero. Estimates 
 | `data/octopus_energy.sqlite3` | Local readings, rates, unit settings, derived costs and sync history |
 
 Real generated data is Git-ignored. Dashboard JSON omits account numbers, meter points and serial numbers, but household totals are still private. Only synthetic documentation assets may be committed.
+
+The theme loads Google Fonts, sending normal browser request metadata such as IP address and site origin, not energy readings. Local fallback fonts work if that request is blocked.
 
 ## Deployment
 
