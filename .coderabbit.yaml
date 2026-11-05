@@ -15,9 +15,9 @@ reviews:
     - "!reports/**"
     - "!**/*.sqlite3"
   tools:
-    # No Ruff or Pylint configuration exists in this repo; enable once configured.
+    # Ruff is configured in pyproject.toml; there is no Pylint configuration.
     ruff:
-      enabled: false
+      enabled: true
     pylint:
       enabled: false
 

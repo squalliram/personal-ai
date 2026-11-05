@@ -7,10 +7,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .analytics import recompute_daily_costs
-from .client import OctopusAPIError, OctopusClient, utc_now
+from .client import Agreement, OctopusAPIError, OctopusClient, utc_now
 from .dashboard import write_dashboard
 from .reports import write_reports
-from .storage import connect, upsert_account, upsert_consumption, upsert_meter, upsert_rate
+from .storage import connect, upsert_account, upsert_agreements, upsert_consumption, upsert_meter, upsert_rate
 
 
 def load_env(path: Path) -> dict[str, str]:
@@ -46,6 +46,10 @@ def _consumption_resume_from(watermark: str | None, default_from: str) -> str:
     return _iso_utc(min(mark, max(mark - CONSUMPTION_LOOKBACK, floor)))
 
 
+def _parse(instant: str) -> datetime:
+    return datetime.fromisoformat(instant.replace("Z", "+00:00"))
+
+
 def sync(database: Path, account_number: str, api_key: str, days: int = 400) -> dict:
     started = utc_now()
     conn = connect(database)
@@ -78,14 +82,31 @@ def sync(database: Path, account_number: str, api_key: str, days: int = 400) -> 
             counts[meter.fuel] += upsert_consumption(
                 conn, meter_id, client.consumption(meter, period_from=consumption_from)
             )
-            for kind in ("standard-unit-rates", "standing-charges"):
-                rates_from = _watermark(
-                    conn,
-                    "SELECT MAX(valid_from) FROM tariff_rates WHERE meter_id=? AND kind=?",
-                    (meter_id, kind),
-                    default_from,
-                )
-                upsert_rate(conn, meter_id, kind, client.tariff_rates(meter, kind, period_from=rates_from))
+            agreements = meter.agreements or (
+                (Agreement(meter.tariff_code, meter.valid_from, meter.valid_to),) if meter.tariff_code else ()
+            )
+            upsert_agreements(conn, meter_id, [(a.tariff_code, a.valid_from, a.valid_to) for a in agreements])
+            for agreement in agreements:
+                window_from = default_from
+                if agreement.valid_from and _parse(agreement.valid_from) > _parse(default_from):
+                    window_from = agreement.valid_from
+                if agreement.valid_to and _parse(agreement.valid_to) <= _parse(window_from):
+                    continue
+                for kind in ("standard-unit-rates", "standing-charges"):
+                    rates_from = _watermark(
+                        conn,
+                        "SELECT MAX(valid_from) FROM tariff_rates WHERE meter_id=? AND tariff_code=? AND kind=?",
+                        (meter_id, agreement.tariff_code, kind),
+                        window_from,
+                    )
+                    rates = client.tariff_rates(
+                        meter,
+                        kind,
+                        period_from=rates_from,
+                        period_to=agreement.valid_to,
+                        tariff_code=agreement.tariff_code,
+                    )
+                    upsert_rate(conn, meter_id, kind, rates, tariff_code=agreement.tariff_code)
         recompute_daily_costs(conn)
         conn.execute(
             "UPDATE sync_history SET ended_at=?,status=?,electricity_records=?,gas_records=? WHERE id=?",

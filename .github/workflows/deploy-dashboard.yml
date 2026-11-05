@@ -43,9 +43,11 @@ jobs:
     if: needs.preflight.outputs.ready == 'true'
     runs-on: ubuntu-latest
     # Job-level so only runs that passed Test and preflight wait in the deploy queue.
+    # queue: max keeps every pending run, so an older one can't replace the newest commit's run.
     concurrency:
       group: deploy-dashboard
       cancel-in-progress: false
+      queue: max
     steps:
       - name: Configure deployment key
         env:

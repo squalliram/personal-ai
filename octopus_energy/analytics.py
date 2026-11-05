@@ -14,9 +14,12 @@ def _local_date(instant: str) -> str:
 
 
 def _rate(conn: sqlite3.Connection, meter_id: int, kind: str, instant: str) -> float:
+    """Rate of the tariff whose agreement covers `instant`, so a previous tariff's rows never apply."""
     row = conn.execute(
-        "SELECT value_inc_vat FROM tariff_rates WHERE meter_id=? AND kind=? AND valid_from<=? AND (valid_to IS NULL OR valid_to>?) ORDER BY valid_from DESC LIMIT 1",
-        (meter_id, kind, instant, instant),
+        "SELECT r.value_inc_vat FROM tariff_rates r JOIN agreements a ON a.meter_id=r.meter_id AND a.tariff_code=r.tariff_code"
+        " WHERE r.meter_id=? AND r.kind=? AND a.valid_from<=? AND (a.valid_to IS NULL OR a.valid_to>?)"
+        " AND r.valid_from<=? AND (r.valid_to IS NULL OR r.valid_to>?) ORDER BY a.valid_from DESC, r.valid_from DESC LIMIT 1",
+        (meter_id, kind, instant, instant, instant, instant),
     ).fetchone()
     return float(row[0]) if row else 0.0
 

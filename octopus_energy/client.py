@@ -20,6 +20,13 @@ class OctopusAPIError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class Agreement:
+    tariff_code: str
+    valid_from: str | None
+    valid_to: str | None
+
+
+@dataclass(frozen=True)
 class Meter:
     fuel: str
     point_id: str
@@ -27,6 +34,7 @@ class Meter:
     tariff_code: str | None
     valid_from: str | None
     valid_to: str | None
+    agreements: tuple[Agreement, ...] = ()
 
 
 class OctopusClient:
@@ -85,6 +93,11 @@ class OctopusClient:
                 for point in prop.get(point_key, []):
                     agreements = point.get("agreements", [])
                     agreement = agreements[-1] if agreements else {}
+                    history = tuple(
+                        Agreement(a["tariff_code"], a.get("valid_from"), a.get("valid_to"))
+                        for a in agreements
+                        if a.get("tariff_code")
+                    )
                     for meter in point.get("meters", []):
                         serial = meter.get("serial_number")
                         if serial and point.get(id_key):
@@ -96,6 +109,7 @@ class OctopusClient:
                                     agreement.get("tariff_code"),
                                     agreement.get("valid_from"),
                                     agreement.get("valid_to"),
+                                    history,
                                 )
                             )
         return found
@@ -108,11 +122,17 @@ class OctopusClient:
         yield from self.paginated(endpoint, params)
 
     def tariff_rates(
-        self, meter: Meter, kind: str, period_from: str | None = None, period_to: str | None = None
+        self,
+        meter: Meter,
+        kind: str,
+        period_from: str | None = None,
+        period_to: str | None = None,
+        tariff_code: str | None = None,
     ) -> Iterator[dict[str, Any]]:
-        if not meter.tariff_code:
+        tariff_code = tariff_code or meter.tariff_code
+        if not tariff_code:
             return
-        endpoint = f"products/{product_code(meter.tariff_code)}/{meter.fuel}-tariffs/{meter.tariff_code}/{kind}/"
+        endpoint = f"products/{product_code(tariff_code)}/{meter.fuel}-tariffs/{tariff_code}/{kind}/"
         params = {key: value for key, value in {"period_from": period_from, "period_to": period_to}.items() if value}
         yield from self.paginated(endpoint, params)
 

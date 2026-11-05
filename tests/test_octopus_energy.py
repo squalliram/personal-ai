@@ -1,4 +1,5 @@
 import io
+import sqlite3
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -8,10 +9,10 @@ from unittest.mock import patch
 
 from octopus_energy import cli
 from octopus_energy.analytics import recompute_daily_costs
-from octopus_energy.client import PAGE_SIZE, Meter, OctopusClient, product_code
+from octopus_energy.client import PAGE_SIZE, Agreement, Meter, OctopusClient, product_code
 from octopus_energy.dashboard import dashboard_data, write_dashboard
 from octopus_energy.mcp_server import dispatch
-from octopus_energy.storage import connect, upsert_consumption, upsert_meter, upsert_rate
+from octopus_energy.storage import connect, upsert_agreements, upsert_consumption, upsert_meter, upsert_rate
 
 ACCOUNT = "A-PRIV4TE1"
 MPAN = "1900000000001"
@@ -79,6 +80,80 @@ class EnergyTests(unittest.TestCase):
             self.assertAlmostEqual(conn.execute("SELECT total_cost_gbp FROM daily_costs").fetchone()[0], 0.7)
             conn.close()
             self.assertEqual(dispatch("get_energy_summary", {}, db)[0]["total_cost_gbp"], 0.7)
+
+    def test_costs_use_the_tariff_active_for_each_interval(self):
+        with tempfile.TemporaryDirectory() as directory:
+            conn = connect(Path(directory) / "energy.sqlite3")
+            meter = upsert_meter(
+                conn,
+                fuel="electricity",
+                point_id="123",
+                serial="abc",
+                tariff_code="E-1R-NEW-26-01-01-A",
+                valid_from="2026-11-01T00:00:00Z",
+                valid_to=None,
+                synced_at="2026-11-05T00:00:00Z",
+            )
+            upsert_agreements(conn, meter, [("E-1R-OLD-26-01-01-A", "2026-01-01T00:00:00Z", "2026-11-01T00:00:00Z")])
+            # The old tariff's open-ended rate starts later than the new tariff's rate but must not apply after the switch.
+            upsert_rate(conn, meter, "standard-unit-rates", [rate("2026-10-15T00:00:00Z", 30)], "E-1R-OLD-26-01-01-A")
+            upsert_rate(conn, meter, "standard-unit-rates", [rate("2026-06-01T00:00:00Z", 20)], "E-1R-NEW-26-01-01-A")
+            upsert_consumption(
+                conn,
+                meter,
+                [
+                    half_hour("2026-10-20T12:00:00Z", "2026-10-20T12:30:00Z"),
+                    half_hour("2026-11-02T12:00:00Z", "2026-11-02T12:30:00Z"),
+                ],
+            )
+            recompute_daily_costs(conn)
+            costs = dict(conn.execute("SELECT date, unit_cost_gbp FROM daily_costs").fetchall())
+            conn.close()
+            self.assertEqual(costs, {"2026-10-20": 0.30, "2026-11-02": 0.20})
+
+    def test_connect_drops_rates_stored_without_tariff_code(self):
+        with tempfile.TemporaryDirectory() as directory:
+            db = Path(directory) / "energy.sqlite3"
+            legacy = sqlite3.connect(db)
+            legacy.execute(
+                "CREATE TABLE tariff_rates (meter_id INTEGER, kind TEXT, valid_from TEXT, valid_to TEXT, value_inc_vat REAL)"
+            )
+            legacy.execute("INSERT INTO tariff_rates VALUES (1, 'standing-charges', '2026-01-01T00:00:00Z', NULL, 50)")
+            legacy.commit()
+            legacy.close()
+            conn = connect(db)
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(tariff_rates)")}
+            count = conn.execute("SELECT COUNT(*) FROM tariff_rates").fetchone()[0]
+            conn.close()
+            self.assertIn("tariff_code", columns)
+            self.assertEqual(count, 0)
+
+    def test_meters_keep_agreement_history(self):
+        account = {
+            "properties": [
+                {
+                    "electricity_meter_points": [
+                        {
+                            "mpan": MPAN,
+                            "meters": [{"serial_number": ELECTRIC_SERIAL}],
+                            "agreements": [
+                                {"tariff_code": "E-1R-OLD-26-01-01-A", "valid_from": "2026-01-01T00:00:00Z"},
+                                {"tariff_code": "E-1R-NEW-26-01-01-A", "valid_from": "2026-11-01T00:00:00Z"},
+                            ],
+                        }
+                    ]
+                }
+            ]
+        }
+        (meter,) = OctopusClient.meters(account)
+        self.assertEqual(meter.tariff_code, "E-1R-NEW-26-01-01-A")
+        self.assertEqual(
+            meter.agreements,
+            (
+                Agreement("E-1R-OLD-26-01-01-A", "2026-01-01T00:00:00Z", None),
+                Agreement("E-1R-NEW-26-01-01-A", "2026-11-01T00:00:00Z", None),
+            ),
+        )
 
     def test_rejects_unknown_mcp_tool(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -157,7 +232,7 @@ class FakeSyncClient:
         self.calls.append((meter.fuel, "consumption", period_from))
         return iter(self.readings.get(meter.fuel, []))
 
-    def tariff_rates(self, meter, kind, period_from=None):
+    def tariff_rates(self, meter, kind, period_from=None, period_to=None, tariff_code=None):
         self.calls.append((meter.fuel, kind, period_from))
         return iter(self.rates.get(kind, []))
 
