@@ -24,6 +24,14 @@ The foreground run discovers the account's electricity and gas meter points, act
 
 It also writes `reports/energy/YYYY-MM-DD.md` and `reports/energy/monthly-cost-analysis.md`. Reports use aggregate readings and never infer appliance-level usage.
 
+Each sync also creates an interactive local dashboard at `reports/energy/dashboard/index.html`. It shows daily and hourly whole-home usage, estimated costs, Power Down planning advice, and Happy Hour/Power Up reminders. It deliberately does not identify appliances: smart-meter data alone cannot do that. The generated dashboard data is ignored by Git because it is sensitive household telemetry.
+
+## Protected cPanel dashboard deployment
+
+The dashboard is not deployed by default. Household energy telemetry should not be published to an open web path. To deploy it at `/energy-usage`, first password-protect that directory in cPanel, clone this repository into a non-public application directory, and create a server-side `.env` containing the Octopus account number and API key. Do not commit that file.
+
+The included GitHub Actions deploy workflow starts only after the `Test` workflow succeeds and all of these repository secrets have been set: `CPANEL_SSH_HOST`, `CPANEL_SSH_USERNAME`, `CPANEL_SSH_PRIVATE_KEY`, `CPANEL_SSH_KNOWN_HOSTS`, `CPANEL_APP_PATH`, and `CPANEL_DASHBOARD_PATH`. It updates the server clone, performs the read-only sync, and copies only the dashboard's `index.html` and identifier-free `data.json` into the protected directory. Until all secrets exist, the deployment job is skipped.
+
 Use `./scripts/stop-energy.sh` only for operational symmetry; there is no daemon to stop. Run tests with `python3 -m unittest discover -s tests -v`.
 
 The MCP stdio server is `python3 -m octopus_energy.mcp_server [database]` and exposes only the documented read tools. It has no mutation tools.

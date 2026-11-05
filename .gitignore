@@ -2,6 +2,7 @@
 reports/daily/*.md
 .env
 reports/energy/*.md
+reports/energy/dashboard/
 .DS_Store
 !data/.gitkeep
 !reports/daily/.gitkeep

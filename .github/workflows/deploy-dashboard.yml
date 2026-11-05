@@ -1,0 +1,43 @@
+name: Deploy protected energy dashboard
+
+on:
+  workflow_run:
+    workflows: [Test]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      secrets.CPANEL_SSH_HOST != '' &&
+      secrets.CPANEL_SSH_USERNAME != '' &&
+      secrets.CPANEL_SSH_PRIVATE_KEY != '' &&
+      secrets.CPANEL_APP_PATH != '' &&
+      secrets.CPANEL_DASHBOARD_PATH != ''
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure deployment key
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.CPANEL_SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.CPANEL_SSH_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+      - name: Update, refresh, and publish dashboard
+        env:
+          CPANEL_SSH_HOST: ${{ secrets.CPANEL_SSH_HOST }}
+          CPANEL_SSH_USERNAME: ${{ secrets.CPANEL_SSH_USERNAME }}
+          CPANEL_APP_PATH: ${{ secrets.CPANEL_APP_PATH }}
+          CPANEL_DASHBOARD_PATH: ${{ secrets.CPANEL_DASHBOARD_PATH }}
+        run: >-
+          ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes
+          "$CPANEL_SSH_USERNAME@$CPANEL_SSH_HOST"
+          "cd '$CPANEL_APP_PATH' && git pull --ff-only origin main &&
+          ./scripts/start-energy.sh --days 90 &&
+          DASHBOARD_TARGET='$CPANEL_DASHBOARD_PATH' ./scripts/publish-energy-dashboard.sh"

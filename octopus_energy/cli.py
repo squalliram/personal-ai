@@ -9,6 +9,7 @@ from .analytics import anomalies, expensive_days, recompute_daily_costs, summary
 from .client import OctopusAPIError, OctopusClient, utc_now
 from .storage import connect, upsert_account, upsert_consumption, upsert_meter, upsert_rate
 from .reports import write_reports
+from .dashboard import write_dashboard
 
 
 def load_env(path: Path) -> dict[str, str]:
@@ -52,10 +53,12 @@ def main() -> int:
     parser.add_argument("--env-file", default=".env")
     parser.add_argument("--days", type=int, default=400)
     parser.add_argument("--report-dir", default="reports/energy")
+    parser.add_argument("--dashboard-dir", default="reports/energy/dashboard")
     args = parser.parse_args(); env = {**load_env(Path(args.env_file)), **os.environ}
     try:
         result = sync(Path(args.database), env["ACCOUNT_NUMBER"], env["API_KEY"], args.days)
         write_reports(Path(args.database), Path(args.report_dir))
+        write_dashboard(Path(args.database), Path(args.dashboard_dir))
         print("Octopus read-only sync succeeded: " + ", ".join(f"{key}={value}" for key, value in result.items()))
         return 0
     except (KeyError, OSError, OctopusAPIError, ValueError) as exc:
