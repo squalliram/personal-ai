@@ -9,15 +9,42 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: deploy-dashboard
+  cancel-in-progress: false
+
 jobs:
+  # The secrets context is not available in job-level `if:`, so check presence here.
+  preflight:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    outputs:
+      ready: ${{ steps.secrets.outputs.ready }}
+    steps:
+      - name: Check deployment secrets are configured
+        id: secrets
+        env:
+          CPANEL_SSH_HOST: ${{ secrets.CPANEL_SSH_HOST }}
+          CPANEL_SSH_USERNAME: ${{ secrets.CPANEL_SSH_USERNAME }}
+          CPANEL_SSH_PRIVATE_KEY: ${{ secrets.CPANEL_SSH_PRIVATE_KEY }}
+          CPANEL_SSH_KNOWN_HOSTS: ${{ secrets.CPANEL_SSH_KNOWN_HOSTS }}
+          CPANEL_APP_PATH: ${{ secrets.CPANEL_APP_PATH }}
+          CPANEL_DASHBOARD_PATH: ${{ secrets.CPANEL_DASHBOARD_PATH }}
+        run: |
+          ready=true
+          for value in "$CPANEL_SSH_HOST" \
+            "$CPANEL_SSH_USERNAME" \
+            "$CPANEL_SSH_PRIVATE_KEY" \
+            "$CPANEL_SSH_KNOWN_HOSTS" \
+            "$CPANEL_APP_PATH" \
+            "$CPANEL_DASHBOARD_PATH"; do
+            [ -n "$value" ] || ready=false
+          done
+          echo "ready=$ready" >> "$GITHUB_OUTPUT"
+
   deploy:
-    if: >-
-      github.event.workflow_run.conclusion == 'success' &&
-      secrets.CPANEL_SSH_HOST != '' &&
-      secrets.CPANEL_SSH_USERNAME != '' &&
-      secrets.CPANEL_SSH_PRIVATE_KEY != '' &&
-      secrets.CPANEL_APP_PATH != '' &&
-      secrets.CPANEL_DASHBOARD_PATH != ''
+    needs: preflight
+    if: needs.preflight.outputs.ready == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Configure deployment key
@@ -38,6 +65,6 @@ jobs:
         run: >-
           ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes
           "$CPANEL_SSH_USERNAME@$CPANEL_SSH_HOST"
-          "cd '$CPANEL_APP_PATH' && git pull --ff-only origin main &&
+          "cd '$CPANEL_APP_PATH' && git fetch origin main && git reset --hard origin/main &&
           ./scripts/start-energy.sh --days 90 &&
           DASHBOARD_TARGET='$CPANEL_DASHBOARD_PATH' ./scripts/publish-energy-dashboard.sh"

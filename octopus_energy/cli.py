@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -21,6 +22,11 @@ def load_env(path: Path) -> dict[str, str]:
     return values
 
 
+def _watermark(conn: sqlite3.Connection, query: str, params: tuple, default: str) -> str:
+    """Resume from the newest stored timestamp; overlap is safe because writes are upserts."""
+    return conn.execute(query, params).fetchone()[0] or default
+
+
 def sync(database: Path, account_number: str, api_key: str, days: int = 400) -> dict:
     started = utc_now()
     conn = connect(database)
@@ -34,7 +40,7 @@ def sync(database: Path, account_number: str, api_key: str, days: int = 400) -> 
         if not meters:
             raise OctopusAPIError("Account returned no supported smart meters")
         upsert_account(conn, account_number, started)
-        period_from = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat().replace("+00:00", "Z")
+        default_from = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat().replace("+00:00", "Z")
         for meter in meters:
             meter_id = upsert_meter(
                 conn,
@@ -46,12 +52,20 @@ def sync(database: Path, account_number: str, api_key: str, days: int = 400) -> 
                 valid_to=meter.valid_to,
                 synced_at=started,
             )
-            for reading in client.consumption(meter, period_from=period_from):
-                upsert_consumption(conn, meter_id, reading)
-                counts[meter.fuel] += 1
+            consumption_from = _watermark(
+                conn, "SELECT MAX(interval_start) FROM consumption WHERE meter_id=?", (meter_id,), default_from
+            )
+            counts[meter.fuel] += upsert_consumption(
+                conn, meter_id, client.consumption(meter, period_from=consumption_from)
+            )
             for kind in ("standard-unit-rates", "standing-charges"):
-                for rate in client.tariff_rates(meter, kind, period_from=period_from):
-                    upsert_rate(conn, meter_id, kind, rate)
+                rates_from = _watermark(
+                    conn,
+                    "SELECT MAX(valid_from) FROM tariff_rates WHERE meter_id=? AND kind=?",
+                    (meter_id, kind),
+                    default_from,
+                )
+                upsert_rate(conn, meter_id, kind, client.tariff_rates(meter, kind, period_from=rates_from))
         recompute_daily_costs(conn)
         conn.execute(
             "UPDATE sync_history SET ended_at=?,status=?,electricity_records=?,gas_records=? WHERE id=?",

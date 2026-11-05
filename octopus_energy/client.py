@@ -12,6 +12,7 @@ from urllib.parse import urlencode, urljoin
 from urllib.request import Request, urlopen
 
 BASE_URL = "https://api.octopus.energy/v1/"
+PAGE_SIZE = 25000
 
 
 class OctopusAPIError(RuntimeError):
@@ -64,7 +65,7 @@ class OctopusClient:
 
     def paginated(self, path: str, params: dict[str, str] | None = None) -> Iterator[dict[str, Any]]:
         next_url: str | None = path
-        next_params = params
+        next_params: dict[str, str] | None = {"page_size": str(PAGE_SIZE), **(params or {})}
         while next_url:
             page = self.get(next_url, next_params)
             yield from page.get("results", [])

@@ -20,7 +20,7 @@ Copy `.env.example` to `.env` and set `ACCOUNT_NUMBER` and `API_KEY`. Keep `.env
 ./scripts/start-energy.sh --days 400
 ```
 
-The foreground run discovers the account's electricity and gas meter points, active tariff codes, historical consumption, unit rates, and standing charges; it stores the result in `data/octopus_energy.sqlite3`. It uses HTTPS Basic authentication with the API key and an empty password. A success message means an authenticated, read-only API request completed; it never prints credentials, MPANs, MPRNs, serials, or account details.
+The foreground run discovers the account's electricity and gas meter points, active tariff codes, historical consumption, unit rates, and standing charges; it stores the result in `data/octopus_energy.sqlite3`. Later runs are incremental: each meter resumes from its newest stored consumption interval and each tariff charge from its newest `valid_from`, so `--days` only bounds the first sync of a meter. It uses HTTPS Basic authentication with the API key and an empty password. A success message means an authenticated, read-only API request completed; it never prints credentials, MPANs, MPRNs, serials, or account details.
 
 It also writes `reports/energy/YYYY-MM-DD.md` and `reports/energy/monthly-cost-analysis.md`. Reports use aggregate readings and never infer appliance-level usage.
 
@@ -34,6 +34,6 @@ The included GitHub Actions deploy workflow starts only after the `Test` workflo
 
 See [Energy Dashboard Operations](docs/energy-dashboard.md) for the privacy model, deployment architecture, required secrets, and operating instructions.
 
-Use `./scripts/stop-energy.sh` only for operational symmetry; there is no daemon to stop. Run tests with `python3 -m unittest discover -s tests -v`.
+Use `./scripts/stop-energy.sh` only for operational symmetry; there is no daemon to stop. Run tests with `python3 -m unittest discover -s tests -v`; CI also runs `ruff check .` and `ruff format --check .` (configured in `pyproject.toml`).
 
 The MCP stdio server is `python3 -m octopus_energy.mcp_server [database]` and exposes only the documented read tools. It has no mutation tools.

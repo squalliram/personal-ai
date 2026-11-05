@@ -23,7 +23,7 @@ It does **not** identify appliances. Half-hourly meter data measures the whole p
 1. cPanel hosts a clone at `/home/iramkhan/personal-ai` outside the public web root.
 2. A server-side `.env` in that directory supplies `ACCOUNT_NUMBER` and `API_KEY`.
 3. A successful GitHub `Test` workflow triggers `Deploy protected energy dashboard`.
-4. The deploy job SSHes to cPanel, fast-forwards the clone, runs a read-only 90-day sync, generates the dashboard, and copies only `index.html` and `data.json` to the protected web directory.
+4. The deploy job SSHes to cPanel, resets the clone to `origin/main` (untracked files such as `.env` and the SQLite database are kept), runs a read-only incremental sync (90-day window on first run), generates the dashboard, and copies only `index.html` and `data.json` to the protected web directory.
 
 Required GitHub repository secrets:
 

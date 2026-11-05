@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterable
 from pathlib import Path
 
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
@@ -10,6 +11,8 @@ def connect(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
     conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
     return conn
 
@@ -41,15 +44,19 @@ def upsert_meter(
     ).fetchone()[0]
 
 
-def upsert_consumption(conn: sqlite3.Connection, meter_id: int, reading: dict) -> None:
-    conn.execute(
+def upsert_consumption(conn: sqlite3.Connection, meter_id: int, readings: Iterable[dict]) -> int:
+    rows = [(meter_id, r["interval_start"], r["interval_end"], r["consumption"]) for r in readings]
+    conn.executemany(
         "INSERT INTO consumption(meter_id,interval_start,interval_end,consumption_kwh) VALUES(?,?,?,?) ON CONFLICT(meter_id,interval_start,interval_end) DO UPDATE SET consumption_kwh=excluded.consumption_kwh",
-        (meter_id, reading["interval_start"], reading["interval_end"], reading["consumption"]),
+        rows,
     )
+    return len(rows)
 
 
-def upsert_rate(conn: sqlite3.Connection, meter_id: int, kind: str, rate: dict) -> None:
-    conn.execute(
+def upsert_rate(conn: sqlite3.Connection, meter_id: int, kind: str, rates: Iterable[dict]) -> int:
+    rows = [(meter_id, kind, r["valid_from"], r.get("valid_to"), r["value_inc_vat"]) for r in rates]
+    conn.executemany(
         "INSERT INTO tariff_rates(meter_id,kind,valid_from,valid_to,value_inc_vat) VALUES(?,?,?,?,?) ON CONFLICT(meter_id,kind,valid_from) DO UPDATE SET valid_to=excluded.valid_to,value_inc_vat=excluded.value_inc_vat",
-        (meter_id, kind, rate["valid_from"], rate.get("valid_to"), rate["value_inc_vat"]),
+        rows,
     )
+    return len(rows)
