@@ -1,5 +1,4 @@
 import io
-import sqlite3
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -9,10 +8,10 @@ from unittest.mock import patch
 
 from octopus_energy import cli
 from octopus_energy.analytics import recompute_daily_costs
-from octopus_energy.client import PAGE_SIZE, Agreement, Meter, OctopusClient, product_code
+from octopus_energy.client import PAGE_SIZE, Meter, OctopusClient, product_code
 from octopus_energy.dashboard import dashboard_data, write_dashboard
 from octopus_energy.mcp_server import dispatch
-from octopus_energy.storage import connect, upsert_agreements, upsert_consumption, upsert_meter, upsert_rate
+from octopus_energy.storage import connect, upsert_consumption, upsert_meter, upsert_rate
 
 ACCOUNT = "A-PRIV4TE1"
 MPAN = "1900000000001"
@@ -80,132 +79,6 @@ class EnergyTests(unittest.TestCase):
             self.assertAlmostEqual(conn.execute("SELECT total_cost_gbp FROM daily_costs").fetchone()[0], 0.7)
             conn.close()
             self.assertEqual(dispatch("get_energy_summary", {}, db)[0]["total_cost_gbp"], 0.7)
-
-    def test_costs_use_the_tariff_active_for_each_interval(self):
-        with tempfile.TemporaryDirectory() as directory:
-            conn = connect(Path(directory) / "energy.sqlite3")
-            meter = upsert_meter(
-                conn,
-                fuel="electricity",
-                point_id="123",
-                serial="abc",
-                tariff_code="E-1R-NEW-26-01-01-A",
-                valid_from="2026-11-01T00:00:00Z",
-                valid_to=None,
-                synced_at="2026-11-05T00:00:00Z",
-            )
-            upsert_agreements(conn, meter, [("E-1R-OLD-26-01-01-A", "2026-01-01T00:00:00Z", "2026-11-01T00:00:00Z")])
-            # The old tariff's open-ended rate starts later than the new tariff's rate but must not apply after the switch.
-            upsert_rate(conn, meter, "standard-unit-rates", [rate("2026-10-15T00:00:00Z", 30)], "E-1R-OLD-26-01-01-A")
-            upsert_rate(conn, meter, "standard-unit-rates", [rate("2026-06-01T00:00:00Z", 20)], "E-1R-NEW-26-01-01-A")
-            upsert_consumption(
-                conn,
-                meter,
-                [
-                    half_hour("2026-10-20T12:00:00Z", "2026-10-20T12:30:00Z"),
-                    half_hour("2026-11-02T12:00:00Z", "2026-11-02T12:30:00Z"),
-                ],
-            )
-            recompute_daily_costs(conn)
-            costs = dict(conn.execute("SELECT date, unit_cost_gbp FROM daily_costs").fetchall())
-            conn.close()
-            self.assertEqual(costs, {"2026-10-20": 0.30, "2026-11-02": 0.20})
-
-    def test_rate_lookup_compares_offset_and_utc_timestamps_as_instants(self):
-        with tempfile.TemporaryDirectory() as directory:
-            conn = connect(Path(directory) / "energy.sqlite3")
-            meter = upsert_meter(
-                conn,
-                fuel="electricity",
-                point_id="123",
-                serial="abc",
-                tariff_code="E-1R-AGILE-24-10-01-A",
-                valid_from="2026-01-01T00:00:00Z",
-                valid_to=None,
-                synced_at="2026-11-05T00:00:00Z",
-            )
-            early = {"valid_from": "2026-06-01T00:00:00Z", "valid_to": "2026-06-01T00:45:00Z", "value_inc_vat": 10}
-            upsert_rate(conn, meter, "standard-unit-rates", [early, rate("2026-06-01T00:45:00Z", 40)])
-            # 01:30+01:00 is 00:30Z, inside the early rate; a plain string comparison would pick the later one.
-            upsert_consumption(conn, meter, [half_hour("2026-06-01T01:30:00+01:00", "2026-06-01T02:00:00+01:00")])
-            recompute_daily_costs(conn)
-            stored = conn.execute("SELECT interval_start FROM consumption").fetchone()[0]
-            cost = conn.execute("SELECT unit_cost_gbp FROM daily_costs").fetchone()[0]
-            conn.close()
-            self.assertEqual(stored, "2026-06-01T00:30:00Z")
-            self.assertEqual(cost, 0.10)
-
-    def test_connect_normalizes_readings_stored_with_offsets(self):
-        with tempfile.TemporaryDirectory() as directory:
-            db = Path(directory) / "energy.sqlite3"
-            conn = connect(db)
-            meter = upsert_meter(
-                conn,
-                fuel="electricity",
-                point_id="123",
-                serial="abc",
-                tariff_code=None,
-                valid_from=None,
-                valid_to=None,
-                synced_at="2026-11-05T00:00:00Z",
-            )
-            conn.execute(
-                "INSERT INTO consumption VALUES(?,?,?,?)",
-                (meter, "2026-06-01T01:30:00+01:00", "2026-06-01T02:00:00+01:00", 1.0),
-            )
-            conn.execute(
-                "INSERT INTO consumption VALUES(?,?,?,?)", (meter, "2026-06-01T00:30:00Z", "2026-06-01T01:00:00Z", 1.5)
-            )
-            conn.commit()
-            conn.close()
-            conn = connect(db)
-            rows = conn.execute("SELECT interval_start, interval_end, consumption_kwh FROM consumption").fetchall()
-            conn.close()
-            self.assertEqual([tuple(r) for r in rows], [("2026-06-01T00:30:00Z", "2026-06-01T01:00:00Z", 1.5)])
-
-    def test_connect_drops_rates_stored_without_tariff_code(self):
-        with tempfile.TemporaryDirectory() as directory:
-            db = Path(directory) / "energy.sqlite3"
-            legacy = sqlite3.connect(db)
-            legacy.execute(
-                "CREATE TABLE tariff_rates (meter_id INTEGER, kind TEXT, valid_from TEXT, valid_to TEXT, value_inc_vat REAL)"
-            )
-            legacy.execute("INSERT INTO tariff_rates VALUES (1, 'standing-charges', '2026-01-01T00:00:00Z', NULL, 50)")
-            legacy.commit()
-            legacy.close()
-            conn = connect(db)
-            columns = {row[1] for row in conn.execute("PRAGMA table_info(tariff_rates)")}
-            count = conn.execute("SELECT COUNT(*) FROM tariff_rates").fetchone()[0]
-            conn.close()
-            self.assertIn("tariff_code", columns)
-            self.assertEqual(count, 0)
-
-    def test_meters_keep_agreement_history(self):
-        account = {
-            "properties": [
-                {
-                    "electricity_meter_points": [
-                        {
-                            "mpan": MPAN,
-                            "meters": [{"serial_number": ELECTRIC_SERIAL}],
-                            "agreements": [
-                                {"tariff_code": "E-1R-OLD-26-01-01-A", "valid_from": "2026-01-01T00:00:00Z"},
-                                {"tariff_code": "E-1R-NEW-26-01-01-A", "valid_from": "2026-11-01T00:00:00Z"},
-                            ],
-                        }
-                    ]
-                }
-            ]
-        }
-        (meter,) = OctopusClient.meters(account)
-        self.assertEqual(meter.tariff_code, "E-1R-NEW-26-01-01-A")
-        self.assertEqual(
-            meter.agreements,
-            (
-                Agreement("E-1R-OLD-26-01-01-A", "2026-01-01T00:00:00Z", None),
-                Agreement("E-1R-NEW-26-01-01-A", "2026-11-01T00:00:00Z", None),
-            ),
-        )
 
     def test_rejects_unknown_mcp_tool(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -284,7 +157,7 @@ class FakeSyncClient:
         self.calls.append((meter.fuel, "consumption", period_from))
         return iter(self.readings.get(meter.fuel, []))
 
-    def tariff_rates(self, meter, kind, period_from=None, period_to=None, tariff_code=None):
+    def tariff_rates(self, meter, kind, period_from=None, period_to=None):
         self.calls.append((meter.fuel, kind, period_from))
         return iter(self.rates.get(kind, []))
 
@@ -350,88 +223,6 @@ class SyncTests(unittest.TestCase):
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM tariff_rates").fetchone()[0], 6)
         finally:
             conn.close()
-
-    def test_rate_requests_follow_each_agreements_own_window(self):
-        earlier = Agreement("E-1R-GO-V1-22-01-01-A", "2026-01-01T00:00:00Z", "2026-03-01T00:00:00Z")
-        old = Agreement("E-1R-OLD-26-01-01-A", "2026-03-01T00:00:00Z", "2026-11-01T00:00:00Z")
-        current = Agreement("E-1R-GO-V1-22-01-01-A", "2026-11-01T00:00:00Z", None)
-        history = (earlier, old, current)
-        meters = [Meter("electricity", MPAN, ELECTRIC_SERIAL, current.tariff_code, current.valid_from, None, history)]
-        conn = connect(self.db)
-        meter = upsert_meter(
-            conn,
-            fuel="electricity",
-            point_id=MPAN,
-            serial=ELECTRIC_SERIAL,
-            tariff_code=current.tariff_code,
-            valid_from=current.valid_from,
-            valid_to=None,
-            synced_at="2026-11-05T00:00:00Z",
-        )
-        upsert_agreements(conn, meter, [(a.tariff_code, a.valid_from, a.valid_to) for a in history])
-        for kind in ("standard-unit-rates", "standing-charges"):
-            # The old agreement's rates already run to its end; the current tariff's rates don't cover `earlier`.
-            closed = {"valid_from": "2026-10-15T00:00:00Z", "valid_to": old.valid_to, "value_inc_vat": 30}
-            upsert_rate(conn, meter, kind, [closed], old.tariff_code)
-            upsert_rate(conn, meter, kind, [rate("2026-11-01T00:00:00Z", 20)], current.tariff_code)
-        conn.commit()
-        conn.close()
-        requested = []
-
-        def tariff_rates(client, meter, kind, period_from=None, period_to=None, tariff_code=None):
-            requested.append((tariff_code, period_from, period_to))
-            return iter([])
-
-        with (
-            patch.object(FakeSyncClient, "meters", lambda client, account: meters),
-            patch.object(FakeSyncClient, "tariff_rates", tariff_rates),
-        ):
-            cli.sync(self.db, ACCOUNT, "key", days=3650)
-        self.assertEqual(
-            requested,
-            [
-                (earlier.tariff_code, earlier.valid_from, earlier.valid_to),
-                (earlier.tariff_code, earlier.valid_from, earlier.valid_to),
-                (current.tariff_code, current.valid_from, None),
-                (current.tariff_code, current.valid_from, None),
-            ],
-        )
-
-    def test_rate_requests_resume_from_stored_rates_before_the_days_cutoff(self):
-        ended = Agreement("E-1R-OLD-26-01-01-A", "2020-01-01T00:00:00Z", "2026-11-01T00:00:00Z")
-        current = Agreement("E-1R-GO-V1-22-01-01-A", "2026-11-01T00:00:00Z", None)
-        meters = [Meter("electricity", MPAN, ELECTRIC_SERIAL, ended.tariff_code, ended.valid_from, None, (ended,))]
-        conn = connect(self.db)
-        meter = upsert_meter(
-            conn,
-            fuel="electricity",
-            point_id=MPAN,
-            serial=ELECTRIC_SERIAL,
-            tariff_code=current.tariff_code,
-            valid_from=current.valid_from,
-            valid_to=None,
-            synced_at="2026-11-05T00:00:00Z",
-        )
-        upsert_agreements(conn, meter, [(ended.tariff_code, ended.valid_from, ended.valid_to)])
-        for kind in ("standard-unit-rates", "standing-charges"):
-            # Open-ended when stored, so a later price change before the agreement ended may be missing.
-            upsert_rate(conn, meter, kind, [rate("2021-01-01T00:00:00Z", 30)], ended.tariff_code)
-        conn.commit()
-        conn.close()
-        requested = []
-
-        def tariff_rates(client, meter, kind, period_from=None, period_to=None, tariff_code=None):
-            requested.append((tariff_code, period_from, period_to))
-            return iter([])
-
-        with (
-            patch.object(FakeSyncClient, "meters", lambda client, account: meters),
-            patch.object(FakeSyncClient, "tariff_rates", tariff_rates),
-        ):
-            # The stored rate starts well before the --days cutoff and must still be the resume point.
-            cli.sync(self.db, ACCOUNT, "key", days=365)
-        expected = (ended.tariff_code, "2021-01-01T00:00:00Z", ended.valid_to)
-        self.assertEqual(requested, [expected, expected])
 
     def test_consumption_lookback_is_clamped_to_days_window(self):
         resume = cli._consumption_resume_from

@@ -10,15 +10,18 @@ permissions:
   contents: read
 
 jobs:
-  # The secrets context is not available in job-level `if:`, so check presence here.
+  # Secrets are available to steps, not job-level conditions.
   preflight:
-    if: github.event.workflow_run.conclusion == 'success'
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
     outputs:
-      ready: ${{ steps.secrets.outputs.ready }}
+      ready: ${{ steps.configuration.outputs.ready }}
     steps:
-      - name: Check deployment secrets are configured
-        id: secrets
+      - name: Check deployment configuration
+        id: configuration
         env:
           CPANEL_SSH_HOST: ${{ secrets.CPANEL_SSH_HOST }}
           CPANEL_SSH_USERNAME: ${{ secrets.CPANEL_SSH_USERNAME }}
@@ -27,28 +30,24 @@ jobs:
           CPANEL_APP_PATH: ${{ secrets.CPANEL_APP_PATH }}
           CPANEL_DASHBOARD_PATH: ${{ secrets.CPANEL_DASHBOARD_PATH }}
         run: |
-          ready=true
-          for value in "$CPANEL_SSH_HOST" \
-            "$CPANEL_SSH_USERNAME" \
-            "$CPANEL_SSH_PRIVATE_KEY" \
-            "$CPANEL_SSH_KNOWN_HOSTS" \
-            "$CPANEL_APP_PATH" \
-            "$CPANEL_DASHBOARD_PATH"; do
-            [ -n "$value" ] || ready=false
+          for name in CPANEL_SSH_HOST CPANEL_SSH_USERNAME CPANEL_SSH_PRIVATE_KEY CPANEL_SSH_KNOWN_HOSTS CPANEL_APP_PATH CPANEL_DASHBOARD_PATH; do
+            if [ -z "${!name}" ]; then
+              echo "ready=false" >> "$GITHUB_OUTPUT"
+              echo "Deployment not configured; no connection attempted."
+              exit 0
+            fi
           done
-          echo "ready=$ready" >> "$GITHUB_OUTPUT"
+          echo "ready=true" >> "$GITHUB_OUTPUT"
 
   deploy:
     needs: preflight
     if: needs.preflight.outputs.ready == 'true'
     runs-on: ubuntu-latest
-    # Job-level so only runs that passed Test and preflight wait in the deploy queue.
-    # queue: max keeps up to 100 pending runs (GitHub cancels any beyond that), so an older run can't replace
-    # the newest commit's pending run.
+    # Different tested commits must not replace each other's pending jobs.
+    # The server lock serializes checkout, collection and publication.
     concurrency:
-      group: deploy-dashboard
+      group: deploy-dashboard-${{ github.event.workflow_run.head_sha }}
       cancel-in-progress: false
-      queue: max
     steps:
       - name: Configure deployment key
         env:
@@ -65,14 +64,24 @@ jobs:
           CPANEL_SSH_USERNAME: ${{ secrets.CPANEL_SSH_USERNAME }}
           CPANEL_APP_PATH: ${{ secrets.CPANEL_APP_PATH }}
           CPANEL_DASHBOARD_PATH: ${{ secrets.CPANEL_DASHBOARD_PATH }}
-          # Deploy exactly the commit Test checked; a newer main commit is deployed by its own run.
           DEPLOY_SHA: ${{ github.event.workflow_run.head_sha }}
-        run: >-
-          ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes
-          "$CPANEL_SSH_USERNAME@$CPANEL_SSH_HOST"
-          "cd '$CPANEL_APP_PATH' && git fetch origin main &&
-          if [ \"\$(git rev-parse origin/main)\" != '$DEPLOY_SHA' ]; then
-          echo 'origin/main has moved past the tested commit; skipping deploy.'; exit 0; fi &&
-          git reset --hard '$DEPLOY_SHA' &&
-          ./scripts/start-energy.sh --days 90 &&
-          DASHBOARD_TARGET='$CPANEL_DASHBOARD_PATH' ./scripts/publish-energy-dashboard.sh"
+        run: |
+          # Remote paths are configuration, never executable shell fragments.
+          [[ "$CPANEL_APP_PATH" =~ ^/[a-zA-Z0-9_./-]+$ ]] || exit 1
+          [[ "$CPANEL_DASHBOARD_PATH" =~ ^/[a-zA-Z0-9_./-]+$ ]] || exit 1
+          [[ "$DEPLOY_SHA" =~ ^[a-f0-9]{40}$ ]] || exit 1
+          ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            "$CPANEL_SSH_USERNAME@$CPANEL_SSH_HOST" \
+            "cd '$CPANEL_APP_PATH' && command -v flock >/dev/null && test -d .git && \
+            exec 9>.git/energy-dashboard.deploy.lock && flock -x 9 && \
+            test -z \"\$(git status --porcelain)\" && \
+            test \"\$(git branch --show-current)\" = main && git fetch --no-tags origin main && \
+            if [ \"\$(git rev-parse origin/main)\" != '$DEPLOY_SHA' ]; then \
+            echo 'origin/main has moved past the tested commit; skipping deploy.'; exit 0; fi && \
+            git merge --ff-only '$DEPLOY_SHA' && test \"\$(git rev-parse HEAD)\" = '$DEPLOY_SHA' && \
+            ./scripts/start-energy.sh --days 90 && \
+            git fetch --no-tags origin main && \
+            if [ \"\$(git rev-parse origin/main)\" != '$DEPLOY_SHA' ]; then \
+            echo 'origin/main changed during collection; skipping publication.'; exit 0; fi && \
+            test \"\$(git rev-parse HEAD)\" = '$DEPLOY_SHA' && \
+            DASHBOARD_TARGET='$CPANEL_DASHBOARD_PATH' ./scripts/publish-energy-dashboard.sh"

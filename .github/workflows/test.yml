@@ -17,6 +17,9 @@ jobs:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: pyproject.toml
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
       # Keep in sync with the ruff pin in pyproject.toml.
       - run: python -m pip install "ruff==0.16.10"
       - run: ruff check .

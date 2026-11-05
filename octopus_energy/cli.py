@@ -7,23 +7,19 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .analytics import recompute_daily_costs
-from .client import Agreement, OctopusAPIError, OctopusClient, utc_now
+from .client import OctopusAPIError, OctopusClient, utc_now
 from .dashboard import write_dashboard
 from .reports import write_reports
-from .storage import (
-    connect,
-    upsert_account,
-    upsert_agreements,
-    upsert_consumption,
-    upsert_meter,
-    upsert_rate,
-    utc_iso,
-)
+from .storage import connect, upsert_account, upsert_consumption, upsert_meter, upsert_rate
 
 
 def load_env(path: Path) -> dict[str, str]:
     values = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return values
+    for line in lines:
         if "=" in line and not line.lstrip().startswith("#"):
             key, value = line.split("=", 1)
             values[key.strip()] = value.strip().strip("\"'")
@@ -54,16 +50,18 @@ def _consumption_resume_from(watermark: str | None, default_from: str) -> str:
     return _iso_utc(min(mark, max(mark - CONSUMPTION_LOOKBACK, floor)))
 
 
-def _parse(instant: str) -> datetime:
-    return datetime.fromisoformat(instant.replace("Z", "+00:00"))
-
-
 def sync(database: Path, account_number: str, api_key: str, days: int = 400) -> dict:
+    if days <= 0:
+        raise ValueError("Sync days must be positive")
+    if not account_number.strip() or not api_key.strip():
+        raise ValueError("Octopus account number and API key are required")
     started = utc_now()
     conn = connect(database)
     conn.execute("INSERT INTO sync_history(started_at,status) VALUES(?,?)", (started, "running"))
     sync_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.commit()
     counts = {"electricity": 0, "gas": 0}
+    empty_meters = 0
     try:
         client = OctopusClient(api_key)
         account = client.account(account_number)
@@ -71,6 +69,7 @@ def sync(database: Path, account_number: str, api_key: str, days: int = 400) -> 
         if not meters:
             raise OctopusAPIError("Account returned no supported smart meters")
         upsert_account(conn, account_number, started)
+        period_to = started
         default_from = _iso_utc(datetime.now(timezone.utc) - timedelta(days=days))
         for meter in meters:
             meter_id = upsert_meter(
@@ -87,49 +86,57 @@ def sync(database: Path, account_number: str, api_key: str, days: int = 400) -> 
                 "SELECT MAX(interval_start) FROM consumption WHERE meter_id=?", (meter_id,)
             ).fetchone()[0]
             consumption_from = _consumption_resume_from(watermark, default_from)
-            counts[meter.fuel] += upsert_consumption(
-                conn, meter_id, client.consumption(meter, period_from=consumption_from)
+            meter_records = upsert_consumption(conn, meter_id, client.consumption(meter, period_from=consumption_from))
+            counts[meter.fuel] += meter_records
+            if not meter_records:
+                empty_meters += 1
+                continue
+            for kind in ("standard-unit-rates", "standing-charges"):
+                rates_from = _watermark(
+                    conn,
+                    "SELECT MAX(valid_from) FROM tariff_rates WHERE meter_id=? AND kind=?",
+                    (meter_id, kind),
+                    default_from,
+                )
+                if meter.agreements:
+                    # Account history repairs tariff changes missed by older syncs.
+                    rates_from = default_from
+                conn.execute(
+                    "DELETE FROM tariff_rates WHERE meter_id=? AND kind=? "
+                    "AND julianday(valid_from)<julianday(?) "
+                    "AND (valid_to IS NULL OR julianday(valid_to)>julianday(?))",
+                    (meter_id, kind, period_to, rates_from),
+                )
+                upsert_rate(
+                    conn,
+                    meter_id,
+                    kind,
+                    client.tariff_rates(meter, kind, period_from=rates_from, period_to=period_to),
+                )
+        if empty_meters:
+            status = "partial" if sum(counts.values()) else "no_data"
+            conn.rollback()
+            conn.execute(
+                "UPDATE sync_history SET ended_at=?,status=?,electricity_records=?,gas_records=? WHERE id=?",
+                (utc_now(), status, counts["electricity"], counts["gas"], sync_id),
             )
-            agreements = meter.agreements or (
-                (Agreement(meter.tariff_code, meter.valid_from, meter.valid_to),) if meter.tariff_code else ()
-            )
-            upsert_agreements(conn, meter_id, [(a.tariff_code, a.valid_from, a.valid_to) for a in agreements])
-            for agreement in agreements:
-                window_from = default_from
-                if agreement.valid_from and _parse(agreement.valid_from) > _parse(default_from):
-                    window_from = utc_iso(agreement.valid_from)
-                window_to = utc_iso(agreement.valid_to)
-                if window_to and _parse(window_to) <= _parse(window_from):
-                    continue
-                agreement_from = utc_iso(agreement.valid_from) or ""
-                for kind in ("standard-unit-rates", "standing-charges"):
-                    # Only rates overlapping this agreement count: the same tariff code can recur in another agreement.
-                    latest = conn.execute(
-                        "SELECT valid_from, valid_to FROM tariff_rates WHERE meter_id=? AND tariff_code=? AND kind=?"
-                        " AND (? IS NULL OR valid_from<?) AND (valid_to IS NULL OR valid_to>?)"
-                        " ORDER BY valid_from DESC LIMIT 1",
-                        (meter_id, agreement.tariff_code, kind, window_to, window_to, agreement_from),
-                    ).fetchone()
-                    # An open-ended stored rate may have been superseded before the agreement ended, so refetch it.
-                    if latest and window_to and latest[1] and latest[1] >= window_to:
-                        continue
-                    rates_from = latest[0] if latest else window_from
-                    rates = client.tariff_rates(
-                        meter,
-                        kind,
-                        period_from=rates_from,
-                        period_to=agreement.valid_to,
-                        tariff_code=agreement.tariff_code,
-                    )
-                    upsert_rate(conn, meter_id, kind, rates, tariff_code=agreement.tariff_code)
+            conn.commit()
+            return {
+                "status": status,
+                "meters": len(meters),
+                "has_readings": bool(sum(counts.values())),
+                "empty_meters": empty_meters,
+                **counts,
+            }
         recompute_daily_costs(conn)
         conn.execute(
             "UPDATE sync_history SET ended_at=?,status=?,electricity_records=?,gas_records=? WHERE id=?",
             (utc_now(), "success", counts["electricity"], counts["gas"], sync_id),
         )
         conn.commit()
-        return {"status": "success", "meters": len(meters), **counts}
+        return {"status": "success", "meters": len(meters), "has_readings": True, "empty_meters": 0, **counts}
     except Exception as exc:
+        conn.rollback()
         conn.execute(
             "UPDATE sync_history SET ended_at=?,status=?,error_category=? WHERE id=?",
             (utc_now(), "failed", type(exc).__name__, sync_id),
@@ -148,14 +155,17 @@ def main() -> int:
     parser.add_argument("--report-dir", default="reports/energy")
     parser.add_argument("--dashboard-dir", default="reports/energy/dashboard")
     args = parser.parse_args()
-    env = {**load_env(Path(args.env_file)), **os.environ}
     try:
+        env = {**load_env(Path(args.env_file)), **os.environ}
         result = sync(Path(args.database), env["ACCOUNT_NUMBER"], env["API_KEY"], args.days)
+        if result["status"] != "success":
+            print(f"Octopus read-only sync incomplete: status={result['status']}; previous data and outputs preserved")
+            return 1
         write_reports(Path(args.database), Path(args.report_dir))
         write_dashboard(Path(args.database), Path(args.dashboard_dir))
         print("Octopus read-only sync succeeded: " + ", ".join(f"{key}={value}" for key, value in result.items()))
         return 0
-    except (KeyError, OSError, OctopusAPIError, ValueError) as exc:
+    except (KeyError, OSError, OctopusAPIError, ValueError, sqlite3.Error) as exc:
         print(f"Octopus sync failed safely: {type(exc).__name__}")
         return 1
 
