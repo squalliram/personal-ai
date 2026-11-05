@@ -32,6 +32,8 @@ The dashboard is not deployed by default. Household energy telemetry should not 
 
 The included GitHub Actions deploy workflow starts only after the `Test` workflow succeeds and all of these repository secrets have been set: `CPANEL_SSH_HOST`, `CPANEL_SSH_USERNAME`, `CPANEL_SSH_PRIVATE_KEY`, `CPANEL_SSH_KNOWN_HOSTS`, `CPANEL_APP_PATH`, and `CPANEL_DASHBOARD_PATH`. It updates the server clone, performs the read-only sync, and copies only the dashboard's `index.html` and identifier-free `data.json` into the protected directory. Until all secrets exist, the deployment job is skipped.
 
+See [Energy Dashboard Operations](docs/energy-dashboard.md) for the privacy model, deployment architecture, required secrets, and operating instructions.
+
 Use `./scripts/stop-energy.sh` only for operational symmetry; there is no daemon to stop. Run tests with `python3 -m unittest discover -s tests -v`.
 
 The MCP stdio server is `python3 -m octopus_energy.mcp_server [database]` and exposes only the documented read tools. It has no mutation tools.
