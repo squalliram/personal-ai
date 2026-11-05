@@ -1,8 +1,13 @@
+import contextlib
+import io
+import os
 import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+from octopus_energy import cli
 from octopus_energy.analytics import (
     _rate,
     anomalies,
@@ -11,8 +16,9 @@ from octopus_energy.analytics import (
     recompute_daily_costs,
     summary,
 )
+from octopus_energy.client import Meter
 from octopus_energy.reports import write_reports
-from octopus_energy.storage import connect, upsert_consumption, upsert_meter, upsert_rate
+from octopus_energy.storage import connect, get_gas_units, upsert_consumption, upsert_meter, upsert_rate
 
 
 class AnalyticsTests(unittest.TestCase):
@@ -259,6 +265,9 @@ class AnalyticsTests(unittest.TestCase):
             connect(self.database)
         with sqlite3.connect(self.database) as original:
             self.assertEqual(original.execute("SELECT total_cost_gbp FROM daily_costs").fetchone()[0], 0.7)
+            self.assertIsNone(
+                original.execute("SELECT name FROM sqlite_master WHERE name='energy_settings'").fetchone()
+            )
 
     def test_reports_explain_unavailable_values_without_formatting_failure(self):
         meter = self.meter(fuel="gas")
@@ -269,6 +278,112 @@ class AnalyticsTests(unittest.TestCase):
         self.assertIn("gas source units unverified", paths[0].read_text())
         self.assertIn("cost unavailable/incomplete", paths[0].read_text())
         self.assertIn("No complete cost data", paths[1].read_text())
+
+    def test_confirmed_gas_kwh_uses_same_tariff_and_standing_rules(self):
+        first = self.meter(fuel="gas", serial="first")
+        second = self.meter(fuel="gas", serial="second")
+        self.tariffs(first)
+        self.tariffs(second)
+        self.reading(first)
+        self.reading(second, "2026-11-01T00:30:00Z", "2026-11-01T01:00:00Z")
+        recompute_daily_costs(self.conn, gas_units="kwh")
+        row = dict(self.conn.execute("SELECT * FROM daily_costs").fetchone())
+        self.assertEqual(row["consumption_kwh"], 4)
+        self.assertAlmostEqual(row["unit_cost_gbp"], 0.4)
+        self.assertEqual(row["standing_charge_gbp"], 0.5)
+        self.assertAlmostEqual(row["total_cost_gbp"], 0.9)
+        self.assertEqual(get_gas_units(self.conn), "kwh")
+        self.assertEqual(overnight_baseline(self.conn)[0]["fuel"], "gas")
+        self.assertEqual(expensive_days(self.conn)[0]["fuel"], "gas")
+
+    def test_confirmed_gas_missing_rates_keeps_kwh_and_null_costs(self):
+        meter = self.meter(fuel="gas")
+        self.reading(meter)
+        self.rate(meter, "standing-charges", 50)
+        recompute_daily_costs(self.conn, gas_units="kwh")
+        row = dict(self.conn.execute("SELECT * FROM daily_costs").fetchone())
+        self.assertEqual(row["consumption_kwh"], 2)
+        self.assertIsNone(row["unit_cost_gbp"])
+        self.assertEqual(row["standing_charge_gbp"], 0.5)
+        self.assertIsNone(row["total_cost_gbp"])
+        self.assertEqual(overnight_baseline(self.conn)[0]["fuel"], "gas")
+        self.conn.execute("DELETE FROM tariff_rates")
+        self.rate(meter)
+        recompute_daily_costs(self.conn, gas_units="kwh")
+        row = dict(self.conn.execute("SELECT * FROM daily_costs").fetchone())
+        self.assertAlmostEqual(row["unit_cost_gbp"], 0.2)
+        self.assertIsNone(row["standing_charge_gbp"])
+        self.assertIsNone(row["total_cost_gbp"])
+
+    def test_confirmed_gas_participates_in_anomaly_analysis(self):
+        meter = self.meter(fuel="gas")
+        for day in range(1, 9):
+            self.reading(meter, f"2026-11-{day:02}T00:00:00Z", f"2026-11-{day:02}T00:30:00Z", 100 if day == 8 else 1)
+        recompute_daily_costs(self.conn, gas_units="kwh")
+        self.assertEqual(anomalies(self.conn, "gas")[0]["date"], "2026-11-08")
+
+    def test_report_recompute_switches_existing_gas_both_ways_and_preserves_mode(self):
+        meter = self.meter(fuel="gas")
+        self.reading(meter)
+        self.tariffs(meter)
+        self.conn.commit()
+        output = Path(self.directory.name) / "reports"
+        write_reports(self.database, output)
+        self.assertIsNone(self.conn.execute("SELECT consumption_kwh FROM daily_costs").fetchone()[0])
+        raw = [tuple(row) for row in self.conn.execute("SELECT * FROM consumption")]
+        paths = write_reports(self.database, output, gas_units="kwh")
+        self.assertEqual(self.conn.execute("SELECT consumption_kwh FROM daily_costs").fetchone()[0], 2)
+        self.assertAlmostEqual(self.conn.execute("SELECT total_cost_gbp FROM daily_costs").fetchone()[0], 0.7)
+        self.assertIn("Gas readings are configured as kWh", paths[0].read_text())
+        write_reports(self.database, output, gas_units=None)
+        self.assertEqual(get_gas_units(self.conn), "kwh")
+        self.assertEqual(self.conn.execute("SELECT consumption_kwh FROM daily_costs").fetchone()[0], 2)
+        write_reports(self.database, output, gas_units="unknown")
+        self.assertEqual(get_gas_units(self.conn), "unknown")
+        self.assertIsNone(self.conn.execute("SELECT consumption_kwh FROM daily_costs").fetchone()[0])
+        self.assertEqual([tuple(row) for row in self.conn.execute("SELECT * FROM consumption")], raw)
+
+    def test_recompute_failure_rolls_back_metadata_creation_and_derived_data(self):
+        meter = self.meter(fuel="gas")
+        self.reading(meter, "invalid", "invalid")
+        self.conn.execute("INSERT INTO daily_costs VALUES('2026-11-01','electricity',2,.2,.5,.7)")
+        self.conn.commit()
+        with self.assertRaises(ValueError):
+            recompute_daily_costs(self.conn, gas_units="kwh")
+        self.assertFalse(self.conn.in_transaction)
+        self.assertIsNone(self.conn.execute("SELECT name FROM sqlite_master WHERE name='energy_settings'").fetchone())
+        self.assertEqual(get_gas_units(self.conn), "unknown")
+        self.assertAlmostEqual(self.conn.execute("SELECT total_cost_gbp FROM daily_costs").fetchone()[0], 0.7)
+
+    def test_invalid_gas_units_fail_before_mutating_database_or_reports(self):
+        meter = self.meter(fuel="gas")
+        self.reading(meter)
+        recompute_daily_costs(self.conn, gas_units="kwh")
+        self.conn.commit()
+        for value in ("m3", "", "KWH"):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    recompute_daily_costs(self.conn, gas_units=value)
+                output = Path(self.directory.name) / "unused-reports"
+                with self.assertRaises(ValueError):
+                    write_reports(self.database, output, gas_units=value)
+                self.assertFalse(output.exists())
+                self.assertEqual(get_gas_units(self.conn), "kwh")
+                self.assertEqual(self.conn.execute("SELECT consumption_kwh FROM daily_costs").fetchone()[0], 2)
+
+    def test_failed_switch_preserves_existing_unit_metadata_and_costs(self):
+        meter = self.meter(fuel="gas")
+        self.reading(meter)
+        self.tariffs(meter)
+        recompute_daily_costs(self.conn, gas_units="kwh")
+        self.conn.commit()
+        original = [tuple(row) for row in self.conn.execute("SELECT * FROM daily_costs")]
+        self.reading(meter, "invalid", "invalid")
+        self.conn.commit()
+        with self.assertRaises(ValueError):
+            recompute_daily_costs(self.conn, gas_units="unknown")
+        self.assertEqual(get_gas_units(self.conn), "kwh")
+        self.assertEqual([tuple(row) for row in self.conn.execute("SELECT * FROM daily_costs")], original)
 
     def test_storage_accepts_single_dict_and_batched_iterables_with_counts(self):
         meter = self.meter()
@@ -351,6 +466,108 @@ class AnalyticsTests(unittest.TestCase):
             self.assertEqual(migrated.execute("SELECT COUNT(*) FROM consumption").fetchone()[0], 1)
         finally:
             migrated.close()
+
+
+class GasUnitsCLITests(unittest.TestCase):
+    def test_invalid_sync_gas_units_does_not_create_database(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "unused.sqlite3"
+            with self.assertRaises(ValueError):
+                cli.sync(database, "synthetic", "synthetic", gas_units="m3")
+            self.assertFalse(database.exists())
+
+    def test_cli_env_and_dotenv_precedence_and_invalid_env(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            env_file = root / ".env"
+            for file_units, env_units, flag, expected in (
+                (None, None, None, "unknown"),
+                ("kwh", None, None, "kwh"),
+                ("kwh", "unknown", None, "unknown"),
+                ("unknown", "kwh", None, "kwh"),
+                ("kwh", "kwh", "unknown", "unknown"),
+                ("unknown", "unknown", "kwh", "kwh"),
+                ("unknown", "m3", "kwh", "kwh"),
+            ):
+                with self.subTest(file=file_units, env=env_units, flag=flag):
+                    env_file.write_text(
+                        "ACCOUNT_NUMBER=synthetic\nAPI_KEY=synthetic\n"
+                        + (f"GAS_UNITS={file_units}\n" if file_units is not None else "")
+                    )
+                    env = {"GAS_UNITS": env_units} if env_units is not None else {}
+                    args = ["energy", "--env-file", str(env_file)]
+                    if flag:
+                        args += ["--gas-units", flag]
+                    with (
+                        patch.dict(os.environ, env, clear=True),
+                        patch("sys.argv", args),
+                        patch("octopus_energy.cli.sync", return_value={"status": "success"}) as sync,
+                        patch("octopus_energy.cli.write_reports") as reports,
+                        patch("octopus_energy.cli.write_dashboard"),
+                        contextlib.redirect_stdout(io.StringIO()),
+                    ):
+                        self.assertEqual(cli.main(), 0)
+                    self.assertEqual(sync.call_args.kwargs["gas_units"], expected)
+                    self.assertEqual(reports.call_args.kwargs["gas_units"], expected)
+            with (
+                patch.dict(os.environ, {"GAS_UNITS": "m3"}, clear=True),
+                patch("sys.argv", ["energy", "--env-file", str(env_file)]),
+                patch("octopus_energy.cli.sync") as sync,
+                contextlib.redirect_stdout(io.StringIO()) as output,
+            ):
+                self.assertEqual(cli.main(), 1)
+                self.assertIn("failed safely", output.getvalue())
+                sync.assert_not_called()
+            with (
+                patch("sys.argv", ["energy", "--gas-units", "m3"]),
+                patch("octopus_energy.cli.sync") as sync,
+                contextlib.redirect_stderr(io.StringIO()),
+                self.assertRaises(SystemExit) as error,
+            ):
+                cli.main()
+            self.assertEqual(error.exception.code, 2)
+            sync.assert_not_called()
+
+    def test_unconfigured_cli_reverts_previously_confirmed_gas_to_unknown(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = root / "energy.sqlite3"
+            args = [
+                "energy",
+                "--env-file",
+                str(root / "missing.env"),
+                "--database",
+                str(database),
+                "--report-dir",
+                str(root / "reports"),
+                "--dashboard-dir",
+                str(root / "dashboard"),
+            ]
+            reading = {
+                "interval_start": "2026-11-01T00:00:00Z",
+                "interval_end": "2026-11-01T00:30:00Z",
+                "consumption": 2,
+            }
+            with (
+                patch.dict(os.environ, {"ACCOUNT_NUMBER": "synthetic", "API_KEY": "synthetic"}, clear=True),
+                patch("octopus_energy.cli.OctopusClient") as client,
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                client.return_value.meters.return_value = [Meter("gas", "synthetic", "synthetic", None, None, None)]
+                client.return_value.consumption.return_value = [reading]
+                client.return_value.tariff_rates.return_value = [
+                    {"valid_from": "2020-01-01T00:00:00Z", "valid_to": None, "value_inc_vat": 10}
+                ]
+                with patch("sys.argv", args + ["--gas-units", "kwh"]):
+                    self.assertEqual(cli.main(), 0)
+                with connect(database) as conn:
+                    self.assertEqual(get_gas_units(conn), "kwh")
+                    self.assertEqual(conn.execute("SELECT consumption_kwh FROM daily_costs").fetchone()[0], 2)
+                with patch("sys.argv", args):
+                    self.assertEqual(cli.main(), 0)
+                with connect(database) as conn:
+                    self.assertEqual(get_gas_units(conn), "unknown")
+                    self.assertIsNone(conn.execute("SELECT consumption_kwh FROM daily_costs").fetchone()[0])
 
 
 if __name__ == "__main__":

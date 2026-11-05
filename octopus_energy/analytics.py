@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from statistics import mean, pstdev
 from zoneinfo import ZoneInfo
 
+from .storage import get_gas_units, set_gas_units, validate_gas_units
+
 LONDON = ZoneInfo("Europe/London")
 
 
@@ -65,7 +67,27 @@ def _rate(conn: sqlite3.Connection, meter_id: int, kind: str, instant: str) -> f
     return _Rates(conn).value(meter_id, kind, _instant(instant))
 
 
-def recompute_daily_costs(conn: sqlite3.Connection) -> None:
+def recompute_daily_costs(conn: sqlite3.Connection, gas_units: str | None = None) -> None:
+    units = validate_gas_units(gas_units) if gas_units is not None else None
+    started_transaction = not conn.in_transaction
+    if started_transaction:
+        conn.execute("BEGIN")
+    conn.execute("SAVEPOINT energy_recompute")
+    try:
+        if units is None:
+            units = get_gas_units(conn)
+        set_gas_units(conn, units)
+        _recompute_daily_costs(conn, units)
+    except Exception:
+        conn.execute("ROLLBACK TO energy_recompute")
+        conn.execute("RELEASE energy_recompute")
+        if started_transaction:
+            conn.rollback()
+        raise
+    conn.execute("RELEASE energy_recompute")
+
+
+def _recompute_daily_costs(conn: sqlite3.Connection, gas_units: str) -> None:
     conn.execute("DELETE FROM daily_costs")
     rows = conn.execute("SELECT c.*, m.fuel, m.point_id FROM consumption c JOIN meters m ON m.id=c.meter_id").fetchall()
     rates = _Rates(conn)
@@ -73,7 +95,7 @@ def recompute_daily_costs(conn: sqlite3.Connection) -> None:
     for row in rows:
         groups[_local_date(row["interval_start"]), row["fuel"]].append(row)
     for (day, fuel), readings in groups.items():
-        kwh = sum(row["consumption_kwh"] for row in readings) if fuel == "electricity" else None
+        kwh = sum(row["consumption_kwh"] for row in readings) if fuel == "electricity" or gas_units == "kwh" else None
         unit_cost = 0.0 if kwh is not None else None
         points: dict[str, list] = defaultdict(list)
         for row in readings:
@@ -113,7 +135,7 @@ def summary(conn: sqlite3.Connection, start: str | None = None, end: str | None 
         params.append(end)
     if filters:
         where = " WHERE " + " AND ".join(filters)
-    return [
+    rows = [
         dict(row)
         for row in conn.execute(
             "SELECT fuel, CASE WHEN COUNT(consumption_kwh)=COUNT(*) THEN SUM(consumption_kwh) END consumption_kwh,"
@@ -122,10 +144,18 @@ def summary(conn: sqlite3.Connection, start: str | None = None, end: str | None 
             params,
         )
     ]
+    if get_gas_units(conn) != "kwh":
+        for row in rows:
+            if row["fuel"] == "gas":
+                row["consumption_kwh"] = row["total_cost_gbp"] = None
+    return rows
 
 
 def expensive_days(conn: sqlite3.Connection, fuel: str | None = None, limit: int = 10) -> list[dict]:
-    sql, params = "SELECT * FROM daily_costs WHERE total_cost_gbp IS NOT NULL", []
+    sql, params = (
+        "SELECT * FROM daily_costs WHERE total_cost_gbp IS NOT NULL AND (fuel!='gas' OR ?='kwh')",
+        [get_gas_units(conn)],
+    )
     if fuel:
         sql += " AND fuel=?"
         params.append(fuel)
@@ -135,7 +165,11 @@ def expensive_days(conn: sqlite3.Connection, fuel: str | None = None, limit: int
 
 
 def anomalies(conn: sqlite3.Connection, fuel: str | None = None) -> list[dict]:
-    sql, params = "SELECT date, fuel, consumption_kwh FROM daily_costs WHERE consumption_kwh IS NOT NULL", []
+    sql, params = (
+        "SELECT date, fuel, consumption_kwh FROM daily_costs "
+        "WHERE consumption_kwh IS NOT NULL AND (fuel!='gas' OR ?='kwh')",
+        [get_gas_units(conn)],
+    )
     if fuel:
         sql += " AND fuel=?"
         params.append(fuel)
@@ -155,7 +189,9 @@ def anomalies(conn: sqlite3.Connection, fuel: str | None = None) -> list[dict]:
 
 def overnight_baseline(conn: sqlite3.Connection) -> list[dict]:
     rows = conn.execute(
-        "SELECT m.fuel, c.interval_start, c.consumption_kwh FROM consumption c JOIN meters m ON m.id=c.meter_id WHERE m.fuel='electricity'"
+        "SELECT m.fuel, c.interval_start, c.consumption_kwh FROM consumption c "
+        "JOIN meters m ON m.id=c.meter_id WHERE m.fuel='electricity' OR ?='kwh'",
+        (get_gas_units(conn),),
     ).fetchall()
     groups: dict[str, list[float]] = defaultdict(list)
     for row in rows:

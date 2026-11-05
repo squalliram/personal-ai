@@ -23,15 +23,27 @@ It only **reads** from Octopus. It never switches tariffs, changes account setti
    ./scripts/start-energy.sh --days 90  # or choose a shorter first-run window
    ```
 
-Each run finds your electricity and gas meters and relevant tariff agreements. It downloads consumption, unit rates and standing charges, works out available daily electricity estimates, and regenerates the reports and dashboard after a complete successful collection. Failed, empty or partial collections preserve the previous complete snapshot and outputs rather than claiming success.
+Each run finds your electricity and gas meters and relevant tariff agreements. It downloads consumption, unit rates and standing charges, works out available electricity and explicitly configured gas estimates, and regenerates the reports and dashboard after a complete successful collection. Failed, empty or partial collections preserve the previous complete snapshot and outputs rather than claiming success.
 
 Later consumption runs are **incremental**. Consumption is re-read from 7 days before the newest stored reading, because Octopus sometimes fills in late readings. The lookback is clamped to the requested `--days` window unless the stored watermark is older. Rerunning is safe; nothing is duplicated. Tariff coverage is checked against historical agreements rather than assumed from the latest tariff alone.
 
-Missing tariff coverage makes costs unavailable, not zero. Gas source units are currently unverified: raw readings are retained, but gas kWh and unit costs are withheld. Estimates cover retrieved intervals and are not reconciled bills or a guarantee of complete billing-day coverage.
+Missing tariff coverage makes costs unavailable, not zero. Gas units default to `unknown`: raw readings are retained, but gas kWh and unit costs are withheld unless source readings have been explicitly confirmed as kWh. Estimates cover retrieved intervals and are not reconciled bills or a guarantee of complete billing-day coverage.
 
 `--days` limits how far back the first consumption sync of each meter goes. It also bounds rate downloads: when the account returns tariff agreement history, unit rates and standing charges are re-read for the whole `--days` window on each sync; otherwise they resume from the newest stored rate.
 
 Other options: `--database`, `--env-file`, `--report-dir`, `--dashboard-dir` (see `python3 -m octopus_energy.cli --help`).
+
+### Gas reading units
+
+Only after confirming that the source gas readings are already kWh, use:
+
+```sh
+./scripts/start-energy.sh --days 90 --gas-units kwh
+```
+
+The CLI resolves units in this order: `--gas-units` > process `GAS_UNITS` > `.env` `GAS_UNITS` > `unknown`. For local runs, `GAS_UNITS=kwh` is an alternative to the flag. `--gas-units unknown` explicitly restores the safe unavailable state. The program never infers units from a meter type or guesses a volume-to-energy conversion.
+
+The selected mode is stored per database. Standalone report refreshes without a mode preserve it, and MCP honours it read-only. **Every CLI run resolves its mode again:** a successful run with no flag or configured `GAS_UNITS` resets the database to `unknown`, even after a previous kWh run. Failed or incomplete collections preserve the previous snapshot and mode. Existing raw readings are preserved when estimates are recomputed.
 
 ## What you get
 

@@ -2,7 +2,7 @@
 
 ## Current outcome
 
-Local collection, analysis, dashboard generation and read-only MCP tools are validated. The existing website is **not yet verified end to end**: authenticated page/data access and deployed reading freshness remain pending. No deployment, account mutation or source-refresh schedule was performed or created.
+The baseline release `28132f9f0a15e35d6a283dee6093597864ed8e67` passed GitHub checks and completed a real source sync plus dashboard-file publication. This does not establish authenticated page/data freshness. The operator subsequently confirmed that source gas readings are already kWh; this revision adds an explicit opt-in while keeping unknown units unavailable by default. No account mutation, source-refresh schedule or manual host configuration change was performed.
 
 ## Available capabilities
 
@@ -26,9 +26,9 @@ Independent checks on the pre-reconciliation readiness checkpoint:
 
 The integration owner separately reports a successful fresh-process **default 400-day** `./scripts/start-energy.sh` run: exit 0 in **40.37 seconds**, no stderr, both fuels accessible, successful history and generated temporary reports/dashboard. The original checkout data was untouched. An earlier 180-second timeout was resolved by bounded 1,000-record API pages. This live check is separate from the synthetic tests above.
 
-## Validation after upstream reconciliation and queue correction
+## Earlier validation after upstream reconciliation and queue correction
 
-Final checks on the reconciled application and workflow safety changes:
+Checks at the earlier queue-correction checkpoint:
 
 - Python 3.12 `-m unittest discover -s tests -v`: **103 tests passed**, 13.588 seconds.
 - Required `python3 -m unittest discover -s tests -v`: **103 tests passed**, 18.723 seconds.
@@ -36,19 +36,28 @@ Final checks on the reconciled application and workflow safety changes:
 - Dashboard Node tests, JavaScript syntax and all three energy shell-script syntax checks: passed.
 - Eighteen isolated release tests exercise the real workflow commands without network access. They preserve the original deployment, checkout, sync-failure and invalid-configuration cases, and add real concurrent C/B/A processes in both waiter orders. They verify non-interleaving checkout/sync/publication, eventual publication of current B only, lock release after failure, missing-lock prerequisites, and refusal to publish after main/HEAD changes or a failed post-sync fetch. Linux CI uses `flock`; local macOS tests use standard-library `fcntl` with the same kernel-lock lifetime.
 - Independent merged-backend review passed fresh/incremental/repeated ingestion, backfill, historical tariffs, WAL snapshots, rollback and unavailable gas-value checks.
-- No unresolved merge paths or conflict markers remain. Repository checks pass; publication and deployment remain blocked on the hosting prerequisites below.
+- No unresolved merge paths or conflict markers remained. Hosting prerequisites blocked publication at that checkpoint; the later baseline deployment below succeeded.
 
 The integration owner reports the merged fresh-process **default 400-day** collection completing in **6.45 seconds**, followed by an idempotent repeat in **4.84 seconds**, with independent provider interval-count checks. These are read-only live-source checks, not website deployment evidence.
 
-The queue correction gives different tested commits separate GitHub concurrency groups. A late older completion can no longer replace another commit's pending job. The host must provide `flock`; an exclusive lock inside `.git` serializes checkout, collection and publication. The workflow rechecks remote main and checkout HEAD after collection. No corrected workflow command has been executed on the host.
+The queue correction gives different tested commits separate GitHub concurrency groups. A late older completion can no longer replace another commit's pending job. The host must provide `flock`; an exclusive lock inside `.git` serializes checkout, collection and publication. The workflow rechecks remote main and checkout HEAD after collection. These guards subsequently ran successfully in the baseline deployment.
 
-## Release preparation
+## Verified baseline deployment before the gas-unit update
 
-Deployment through GitHub is now separately authorized, but no release or deployment has occurred. Reconciliation preserves incremental collection, seven-day backfill, WAL/batched writes, Python 3.10+ and pinned Ruff checks. Merged tests and fresh-process collection measurements pass; hosting prerequisites remain the release blocker.
+Baseline main `28132f9f0a15e35d6a283dee6093597864ed8e67` passed [Test run 42078984355](https://github.com/squalliram/personal-ai/actions/runs/42078984355): 113 tests in 3.074 seconds, plus pinned Ruff lint and formatting across 28 files.
 
-GitHub read-only checks found no configured deployment secrets: `CPANEL_SSH_HOST`, `CPANEL_SSH_USERNAME`, `CPANEL_SSH_PRIVATE_KEY`, `CPANEL_SSH_KNOWN_HOSTS`, `CPANEL_APP_PATH` and `CPANEL_DASHBOARD_PATH` are all absent. The latest green deployment workflow skipped its deployment job; it did not update the website.
+[Deployment run 42079031286](https://github.com/squalliram/personal-ai/actions/runs/42079031286) completed both preflight and deployment successfully. Actual output contained one successful Octopus source-sync message and one dashboard-publication message, with no superseded-run skip. This was real artifact publication, not a green skipped job. It does not prove two years of production history or real-time meter updates.
 
-At **13:28:15 Europe/London**, the hosting owner verified an authenticated cPanel session and the expected private repository clone with the correct GitHub origin. Its displayed commit, `7bec26d4bfd822cd7e52f77ab3cb2f7ab6ddf35a`, predates the readiness work. Python version, `flock`, the `.git` directory, environment-file presence, target protection/artifacts and a usable deployment mechanism are still being checked read-only. The cPanel native Deploy control is disabled pending its `.cpanel.yml` prerequisite. No pull/deploy control was activated. Public dashboard authentication is not a substitute for this hosting access.
+At that release, seven deployment-secret names were configured, including the optional SSH port. No secret values were inspected or changed. The successful workflow exercised the host's interpreter, locking, checkout, source credentials and protected-publication guards. No cPanel pull/deploy control or manual host command was used.
+
+The gas-unit update preserves those safeguards and sets the source-sync command to `--days 90 --gas-units kwh`. Units resolve as `--gas-units` > process `GAS_UNITS` > `.env` `GAS_UNITS` > `unknown`. The mode is stored per database and retained by standalone report refreshes that omit it; MCP reads it read-only. A successful unconfigured CLI run explicitly reverts to `unknown`; failed or incomplete collections preserve the previous mode.
+
+## Gas-unit validation
+
+- Explicit Python 3.12.16: 126 tests passed in 12.707 seconds. The required `python3 -m unittest discover -s tests -v` command, with the supported interpreter selected through command-scoped `PATH`, passed all 126 tests in 14.422 seconds.
+- Pinned Ruff 0.16.10 lint and formatting passed across 28 Python files. Dashboard Node tests, JavaScript syntax, all four energy shell-script syntax checks and whitespace checks passed.
+- Regression cases cover exact CLI/environment precedence, unconfigured-run reversion, retained raw readings, report-only preservation, transactional metadata/cost rollback, incomplete pricing, confirmed gas analyses and read-only MCP behavior without metadata. Node checks cover confirmed gas peak-hour cards, fuel switching and the unconfirmed fallback. The release fixture verifies the actual sync arguments include `--gas-units kwh`.
+- Independent QA reports that the final local preview passed all eight fuel/period views, including confirmed gas peak-hour cards, with unchanged electricity exports. This preview used a private local copy, not production. Synthetic checks and local previews are not evidence of live website content or freshness.
 
 ## Existing website verification
 
@@ -67,7 +76,7 @@ Earlier embedded-browser retries reopened and selected the confirmed HTTPS tab. 
 
 The user subsequently reported signing in. At **13:12:11 Europe/London on 5 November 2026**, the read-only checker found that this agent's assigned browser context was not on the confirmed HTTPS origin or dashboard path. Its same-origin guard therefore made **no page or JSON requests**. A minimal tab-metadata check found no existing tab at the confirmed dashboard URL in that assigned session. This is a browser-context mismatch, not evidence that the user's credentials failed. No unrelated page content, credentials or household values were read.
 
-Authenticated page/JSON status, schema, export time, per-fuel reading freshness, authenticated cache headers and deployed source linkage remain **unverified** until the signed-in dashboard is available in the same authorized browser context. Hosting sign-in has since been verified, as noted above, but server-side `.env` and the actual refresh/deploy configuration remain under read-only inspection. Website verification does not authorize a source-refresh schedule or deployment.
+Authenticated page/JSON status, schema, export time, per-fuel reading freshness and authenticated cache headers were not independently established by this release check. The successful GitHub deployment separately establishes a usable source-refresh/publication path without exposing server environment contents. Website verification does not authorize a source-refresh schedule.
 
 After separate authorization, one new pinned tab was requested at the confirmed HTTPS URL in the same assigned embedded browser to reuse any existing login. That attempt did not expose a usable dashboard tab. An offline browser diagnostic passed, and the subsequent assigned-session tab listing still contained no confirmed dashboard tab. Tab creation was not retried, and no authenticated HTML/JSON requests were made.
 
@@ -75,7 +84,7 @@ That dashboard-browser verification stopped there. No alternate browser/profile 
 
 ## Limits and outstanding work
 
-- **Gas units:** raw source gas units are not verified. Raw readings remain stored, but gas kWh, unit costs and associated comparisons are unavailable rather than fabricated. Electricity estimates also remain unavailable if any required rate coverage is missing.
+- **Gas units:** the operator has confirmed kWh for this source. Explicit `kwh` mode enables gas estimates without changing raw readings; `unknown` remains the default and never fabricates gas kWh. Missing required tariff coverage still makes electricity or gas costs unavailable.
 - **Freshness:** there is no source-sync scheduler. Browser reloads only fetch the published snapshot; they do not call Octopus. Source refresh requires an authorized manual run or authorized deployment. Creating a schedule needs separate approval.
 - **Website:** complete authenticated HTTPS page/JSON and freshness checks; confirm server-side configuration. Configure HTTP-to-HTTPS redirection before authentication and private, non-shared caching on the server. No server changes are authorized by verification alone.
 - **Estimates:** retrieved intervals may not cover complete billing days. Costs are estimates, not reconciled bills; tariff changes inside an interval are not arbitrarily allocated.

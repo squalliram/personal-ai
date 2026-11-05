@@ -5,6 +5,32 @@ from collections.abc import Iterable
 from pathlib import Path
 
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
+GAS_UNIT_CHOICES = ("kwh", "unknown")
+
+
+def validate_gas_units(value: str) -> str:
+    if value not in GAS_UNIT_CHOICES:
+        raise ValueError("Gas units must be kwh or unknown")
+    return value
+
+
+def get_gas_units(conn: sqlite3.Connection) -> str:
+    table = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='energy_settings'").fetchone()
+    if table is None:
+        return "unknown"
+    row = conn.execute("SELECT value FROM energy_settings WHERE name='gas_units'").fetchone()
+    return validate_gas_units(row[0]) if row else "unknown"
+
+
+def set_gas_units(conn: sqlite3.Connection, value: str) -> None:
+    """Write unit metadata inside the caller's recompute transaction."""
+    validate_gas_units(value)
+    conn.execute("CREATE TABLE IF NOT EXISTS energy_settings (name TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    conn.execute(
+        "INSERT INTO energy_settings(name,value) VALUES('gas_units',?) "
+        "ON CONFLICT(name) DO UPDATE SET value=excluded.value",
+        (value,),
+    )
 
 
 def connect(path: Path) -> sqlite3.Connection:

@@ -26,6 +26,12 @@ It does **not** identify appliances. Half-hourly meter data measures the whole p
 - Weekly totals use Monday-start calendar weeks, including weeks crossing months or years. Current, missing-date and non-adjacent periods are excluded from percentage comparisons. Missing intervals within a recorded date are not corrected.
 - Historical peak demand is not a cheapest-rate prediction. Event times and invitations are not connected to a live event feed.
 
+## Gas reading units
+
+The operator has confirmed that this source's gas readings are already kWh. The deployment workflow therefore passes `--gas-units kwh` explicitly on every source sync; no server `.env` change is needed. Other accounts must confirm their source units before opting in.
+
+CLI precedence is `--gas-units` > process `GAS_UNITS` > `.env` `GAS_UNITS` > `unknown`. The selected mode is stored per database and is preserved by standalone report refreshes that omit a mode; MCP reads it without changing it. An unconfigured **CLI run** still resolves to `unknown` and, on success, resets gas usage/cost availability. Failed or incomplete collections preserve the previous snapshot and mode. No volume conversion is guessed, and missing tariff coverage still makes costs unavailable.
+
 ## Deployment model
 
 1. cPanel hosts a clone at `/home/iramkhan/personal-ai` outside the public web root.
@@ -35,7 +41,7 @@ It does **not** identify appliances. Half-hourly meter data measures the whole p
 5. A configuration step checks all six deployment secrets. If any are absent, the connection and deployment steps are skipped.
 6. Only successful, configured runs proceed. Each tested commit has a separate GitHub concurrency group, so a late older completion cannot replace a different commit's pending job.
 7. The job connects over SSH with strict pinned host-key checking and acquires an exclusive `flock` on `.git/energy-dashboard.deploy.lock`. This server lock covers checkout checks, collection and publication. It refuses a dirty checkout or a branch other than `main`, fetches `main`, and skips a run if remote `main` has moved past its tested commit. It fast-forwards the clean clone to the exact tested commit, never resetting away server changes. A divergent checkout fails closed.
-8. It runs a read-only incremental sync (90-day window on the first run), generates the dashboard, and fetches `main` again. A failed sync/fetch, changed checkout, or `main` moving during collection prevents publication. It copies only `index.html` and `data.json` to the protected web directory. Each file is replaced atomically; `.htaccess` and other existing files are preserved.
+8. It runs `./scripts/start-energy.sh --days 90 --gas-units kwh` (a read-only incremental sync, with a 90-day window on the first run), generates the dashboard, and fetches `main` again. A failed sync/fetch, changed checkout, or `main` moving during collection prevents publication. It copies only `index.html` and `data.json` to the protected web directory. Each file is replaced atomically; `.htaccess` and other existing files are preserved.
 
 Required GitHub repository secrets:
 
@@ -87,7 +93,7 @@ Reference: [cPanel Domains, Force HTTPS Redirect](https://docs.cpanel.net/cpanel
 
 - Make code changes and push `main`; tests run first. A successful run triggers deployment when all secrets are present.
 - If a deploy fails, check the GitHub Actions log. Never paste credentials into an issue, commit, or log.
-- To refresh locally: `./scripts/start-energy.sh --days 90`.
+- To refresh locally: `./scripts/start-energy.sh --days 90`. Add `--gas-units kwh` only for confirmed kWh source readings; otherwise gas remains unavailable.
 - To review locally after a successful sync, serve only the generated dashboard directory over loopback:
 
   ```sh
@@ -95,10 +101,10 @@ Reference: [cPanel Domains, Force HTTPS Redirect](https://docs.cpanel.net/cpanel
   ```
 
   Open `http://127.0.0.1:8765/`, then stop the foreground server with Ctrl-C. Opening the HTML using `file://` cannot reliably fetch its JSON. Never serve the repository root, `.env`, SQLite database or reports directory publicly.
-- To refresh on cPanel manually, run from the non-public application clone:
+- To refresh this confirmed-kWh source on cPanel manually, run from the non-public application clone:
 
   ```sh
-  ./scripts/start-energy.sh --days 90
+  ./scripts/start-energy.sh --days 90 --gas-units kwh
   DASHBOARD_TARGET=/absolute/protected/directory ./scripts/publish-energy-dashboard.sh
   ```
 

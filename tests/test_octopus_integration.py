@@ -70,7 +70,7 @@ class IntegrationTests(unittest.TestCase):
                     contextlib.redirect_stdout(io.StringIO()),
                 ):
                     self.assertEqual(main(), 0)
-                    run.assert_called_once_with(root / "db.sqlite3", "env-account", "env-key", 400)
+                    run.assert_called_once_with(root / "db.sqlite3", "env-account", "env-key", 400, gas_units="unknown")
 
     def test_partial_failed_sync_preserves_previous_data(self):
         with tempfile.TemporaryDirectory() as directory:

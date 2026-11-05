@@ -82,7 +82,7 @@ jobs:
             if [ \"\$(git rev-parse origin/main)\" != '$DEPLOY_SHA' ]; then \
             echo 'origin/main has moved past the tested commit; skipping deploy.'; exit 0; fi && \
             git merge --ff-only '$DEPLOY_SHA' && test \"\$(git rev-parse HEAD)\" = '$DEPLOY_SHA' && \
-            ./scripts/start-energy.sh --days 90 && \
+            ./scripts/start-energy.sh --days 90 --gas-units kwh && \
             git fetch --no-tags origin main && \
             if [ \"\$(git rev-parse origin/main)\" != '$DEPLOY_SHA' ]; then \
             echo 'origin/main changed during collection; skipping publication.'; exit 0; fi && \
