@@ -9,7 +9,7 @@ from pathlib import Path
 
 from octopus_energy.analytics import recompute_daily_costs
 from octopus_energy.dashboard import dashboard_data, write_dashboard
-from octopus_energy.storage import connect, upsert_consumption, upsert_meter
+from octopus_energy.storage import connect, upsert_consumption, upsert_meter, upsert_rate
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -146,6 +146,46 @@ class DashboardTests(unittest.TestCase):
         self.assertIsNone(row["cost"])
         self.assertEqual(row["cost_status"], "incomplete")
         self.assertIn("missing_unit_rate", row["cost_reason"])
+
+    def test_confirmed_gas_hourly_usage_and_costs_follow_persisted_mode(self):
+        gas = upsert_meter(
+            self.conn,
+            fuel="gas",
+            point_id="synthetic-gas",
+            serial="synthetic-gas",
+            tariff_code=None,
+            valid_from=None,
+            valid_to=None,
+            synced_at="2026-11-01T00:00:00Z",
+        )
+        upsert_consumption(
+            self.conn,
+            gas,
+            {
+                "interval_start": "2026-11-01T12:00:00Z",
+                "interval_end": "2026-11-01T12:30:00Z",
+                "consumption": 2,
+            },
+        )
+        recompute_daily_costs(self.conn, gas_units="kwh")
+        self.conn.commit()
+        data = dashboard_data(self.database)
+        self.assertEqual(data["hourly"], [{"fuel": "gas", "hour": 12, "kwh": 4}])
+        self.assertEqual(data["daily"][0]["kwh"], 2)
+        self.assertIsNone(data["daily"][0]["cost"])
+        self.assertIn("missing_unit_rate", data["daily"][0]["cost_reason"])
+        self.assertNotIn("unknown_gas_units", data["daily"][0]["cost_reason"])
+        for kind, value in (("standard-unit-rates", 10), ("standing-charges", 50)):
+            upsert_rate(self.conn, gas, kind, {"valid_from": "2020-01-01T00:00:00Z", "value_inc_vat": value})
+        recompute_daily_costs(self.conn)
+        self.conn.commit()
+        self.assertEqual(dashboard_data(self.database)["daily"][0]["cost"], 0.7)
+        recompute_daily_costs(self.conn, gas_units="unknown")
+        self.conn.commit()
+        data = dashboard_data(self.database)
+        self.assertEqual(data["hourly"], [])
+        self.assertIsNone(data["daily"][0]["kwh"])
+        self.assertIn("unknown_gas_units", data["daily"][0]["cost_reason"])
 
     def test_latest_successful_sync_excludes_later_failure_and_no_data(self):
         for ended, status in [

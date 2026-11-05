@@ -10,7 +10,15 @@ from .analytics import recompute_daily_costs
 from .client import OctopusAPIError, OctopusClient, utc_now
 from .dashboard import write_dashboard
 from .reports import write_reports
-from .storage import connect, upsert_account, upsert_consumption, upsert_meter, upsert_rate
+from .storage import (
+    GAS_UNIT_CHOICES,
+    connect,
+    upsert_account,
+    upsert_consumption,
+    upsert_meter,
+    upsert_rate,
+    validate_gas_units,
+)
 
 
 def load_env(path: Path) -> dict[str, str]:
@@ -50,7 +58,8 @@ def _consumption_resume_from(watermark: str | None, default_from: str) -> str:
     return _iso_utc(min(mark, max(mark - CONSUMPTION_LOOKBACK, floor)))
 
 
-def sync(database: Path, account_number: str, api_key: str, days: int = 400) -> dict:
+def sync(database: Path, account_number: str, api_key: str, days: int = 400, *, gas_units: str = "unknown") -> dict:
+    validate_gas_units(gas_units)
     if days <= 0:
         raise ValueError("Sync days must be positive")
     if not account_number.strip() or not api_key.strip():
@@ -128,7 +137,7 @@ def sync(database: Path, account_number: str, api_key: str, days: int = 400) -> 
                 "empty_meters": empty_meters,
                 **counts,
             }
-        recompute_daily_costs(conn)
+        recompute_daily_costs(conn, gas_units=gas_units)
         conn.execute(
             "UPDATE sync_history SET ended_at=?,status=?,electricity_records=?,gas_records=? WHERE id=?",
             (utc_now(), "success", counts["electricity"], counts["gas"], sync_id),
@@ -154,14 +163,24 @@ def main() -> int:
     parser.add_argument("--days", type=int, default=400)
     parser.add_argument("--report-dir", default="reports/energy")
     parser.add_argument("--dashboard-dir", default="reports/energy/dashboard")
+    parser.add_argument(
+        "--gas-units",
+        choices=GAS_UNIT_CHOICES,
+        default=None,
+        help="Gas source units, overriding GAS_UNITS in the environment or .env. "
+        "An unconfigured CLI run uses unknown and reverts previously confirmed gas kWh.",
+    )
     args = parser.parse_args()
     try:
         env = {**load_env(Path(args.env_file)), **os.environ}
-        result = sync(Path(args.database), env["ACCOUNT_NUMBER"], env["API_KEY"], args.days)
+        gas_units = validate_gas_units(
+            args.gas_units if args.gas_units is not None else env.get("GAS_UNITS", "unknown")
+        )
+        result = sync(Path(args.database), env["ACCOUNT_NUMBER"], env["API_KEY"], args.days, gas_units=gas_units)
         if result["status"] != "success":
             print(f"Octopus read-only sync incomplete: status={result['status']}; previous data and outputs preserved")
             return 1
-        write_reports(Path(args.database), Path(args.report_dir))
+        write_reports(Path(args.database), Path(args.report_dir), gas_units=gas_units)
         write_dashboard(Path(args.database), Path(args.dashboard_dir))
         print("Octopus read-only sync succeeded: " + ", ".join(f"{key}={value}" for key, value in result.items()))
         return 0

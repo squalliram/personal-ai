@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from .storage import connect
+from .storage import connect, get_gas_units
 
 LONDON = ZoneInfo("Europe/London")
 
@@ -16,6 +16,7 @@ LONDON = ZoneInfo("Europe/London")
 def dashboard_data(database: Path) -> dict:
     conn = connect(database)
     try:
+        gas_units = get_gas_units(conn)
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(daily_costs)")}
         quality = ",cost_status,cost_reason" if {"cost_status", "cost_reason"} <= columns else ""
         daily = [
@@ -28,6 +29,8 @@ def dashboard_data(database: Path) -> dict:
         ]
         for row in daily:
             unit_cost, standing_cost = row.pop("unit_cost_gbp"), row.pop("standing_charge_gbp")
+            if row["fuel"] == "gas" and gas_units != "kwh":
+                row["kwh"] = row["cost"] = unit_cost = None
             if not quality:
                 reasons = []
                 if row["fuel"] == "gas" and row["kwh"] is None:
@@ -60,9 +63,8 @@ def dashboard_data(database: Path) -> dict:
                 stop = min(end, boundary)
                 seconds = (stop - cursor).total_seconds()
                 local = cursor.astimezone(LONDON)
-                # Only electricity intervals are known kWh. Gas daily conversion
-                # belongs to analytics; never relabel raw gas volume here.
-                if fuel == "electricity":
+                # Gas is kWh only after an explicit, persisted source-unit confirmation.
+                if fuel == "electricity" or gas_units == "kwh":
                     bucket = hours[fuel][local.hour]
                     bucket[0] += float(row["consumption_kwh"]) * seconds / duration
                     bucket[1].append((cursor, stop))

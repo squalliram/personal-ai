@@ -61,6 +61,7 @@ class DeploymentSafetyTests(unittest.TestCase):
             DEPLOY_SHA="a" * 40,
             EXPECTED_SHA="a" * 40,
             SYNC_MARKER=str(self.root / "sync-marker"),
+            SYNC_ARGUMENTS=str(self.root / "sync-arguments"),
         )
         # Exercise util-linux flock in CI. macOS uses the same kernel-lock
         # semantics through its standard-library fcntl module.
@@ -98,7 +99,8 @@ esac
         )
         self.executable(
             scripts / "start-energy.sh",
-            '#!/bin/sh\nprintf "SYNC\\n" >> "$COMMAND_LOG"\n: > "$SYNC_MARKER"\n[ "$SCENARIO" != sync_failure ]\n',
+            '#!/bin/sh\nprintf "SYNC\\n" >> "$COMMAND_LOG"\n'
+            'printf "%s\\n" "$@" > "$SYNC_ARGUMENTS"\n: > "$SYNC_MARKER"\n[ "$SCENARIO" != sync_failure ]\n',
         )
         self.executable(
             scripts / "publish-energy-dashboard.sh",
@@ -136,6 +138,10 @@ esac
     def test_valid_tested_commit_fast_forwards_then_syncs_and_publishes(self):
         commands = self.assert_scenario("valid", 0, sync=True, publish=True)
         self.assertIn("merge --ff-only " + self.env["EXPECTED_SHA"], commands)
+        self.assertEqual(
+            Path(self.env["SYNC_ARGUMENTS"]).read_text().splitlines(),
+            ["--days", "90", "--gas-units", "kwh"],
+        )
         self.assertLess(commands.index("SYNC"), commands.index("PUBLISH"))
 
     def test_dirty_checkout_never_updates_or_publishes(self):

@@ -24,7 +24,7 @@ It pulls my Octopus Energy smart-meter readings and tariffs. From them it shows 
 
 Setup, privacy, the dashboard and the MCP tools are documented in [`octopus_energy/README.md`](octopus_energy/README.md).
 
-Costs are estimates, not bills. Missing tariff coverage and unverified gas energy units remain unavailable rather than zero. The dashboard labels source freshness separately from export time; its five-minute reload checks only the published snapshot, not Octopus. Event suggestions are not a live event feed.
+Costs are estimates, not bills. Missing tariff coverage and unverified gas energy units remain unavailable rather than zero. Confirmed gas kWh readings can be enabled explicitly with `--gas-units kwh`; unconfigured runs default to `unknown`. The dashboard labels source freshness separately from export time; its five-minute reload checks only the published snapshot, not Octopus. Event suggestions are not a live event feed.
 
 For safe local viewing, serve only the generated dashboard directory over loopback rather than opening `file://`. See [operations](docs/energy-dashboard.md) and the [dated readiness evidence](docs/energy-readiness.md). The existing private website is `https://iramkhan.com/energy-usage/`; local validation alone does not establish its deployed data or freshness.
 

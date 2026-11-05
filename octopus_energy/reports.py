@@ -4,8 +4,8 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from .analytics import anomalies, expensive_days, overnight_baseline, summary
-from .storage import connect
+from .analytics import anomalies, expensive_days, overnight_baseline, recompute_daily_costs, summary
+from .storage import connect, get_gas_units, validate_gas_units
 
 LONDON = ZoneInfo("Europe/London")
 
@@ -18,10 +18,15 @@ def _cost(value: float | None) -> str:
     return f"£{value:.2f}" if value is not None else "cost unavailable/incomplete"
 
 
-def write_reports(database: Path, output_dir: Path) -> tuple[Path, Path]:
+def write_reports(database: Path, output_dir: Path, *, gas_units: str | None = None) -> tuple[Path, Path]:
+    if gas_units is not None:
+        validate_gas_units(gas_units)
     output_dir.mkdir(parents=True, exist_ok=True)
     conn = connect(database)
     try:
+        with conn:
+            recompute_daily_costs(conn, gas_units=gas_units)
+        units = get_gas_units(conn)
         today = datetime.now(LONDON).date().isoformat()
         tariffs = [dict(r) for r in conn.execute("SELECT fuel,tariff_code FROM meters ORDER BY fuel")]
         totals = summary(conn)
@@ -36,7 +41,13 @@ def write_reports(database: Path, output_dir: Path) -> tuple[Path, Path]:
         ] or ["- No interval data available."]
         daily += [
             "",
-            "Costs are unavailable when any required tariff coverage is missing. Gas source units are unverified, so gas kWh and unit costs are not calculated. Totals cover retrieved intervals, not necessarily complete billing days.",
+            "Costs are unavailable when any required tariff coverage is missing. "
+            + (
+                "Gas readings are configured as kWh; no volume conversion is applied. "
+                if units == "kwh"
+                else "Gas source units are unverified, so gas kWh and unit costs are not calculated. "
+            )
+            + "Totals cover retrieved intervals, not necessarily complete billing days.",
         ]
         daily += ["", "## Overnight baseline"]
         daily += [

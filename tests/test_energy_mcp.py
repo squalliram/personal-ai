@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from octopus_energy.analytics import recompute_daily_costs
 from octopus_energy.mcp_server import PROTOCOL_VERSIONS, TOOLS
 from octopus_energy.reports import write_reports
 from octopus_energy.storage import connect
@@ -271,6 +272,86 @@ class EnergyMCPTests(unittest.TestCase):
         rows = json.loads(responses[1]["result"]["content"][0]["text"])
         self.assertEqual(rows[0]["consumption_kwh"], 5.0)
         self.assertIsNone(rows[0]["total_cost_gbp"])
+
+    def test_gas_queries_use_confirmed_units_without_writing(self):
+        conn = connect(self.database)
+        conn.execute("INSERT INTO meters VALUES(1,'gas','synthetic','synthetic',NULL,NULL,NULL,'synthetic')")
+        conn.execute("INSERT INTO consumption VALUES(1,'2026-11-01T00:00:00Z','2026-11-01T00:30:00Z',2)")
+        conn.execute("INSERT INTO tariff_rates VALUES(1,'standard-unit-rates','2020-01-01T00:00:00Z',NULL,10)")
+        conn.execute("INSERT INTO tariff_rates VALUES(1,'standing-charges','2020-01-01T00:00:00Z',NULL,50)")
+        recompute_daily_costs(conn, gas_units="kwh")
+        conn.commit()
+        conn.close()
+        before = hashlib.sha256(self.database.read_bytes()).digest()
+        responses = self.run_server(
+            initialization()
+            + [
+                request("tools/call", "summary", {"name": "get_energy_summary"}),
+                request(
+                    "tools/call",
+                    "daily",
+                    {"name": "get_daily_consumption", "arguments": {"start": "2026-11-01", "end": "2026-11-02"}},
+                ),
+                request("tools/call", "monthly", {"name": "get_monthly_bill_comparison"}),
+                request("tools/call", "baseline", {"name": "get_overnight_baseline"}),
+            ]
+        )
+        for response in responses[1:4]:
+            rows = json.loads(response["result"]["content"][0]["text"])
+            self.assertEqual(rows[0]["consumption_kwh"], 2)
+            self.assertAlmostEqual(rows[0]["total_cost_gbp"], 0.7)
+        baseline = json.loads(responses[4]["result"]["content"][0]["text"])
+        self.assertEqual(baseline[0]["fuel"], "gas")
+        self.assertEqual(hashlib.sha256(self.database.read_bytes()).digest(), before)
+
+    def test_missing_unit_metadata_table_or_row_is_unknown_and_read_only(self):
+        for missing in ("table", "row"):
+            with self.subTest(missing=missing):
+                if self.database.exists():
+                    self.database.unlink()
+                conn = connect(self.database)
+                conn.execute("INSERT INTO meters VALUES(1,'gas','synthetic','synthetic',NULL,NULL,NULL,'synthetic')")
+                conn.execute("INSERT INTO consumption VALUES(1,'2026-11-01T00:00:00Z','2026-11-01T00:30:00Z',2)")
+                conn.execute("INSERT INTO daily_costs VALUES('2026-11-01','gas',2,.2,.5,.7)")
+                if missing == "row":
+                    conn.execute("CREATE TABLE energy_settings(name TEXT PRIMARY KEY,value TEXT NOT NULL)")
+                conn.commit()
+                conn.close()
+                before = hashlib.sha256(self.database.read_bytes()).digest()
+                responses = self.run_server(
+                    initialization()
+                    + [
+                        request("tools/call", "summary", {"name": "get_energy_summary"}),
+                        request(
+                            "tools/call",
+                            "daily",
+                            {
+                                "name": "get_daily_consumption",
+                                "arguments": {"start": "2026-11-01", "end": "2026-11-02"},
+                            },
+                        ),
+                        request("tools/call", "monthly", {"name": "get_monthly_bill_comparison"}),
+                        request("tools/call", "baseline", {"name": "get_overnight_baseline"}),
+                        request("tools/call", "expensive", {"name": "get_expensive_days"}),
+                        request("tools/call", "anomalies", {"name": "detect_energy_anomalies"}),
+                    ]
+                )
+                for response in responses[1:4]:
+                    self.assertNotIn("isError", response["result"])
+                    rows = json.loads(response["result"]["content"][0]["text"])
+                    self.assertIsNone(rows[0]["consumption_kwh"])
+                    self.assertIsNone(rows[0]["total_cost_gbp"])
+                for response in responses[4:]:
+                    self.assertEqual(json.loads(response["result"]["content"][0]["text"]), [])
+                self.assertEqual(hashlib.sha256(self.database.read_bytes()).digest(), before)
+                conn = connect(self.database)
+                if missing == "table":
+                    self.assertIsNone(
+                        conn.execute("SELECT name FROM sqlite_master WHERE name='energy_settings'").fetchone()
+                    )
+                else:
+                    self.assertEqual(conn.execute("SELECT COUNT(*) FROM energy_settings").fetchone()[0], 0)
+                conn.close()
 
     def test_internal_errors_preserve_id_and_hide_database_values(self):
         self.seed_database()

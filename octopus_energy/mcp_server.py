@@ -9,6 +9,7 @@ from datetime import date
 from pathlib import Path
 
 from .analytics import anomalies, expensive_days, overnight_baseline, summary
+from .storage import get_gas_units
 
 TOOLS = (
     "get_energy_summary",
@@ -52,6 +53,14 @@ class RefreshRequiredError(RuntimeError):
     pass
 
 
+def _confirmed_gas_totals(conn: sqlite3.Connection, rows: list[dict]) -> list[dict]:
+    if get_gas_units(conn) != "kwh":
+        for row in rows:
+            if row["fuel"] == "gas":
+                row["consumption_kwh"] = row["total_cost_gbp"] = None
+    return rows
+
+
 def dispatch(name: str, arguments: dict, database: Path) -> list[dict]:
     if name not in TOOLS:
         raise ValueError("Unknown read-only energy tool")
@@ -70,23 +79,29 @@ def dispatch(name: str, arguments: dict, database: Path) -> list[dict]:
         if name == "get_energy_summary":
             return summary(conn, arguments.get("start"), arguments.get("end"))
         if name == "get_daily_consumption":
-            return [
-                dict(r)
-                for r in conn.execute(
-                    "SELECT date,fuel,consumption_kwh,total_cost_gbp FROM daily_costs WHERE date>=? AND date<? ORDER BY date",
-                    (arguments["start"], arguments["end"]),
-                )
-            ]
+            return _confirmed_gas_totals(
+                conn,
+                [
+                    dict(r)
+                    for r in conn.execute(
+                        "SELECT date,fuel,consumption_kwh,total_cost_gbp FROM daily_costs WHERE date>=? AND date<? ORDER BY date",
+                        (arguments["start"], arguments["end"]),
+                    )
+                ],
+            )
         if name == "get_monthly_bill_comparison":
-            return [
-                dict(r)
-                for r in conn.execute(
-                    "SELECT substr(date,1,7) month,fuel,"
-                    " CASE WHEN COUNT(consumption_kwh)=COUNT(*) THEN SUM(consumption_kwh) END consumption_kwh,"
-                    " CASE WHEN COUNT(total_cost_gbp)=COUNT(*) THEN ROUND(SUM(total_cost_gbp),2) END total_cost_gbp"
-                    " FROM daily_costs GROUP BY month,fuel ORDER BY month DESC"
-                )
-            ]
+            return _confirmed_gas_totals(
+                conn,
+                [
+                    dict(r)
+                    for r in conn.execute(
+                        "SELECT substr(date,1,7) month,fuel,"
+                        " CASE WHEN COUNT(consumption_kwh)=COUNT(*) THEN SUM(consumption_kwh) END consumption_kwh,"
+                        " CASE WHEN COUNT(total_cost_gbp)=COUNT(*) THEN ROUND(SUM(total_cost_gbp),2) END total_cost_gbp"
+                        " FROM daily_costs GROUP BY month,fuel ORDER BY month DESC"
+                    )
+                ],
+            )
         if name == "get_tariff_details":
             return [dict(r) for r in conn.execute("SELECT fuel,tariff_code,valid_from,valid_to FROM meters")]
         if name == "get_expensive_days":
