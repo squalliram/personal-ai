@@ -111,6 +111,58 @@ class EnergyTests(unittest.TestCase):
             conn.close()
             self.assertEqual(costs, {"2026-10-20": 0.30, "2026-11-02": 0.20})
 
+    def test_rate_lookup_compares_offset_and_utc_timestamps_as_instants(self):
+        with tempfile.TemporaryDirectory() as directory:
+            conn = connect(Path(directory) / "energy.sqlite3")
+            meter = upsert_meter(
+                conn,
+                fuel="electricity",
+                point_id="123",
+                serial="abc",
+                tariff_code="E-1R-AGILE-24-10-01-A",
+                valid_from="2026-01-01T00:00:00Z",
+                valid_to=None,
+                synced_at="2026-11-05T00:00:00Z",
+            )
+            early = {"valid_from": "2026-06-01T00:00:00Z", "valid_to": "2026-06-01T00:45:00Z", "value_inc_vat": 10}
+            upsert_rate(conn, meter, "standard-unit-rates", [early, rate("2026-06-01T00:45:00Z", 40)])
+            # 01:30+01:00 is 00:30Z, inside the early rate; a plain string comparison would pick the later one.
+            upsert_consumption(conn, meter, [half_hour("2026-06-01T01:30:00+01:00", "2026-06-01T02:00:00+01:00")])
+            recompute_daily_costs(conn)
+            stored = conn.execute("SELECT interval_start FROM consumption").fetchone()[0]
+            cost = conn.execute("SELECT unit_cost_gbp FROM daily_costs").fetchone()[0]
+            conn.close()
+            self.assertEqual(stored, "2026-06-01T00:30:00Z")
+            self.assertEqual(cost, 0.10)
+
+    def test_connect_normalizes_readings_stored_with_offsets(self):
+        with tempfile.TemporaryDirectory() as directory:
+            db = Path(directory) / "energy.sqlite3"
+            conn = connect(db)
+            meter = upsert_meter(
+                conn,
+                fuel="electricity",
+                point_id="123",
+                serial="abc",
+                tariff_code=None,
+                valid_from=None,
+                valid_to=None,
+                synced_at="2026-11-05T00:00:00Z",
+            )
+            conn.execute(
+                "INSERT INTO consumption VALUES(?,?,?,?)",
+                (meter, "2026-06-01T01:30:00+01:00", "2026-06-01T02:00:00+01:00", 1.5),
+            )
+            conn.execute(
+                "INSERT INTO consumption VALUES(?,?,?,?)", (meter, "2026-06-01T00:30:00Z", "2026-06-01T01:00:00Z", 1.5)
+            )
+            conn.commit()
+            conn.close()
+            conn = connect(db)
+            rows = conn.execute("SELECT interval_start, interval_end, consumption_kwh FROM consumption").fetchall()
+            conn.close()
+            self.assertEqual([tuple(r) for r in rows], [("2026-06-01T00:30:00Z", "2026-06-01T01:00:00Z", 1.5)])
+
     def test_connect_drops_rates_stored_without_tariff_code(self):
         with tempfile.TemporaryDirectory() as directory:
             db = Path(directory) / "energy.sqlite3"
