@@ -43,9 +43,10 @@ jobs:
     needs: preflight
     if: needs.preflight.outputs.ready == 'true'
     runs-on: ubuntu-latest
-    # Only successful, configured runs enter the deployment queue.
+    # Different tested commits must not replace each other's pending jobs.
+    # The server lock serializes checkout, collection and publication.
     concurrency:
-      group: deploy-dashboard
+      group: deploy-dashboard-${{ github.event.workflow_run.head_sha }}
       cancel-in-progress: false
     steps:
       - name: Configure deployment key
@@ -71,10 +72,16 @@ jobs:
           [[ "$DEPLOY_SHA" =~ ^[a-f0-9]{40}$ ]] || exit 1
           ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes -o StrictHostKeyChecking=yes \
             "$CPANEL_SSH_USERNAME@$CPANEL_SSH_HOST" \
-            "cd '$CPANEL_APP_PATH' && test -z \"\$(git status --porcelain)\" && \
+            "cd '$CPANEL_APP_PATH' && command -v flock >/dev/null && test -d .git && \
+            exec 9>.git/energy-dashboard.deploy.lock && flock -x 9 && \
+            test -z \"\$(git status --porcelain)\" && \
             test \"\$(git branch --show-current)\" = main && git fetch --no-tags origin main && \
             if [ \"\$(git rev-parse origin/main)\" != '$DEPLOY_SHA' ]; then \
             echo 'origin/main has moved past the tested commit; skipping deploy.'; exit 0; fi && \
             git merge --ff-only '$DEPLOY_SHA' && test \"\$(git rev-parse HEAD)\" = '$DEPLOY_SHA' && \
             ./scripts/start-energy.sh --days 90 && \
+            git fetch --no-tags origin main && \
+            if [ \"\$(git rev-parse origin/main)\" != '$DEPLOY_SHA' ]; then \
+            echo 'origin/main changed during collection; skipping publication.'; exit 0; fi && \
+            test \"\$(git rev-parse HEAD)\" = '$DEPLOY_SHA' && \
             DASHBOARD_TARGET='$CPANEL_DASHBOARD_PATH' ./scripts/publish-energy-dashboard.sh"

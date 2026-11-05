@@ -26,19 +26,21 @@ Independent checks on the pre-reconciliation readiness checkpoint:
 
 The integration owner separately reports a successful fresh-process **default 400-day** `./scripts/start-energy.sh` run: exit 0 in **40.37 seconds**, no stderr, both fuels accessible, successful history and generated temporary reports/dashboard. The original checkout data was untouched. An earlier 180-second timeout was resolved by bounded 1,000-record API pages. This live check is separate from the synthetic tests above.
 
-## Validation after upstream reconciliation
+## Validation after upstream reconciliation and queue correction
 
 Final checks on the reconciled application and workflow safety changes:
 
-- Python 3.12 `-m unittest discover -s tests -v`: **94 tests passed**, 6.107 seconds.
-- Required `python3 -m unittest discover -s tests -v`: **94 tests passed**, 6.741 seconds.
+- Python 3.12 `-m unittest discover -s tests -v`: **103 tests passed**, 13.588 seconds.
+- Required `python3 -m unittest discover -s tests -v`: **103 tests passed**, 18.723 seconds.
 - Pinned Ruff **0.16.10** lint and formatting checks: passed across all 27 Python files.
 - Dashboard Node tests, JavaScript syntax and all three energy shell-script syntax checks: passed.
-- Nine isolated release tests exercise the real workflow commands without network access. They cover valid deployment, dirty/wrong-branch/divergent checkouts, superseded or mismatched commits, sync failure, invalid paths/SHA and deployment-queue guards. Invalid configuration explicitly exits before SSH, including on macOS Bash 3.2.
+- Eighteen isolated release tests exercise the real workflow commands without network access. They preserve the original deployment, checkout, sync-failure and invalid-configuration cases, and add real concurrent C/B/A processes in both waiter orders. They verify non-interleaving checkout/sync/publication, eventual publication of current B only, lock release after failure, missing-lock prerequisites, and refusal to publish after main/HEAD changes or a failed post-sync fetch. Linux CI uses `flock`; local macOS tests use standard-library `fcntl` with the same kernel-lock lifetime.
 - Independent merged-backend review passed fresh/incremental/repeated ingestion, backfill, historical tariffs, WAL snapshots, rollback and unavailable gas-value checks.
 - No unresolved merge paths or conflict markers remain. Repository checks pass; publication and deployment remain blocked on the hosting prerequisites below.
 
 The integration owner reports the merged fresh-process **default 400-day** collection completing in **6.45 seconds**, followed by an idempotent repeat in **4.84 seconds**, with independent provider interval-count checks. These are read-only live-source checks, not website deployment evidence.
+
+The queue correction gives different tested commits separate GitHub concurrency groups. A late older completion can no longer replace another commit's pending job. The host must provide `flock`; an exclusive lock inside `.git` serializes checkout, collection and publication. The workflow rechecks remote main and checkout HEAD after collection. No corrected workflow command has been executed on the host.
 
 ## Release preparation
 
@@ -46,7 +48,7 @@ Deployment through GitHub is now separately authorized, but no release or deploy
 
 GitHub read-only checks found no configured deployment secrets: `CPANEL_SSH_HOST`, `CPANEL_SSH_USERNAME`, `CPANEL_SSH_PRIVATE_KEY`, `CPANEL_SSH_KNOWN_HOSTS`, `CPANEL_APP_PATH` and `CPANEL_DASHBOARD_PATH` are all absent. The latest green deployment workflow skipped its deployment job; it did not update the website.
 
-At **13:28:15 Europe/London**, the hosting owner verified an authenticated cPanel session and the expected private repository clone with the correct GitHub origin. Its displayed commit, `7bec26d4bfd822cd7e52f77ab3cb2f7ab6ddf35a`, predates the readiness work. Python version, environment-file presence, target protection/artifacts and a usable deployment mechanism are still being checked read-only. No pull/deploy control was activated. Public dashboard authentication is not a substitute for this hosting access.
+At **13:28:15 Europe/London**, the hosting owner verified an authenticated cPanel session and the expected private repository clone with the correct GitHub origin. Its displayed commit, `7bec26d4bfd822cd7e52f77ab3cb2f7ab6ddf35a`, predates the readiness work. Python version, `flock`, the `.git` directory, environment-file presence, target protection/artifacts and a usable deployment mechanism are still being checked read-only. The cPanel native Deploy control is disabled pending its `.cpanel.yml` prerequisite. No pull/deploy control was activated. Public dashboard authentication is not a substitute for this hosting access.
 
 ## Existing website verification
 
