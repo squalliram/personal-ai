@@ -151,7 +151,7 @@ class EnergyTests(unittest.TestCase):
             )
             conn.execute(
                 "INSERT INTO consumption VALUES(?,?,?,?)",
-                (meter, "2026-06-01T01:30:00+01:00", "2026-06-01T02:00:00+01:00", 1.5),
+                (meter, "2026-06-01T01:30:00+01:00", "2026-06-01T02:00:00+01:00", 1.0),
             )
             conn.execute(
                 "INSERT INTO consumption VALUES(?,?,?,?)", (meter, "2026-06-01T00:30:00Z", "2026-06-01T01:00:00Z", 1.5)
