@@ -22,7 +22,7 @@ The briefing reads my calendar and Notion through an approved read-only connecto
 
 It pulls my Octopus Energy smart-meter readings and tariffs. From them it shows what I've used, what it cost and when my peak electricity hour is, and suggests which flexible loads (laundry, dishwasher, EV charging) to move. It doesn't fetch Octopus Power Down or Power Up / Happy Hour event times; I check those in the Octopus app. The results appear in a private dashboard and short reports.
 
-Setup, privacy, the dashboard and the MCP tools are documented in [`octopus_energy/README.md`](octopus_energy/README.md).
+For setup, [screenshots](octopus_energy/README.md#screenshots), a local preview and testing instructions, see the [Octopus Energy guide](octopus_energy/README.md#quick-start), or [try the synthetic demo without an API key](octopus_energy/README.md#try-it-with-demo-data). The guide also covers privacy and the read-only MCP tools.
 
 Costs are estimates, not bills. Missing tariff coverage and unverified gas energy units remain unavailable rather than zero. Confirmed gas kWh readings can be enabled explicitly with `--gas-units kwh`; unconfigured runs default to `unknown`. The dashboard labels source freshness separately from export time; its five-minute reload checks only the published snapshot, not Octopus. Event suggestions are not a live event feed.
 

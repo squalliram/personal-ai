@@ -88,26 +88,253 @@ function validateData(data) {
   return data;
 }
 
+function completePeriod(group, period, today = londonDate()) {
+  const {start, end} = periodEnd(group.key, period);
+  return end.toISOString().slice(0, 10) <= today && group.dates.size === Math.round((end - start) / DAY_MS);
+}
+
+function anomalyModel(groups, period, today = londonDate()) {
+  // Same mean + 2 population-SD rule as analytics.anomalies, in chart-period kWh.
+  const eligible = groups.slice(-90).filter(group => group.kwh !== null && completePeriod(group, period, today));
+  const high = new Set();
+  if (eligible.length < 7) return {high, samples: eligible.length, baseline: null, threshold: null};
+  const baseline = eligible.reduce((sum, group) => sum + group.kwh, 0) / eligible.length;
+  const deviation = Math.sqrt(eligible.reduce((sum, group) => sum + (group.kwh - baseline) ** 2, 0) / eligible.length);
+  const threshold = baseline + 2 * deviation;
+  if (deviation > 0) eligible.filter(group => group.kwh > threshold).forEach(group => high.add(group.key));
+  return {high, samples: eligible.length, baseline, threshold};
+}
+
+function periodLabel(key, period, compact = false) {
+  const options = period === 'year' ? {year: 'numeric'} :
+    period === 'month' ? {month: compact ? 'short' : 'long', year: 'numeric'} :
+      {day: 'numeric', month: compact ? 'short' : 'long', year: 'numeric'};
+  const label = new Intl.DateTimeFormat('en-GB', {timeZone: LONDON_TIMEZONE, ...options}).format(periodEnd(key, period).start);
+  return period === 'week' && !compact ? 'Week commencing ' + label : label;
+}
+
+function periodRangeLabel(key, period) {
+  const {start, end} = periodEnd(key, period);
+  // Keys are London calendar dates, not UTC instants. Midnight labels also hold on 23/25-hour DST days.
+  const label = date => periodLabel(date.toISOString().slice(0, 10), 'day');
+  return `${label(start)} 00:00 → ${label(end)} 00:00 Europe/London (end exclusive)`;
+}
+
+function numberLabel(value) {
+  return value.toLocaleString('en-GB', {maximumFractionDigits: 3});
+}
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, character => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'})[character]);
+}
+
+function contributorEstimate(group, period, fuel, hourly, baseline) {
+  const {start, end} = periodEnd(group.key, period);
+  const month = new Date((start.getTime() + end.getTime()) / 2).getUTCMonth() + 1;
+  const season = period === 'year' ? 'mixed-season' : month <= 3 || month >= 10 ? 'cool-season' :
+    month >= 6 && month <= 8 ? 'warm-season' : 'mild-season';
+  const hours = hourly.filter(row => row.fuel === fuel && row.kwh > 0);
+  const peak = hours.length ? hours.reduce((a, b) => a.kwh >= b.kwh ? a : b) : null;
+  const overnight = peak && (peak.hour < 6 || peak.hour === 23);
+  const largeUplift = baseline <= 0 || (group.kwh - baseline) / baseline >= 0.5;
+  const contributors = [];
+  if (fuel === 'gas') {
+    contributors.push(season === 'cool-season' ? 'Space heating and hot-water demand are possibilities in the cooler calendar season.' :
+      'Hot-water demand and space heating are possibilities; no weather or thermostat data is available.');
+    if (peak) contributors.push(overnight ? 'Scheduled heating or hot-water cycles could fit the overnight historical profile.' :
+      'Heating or hot-water schedules could fit the daytime/evening historical profile.');
+  } else {
+    contributors.push(peak ? overnight ? 'Continuous or scheduled overnight loads, such as standby, refrigeration or charging if present.' :
+      'Cooking, hot-water heating or other scheduled household loads, if present.' :
+      'Whole-home electrical demand; without an hourly profile, individual load types cannot be narrowed down.');
+    if (season === 'cool-season') contributors.push('Electric space or water heating, if used, is a cool-season possibility.');
+    if (season === 'warm-season') contributors.push('Cooling or extra refrigeration demand, if present, is a warm-season possibility.');
+  }
+  contributors.push(largeUplift ? 'The large uplift could fit overlapping loads or sustained demand, not a proven device cause.' :
+    'The smaller uplift could fit longer run times or regular loads overlapping, not a proven device cause.');
+  return {season, peakHour: peak?.hour ?? null, largeUplift, contributors};
+}
+
+function tooltipContent(group, period, fuel, hourly, model) {
+  const usage = group.kwh === null ? 'Usage unavailable' : numberLabel(group.kwh) + ' kWh';
+  const cost = group.cost === null ? 'Cost unavailable' : '£' + group.cost.toFixed(2) + ' estimated cost';
+  let detail = '';
+  if (model.high.has(group.key)) {
+    const estimate = contributorEstimate(group, period, fuel, hourly, model.baseline);
+    const excess = group.kwh - model.baseline;
+    const percent = model.baseline > 0 ? ` (${numberLabel(excess / model.baseline * 100)}%)` : '';
+    const timing = estimate.peakHour === null ? 'No positive hourly profile is available.' :
+      `Historical profile peak ${String(estimate.peakHour).padStart(2, '0')}:00 Europe/London; not this period's measured timing.`;
+    detail = `<section class="high-point"><h4>Unusually high point</h4><p>${numberLabel(excess)} kWh${percent} above the mean.
+      Cutoff ${numberLabel(model.threshold)} kWh · ${model.samples} complete periods.</p>
+      <h4>Likely contributors · estimates, not measured</h4><ul>${estimate.contributors.map(text => `<li>${escapeHtml(text)}</li>`).join('')}</ul>
+      <p class="muted">Heuristic: ${fuel}, ${estimate.season}, ${estimate.largeUplift ? 'at least 50% uplift or non-positive baseline' : 'under 50% uplift'}.
+      ${escapeHtml(timing)} No device-level data: these are possibilities to investigate, not appliance attribution.</p></section>`;
+  }
+  const coverage = completePeriod(group, period) ? '' : '<p class="muted">Partial period or missing dates; no high-point assessment.</p>';
+  return `<h3>${escapeHtml(periodLabel(group.key, period))}</h3><p class="tooltip-range">${escapeHtml(periodRangeLabel(group.key, period))}</p>
+    <dl><div><dt>Energy used</dt><dd>${usage}</dd></div><div><dt>Cost</dt><dd>${cost}</dd></div></dl>${coverage}${detail}`;
+}
+
+function chartLayout(groups) {
+  const left = 90, right = 928, top = 28, bottom = 312;
+  const values = groups.filter(group => group.kwh !== null).map(group => group.kwh);
+  const low = Math.min(0, ...values), high = Math.max(0, ...values);
+  const roughStep = (high - low || 1) / 4;
+  const magnitude = 10 ** Math.floor(Math.log10(roughStep));
+  const step = [1, 2, 2.5, 5, 10].find(factor => factor * magnitude >= roughStep) * magnitude;
+  const min = Math.floor(low / step) * step, max = Math.ceil(high / step) * step || step;
+  const y = value => bottom - (value - min) / (max - min) * (bottom - top);
+  const ticks = Array.from({length: Math.round((max - min) / step) + 1}, (_, index) => {
+    const value = Number((min + index * step).toPrecision(12));
+    return {value, y: y(value)};
+  });
+  const points = groups.map((group, index) => ({group, index,
+    x: groups.length === 1 ? (left + right) / 2 : left + index * (right - left) / (groups.length - 1),
+    y: group.kwh === null ? null : y(group.kwh)}));
+  return {left, right, top, bottom, ticks, points};
+}
+
 function initializeDashboard() {
   let data = null, fuel = 'electricity', period = 'day', busy = false, loadError = false;
   const $ = selector => document.querySelector(selector);
   const formatted = value => value ? new Date(value).toLocaleString('en-GB', {timeZone: LONDON_TIMEZONE}) : 'unavailable';
   const money = value => value === null ? 'Cost unavailable' : '£' + value.toFixed(2) + ' estimated cost';
   const setStatus = (state, message) => { $('#status').dataset.state = state; $('#status').textContent = message; };
+  let repositionTooltip = () => {};
 
   function draw(groups) {
-    const chart = $('#chart');
-    if (!groups.some(row => row.kwh !== null)) { chart.innerHTML = ''; return; }
-    const max = Math.max(...groups.filter(row => row.kwh !== null).map(row => row.kwh), 1);
+    const chart = $('#chart'), tooltip = $('#chart-tooltip'), stage = $('#chart-stage');
+    const focusedKey = chart.contains(document.activeElement) ? document.activeElement.dataset.periodKey : null;
+    tooltip.hidden = true;
+    repositionTooltip = () => {};
+    chart.onpointermove = chart.onclick = chart.onkeydown = null;
+    stage.onpointerleave = null;
+    $('#chart-scroll').onscroll = null;
+    if (!groups.some(row => row.kwh !== null)) {
+      chart.innerHTML = '';
+      chart.setAttribute('aria-label', 'No numeric ' + fuel + ' usage available to plot.');
+      return;
+    }
+    const layout = chartLayout(groups), model = anomalyModel(groups, period);
+    const {left, right, top, bottom, points, ticks} = layout;
+    const xTitle = {day: 'Date', week: 'Week commencing', month: 'Month', year: 'Year'}[period] + ' (Europe/London)';
     let previousKnown = false;
-    const path = groups.map((row, index) => {
-      if (row.kwh === null) { previousKnown = false; return ''; }
-      const point = `${previousKnown ? 'L' : 'M'}${45 + index * 830 / Math.max(groups.length - 1, 1)} ${250 - row.kwh / max * 210}`;
+    const path = points.map(point => {
+      if (point.y === null) { previousKnown = false; return ''; }
+      const segment = `${previousKnown ? 'L' : 'M'}${point.x} ${point.y}`;
       previousKnown = true;
-      return point;
+      return segment;
     }).join(' ');
-    chart.innerHTML = `<path d="M45 20V250H875" stroke="#41536c" fill="none"/><path d="${path}" stroke="${fuel === 'electricity' ? '#60a5fa' : '#fb923c'}" stroke-width="3" fill="none"/><text x="4" y="25" fill="#9aacc2">${max.toFixed(1)} kWh</text>`;
-    chart.setAttribute('aria-label', `${fuel} ${period} consumption, ${groups[0].key} to ${groups.at(-1).key}`);
+    const tickIndices = [...new Set(Array.from({length: Math.min(6, groups.length)}, (_, index) =>
+      Math.round(index * (groups.length - 1) / Math.max(Math.min(6, groups.length) - 1, 1))))];
+    const pointMarkup = points.filter(point => point.y !== null).map((point, index) => {
+      const group = point.group, high = model.high.has(group.key);
+      const label = `${periodLabel(group.key, period)}, ${numberLabel(group.kwh)} kWh, ${money(group.cost)}${high ? ', unusually high' : ''}`;
+      return `<g class="chart-point" data-point-index="${point.index}" data-period-key="${group.key}" role="button" tabindex="${index === 0 ? 0 : -1}"
+        aria-label="${escapeHtml(label)}" aria-describedby="chart-tooltip">
+        <circle class="point-hit" cx="${point.x}" cy="${point.y}" r="16"/>
+        ${high ? `<circle class="point-high" cx="${point.x}" cy="${point.y}" r="8"/>` : ''}
+        <circle class="point-dot" cx="${point.x}" cy="${point.y}" r="3.5"/></g>`;
+    }).join('');
+    chart.dataset.fuel = fuel;
+    chart.innerHTML = `<g aria-hidden="true">${ticks.map(tick => `<line class="chart-grid" x1="${left}" x2="${right}" y1="${tick.y}" y2="${tick.y}"/>
+      <text class="chart-tick" x="${left - 14}" y="${tick.y + 5}" text-anchor="end">${numberLabel(tick.value)}</text>`).join('')}
+      <path class="chart-axis" d="M${left} ${top}V${bottom}H${right}"/>
+      ${tickIndices.map(index => `<line class="chart-axis" x1="${points[index].x}" x2="${points[index].x}" y1="${bottom}" y2="${bottom + 6}"/>
+        <text class="chart-tick" x="${points[index].x}" y="${bottom + 26}" text-anchor="${groups.length > 1 && index === groups.length - 1 ? 'end' : 'middle'}">${escapeHtml(periodLabel(groups[index].key, period, true))}</text>`).join('')}
+      <text class="chart-axis-title" x="${(left + right) / 2}" y="382" text-anchor="middle">${xTitle}</text>
+      <text class="chart-axis-title" transform="translate(22 170) rotate(-90)" text-anchor="middle">Energy used (kWh)</text>
+      <path class="chart-series" d="${path}"/></g>${pointMarkup}
+      <g id="chart-crosshair" visibility="hidden" aria-hidden="true">
+      <line id="chart-crosshair-x" class="chart-crosshair" y1="${top}" y2="${bottom}"/>
+      <line id="chart-crosshair-y" class="chart-crosshair" x1="${left}" x2="${right}"/>
+      <circle id="chart-active-point" class="chart-marker" r="7"/></g>`;
+    chart.setAttribute('aria-label', `${fuel} ${period} consumption, ${groups[0].key} to ${groups.at(-1).key}. ${xTitle}; Energy used (kWh).`);
+    const elements = [...chart.querySelectorAll('[data-point-index]')];
+    const crosshair = chart.querySelector('#chart-crosshair');
+    let selected = null;
+    function positionTooltip(point) {
+      const bounds = chart.getBoundingClientRect(), area = stage.getBoundingClientRect();
+      const viewport = window.visualViewport;
+      const viewportTop = viewport?.offsetTop ?? 0, viewportLeft = viewport?.offsetLeft ?? 0;
+      const viewportHeight = viewport?.height ?? window.innerHeight;
+      const viewportWidth = viewport?.width ?? window.innerWidth;
+      const leftEdge = Math.max(area.left, viewportLeft) + 8;
+      const rightEdge = Math.min(area.left + area.width, viewportLeft + viewportWidth) - 8;
+      tooltip.style.maxWidth = Math.max(0, rightEdge - leftEdge) + 'px';
+      tooltip.style.maxHeight = Math.max(0, Math.min(440, viewportHeight * 0.7, viewportHeight - 16)) + 'px';
+      const box = tooltip.getBoundingClientRect();
+      const x = bounds.left + point.x / 960 * bounds.width;
+      const y = bounds.top + point.y / 400 * bounds.height;
+      const above = y - box.height - 16;
+      const preferredTop = above >= viewportTop + 8 ? above : y + 16;
+      const clientTop = Math.max(viewportTop + 8, Math.min(preferredTop, viewportTop + viewportHeight - box.height - 8));
+      // Rects are viewport-relative already; subtract the stage rect, not document scroll.
+      tooltip.style.left = (Math.max(leftEdge, Math.min(x - box.width / 2, rightEdge - box.width)) - area.left) + 'px';
+      tooltip.style.top = (clientTop - area.top) + 'px';
+    }
+    function hide() {
+      tooltip.hidden = true;
+      crosshair.setAttribute('visibility', 'hidden');
+    }
+    function show(index) {
+      const point = points[index];
+      if (!point || point.y === null) { hide(); return; }
+      if (selected === index && !tooltip.hidden) { positionTooltip(point); return; }
+      selected = index;
+      elements.forEach(element => element.setAttribute('tabindex', Number(element.dataset.pointIndex) === index ? '0' : '-1'));
+      const vertical = chart.querySelector('#chart-crosshair-x'), horizontal = chart.querySelector('#chart-crosshair-y');
+      vertical.setAttribute('x1', point.x); vertical.setAttribute('x2', point.x);
+      horizontal.setAttribute('y1', point.y); horizontal.setAttribute('y2', point.y);
+      const marker = chart.querySelector('#chart-active-point');
+      marker.setAttribute('cx', point.x); marker.setAttribute('cy', point.y);
+      crosshair.setAttribute('visibility', 'visible');
+      tooltip.innerHTML = tooltipContent(point.group, period, fuel, data.hourly, model);
+      tooltip.hidden = false;
+      positionTooltip(point);
+    }
+    function focusPoint(position) {
+      const element = elements[Math.max(0, Math.min(position, elements.length - 1))];
+      element.focus();
+      show(Number(element.dataset.pointIndex));
+    }
+    elements.forEach(element => {
+      element.onfocus = () => show(Number(element.dataset.pointIndex));
+      element.onblur = hide;
+    });
+    function pointerIndex(event) {
+      const bounds = chart.getBoundingClientRect();
+      const x = (event.clientX - bounds.left) / bounds.width * 960;
+      const edgeTolerance = 8; // SVG units: covers the outer marker/ring, not the chart gutters.
+      if (x < left - edgeTolerance || x > right + edgeTolerance) return null;
+      const clampedX = Math.max(left, Math.min(right, x));
+      return groups.length === 1 ? 0 : Math.round((clampedX - left) / (right - left) * (groups.length - 1));
+    }
+    chart.onpointermove = event => {
+      if (event.pointerType === 'touch') return;
+      const index = pointerIndex(event);
+      if (index === null) hide(); else show(index);
+    };
+    chart.onclick = event => {
+      const index = pointerIndex(event);
+      const position = elements.findIndex(element => Number(element.dataset.pointIndex) === index);
+      if (position >= 0) focusPoint(position); else hide();
+    };
+    chart.onkeydown = event => {
+      const position = Math.max(0, elements.indexOf(document.activeElement));
+      const moves = {ArrowRight: position + 1, ArrowDown: position + 1, ArrowLeft: position - 1, ArrowUp: position - 1, Home: 0, End: elements.length - 1};
+      if (Object.hasOwn(moves, event.key)) { event.preventDefault(); focusPoint(moves[event.key]); }
+      else if (event.key === 'Escape') { event.preventDefault(); hide(); }
+      else if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); focusPoint(position); }
+    };
+    stage.onpointerleave = () => { if (!chart.contains(document.activeElement)) hide(); };
+    repositionTooltip = () => { if (selected !== null && !tooltip.hidden) positionTooltip(points[selected]); };
+    $('#chart-scroll').onscroll = repositionTooltip;
+    if (focusedKey) {
+      const position = elements.findIndex(element => element.dataset.periodKey === focusedKey);
+      focusPoint(position < 0 ? 0 : position);
+    }
   }
 
   function render() {
@@ -175,6 +402,13 @@ function initializeDashboard() {
   $('#refresh').onclick = load;
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') load(); });
   setInterval(() => { if (document.visibilityState === 'visible') load(); }, 5 * 60 * 1000);
+  for (const event of ['resize', 'scroll']) {
+    window.addEventListener(event, () => repositionTooltip(), {passive: true});
+    window.visualViewport?.addEventListener(event, () => repositionTooltip(), {passive: true});
+  }
+  if (typeof ResizeObserver !== 'undefined') {
+    new ResizeObserver(() => repositionTooltip()).observe($('#chart-tooltip'));
+  }
   load();
 }
 
