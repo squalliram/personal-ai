@@ -14,6 +14,26 @@ def connect(path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
+    try:
+        if any(
+            row["notnull"]
+            for row in conn.execute("PRAGMA table_info(daily_costs)")
+            if row["name"] not in {"date", "fuel"}
+        ):
+            # These are derived values. Rebuild them from retained readings/rates
+            # instead of retaining legacy zeros and unverified gas-kWh amounts.
+            from .analytics import recompute_daily_costs
+
+            with conn:
+                conn.execute("BEGIN")
+                conn.execute("DROP TABLE daily_costs")
+                conn.execute(
+                    "CREATE TABLE daily_costs (date TEXT NOT NULL, fuel TEXT NOT NULL, consumption_kwh REAL, unit_cost_gbp REAL, standing_charge_gbp REAL, total_cost_gbp REAL, PRIMARY KEY(date,fuel))"
+                )
+                recompute_daily_costs(conn)
+    except Exception:
+        conn.close()
+        raise
     return conn
 
 
@@ -44,7 +64,9 @@ def upsert_meter(
     ).fetchone()[0]
 
 
-def upsert_consumption(conn: sqlite3.Connection, meter_id: int, readings: Iterable[dict]) -> int:
+def upsert_consumption(conn: sqlite3.Connection, meter_id: int, readings: dict | Iterable[dict]) -> int:
+    if isinstance(readings, dict):
+        readings = (readings,)
     rows = [(meter_id, r["interval_start"], r["interval_end"], r["consumption"]) for r in readings]
     conn.executemany(
         "INSERT INTO consumption(meter_id,interval_start,interval_end,consumption_kwh) VALUES(?,?,?,?) ON CONFLICT(meter_id,interval_start,interval_end) DO UPDATE SET consumption_kwh=excluded.consumption_kwh",
@@ -53,7 +75,9 @@ def upsert_consumption(conn: sqlite3.Connection, meter_id: int, readings: Iterab
     return len(rows)
 
 
-def upsert_rate(conn: sqlite3.Connection, meter_id: int, kind: str, rates: Iterable[dict]) -> int:
+def upsert_rate(conn: sqlite3.Connection, meter_id: int, kind: str, rates: dict | Iterable[dict]) -> int:
+    if isinstance(rates, dict):
+        rates = (rates,)
     rows = [(meter_id, kind, r["valid_from"], r.get("valid_to"), r["value_inc_vat"]) for r in rates]
     conn.executemany(
         "INSERT INTO tariff_rates(meter_id,kind,valid_from,valid_to,value_inc_vat) VALUES(?,?,?,?,?) ON CONFLICT(meter_id,kind,valid_from) DO UPDATE SET valid_to=excluded.valid_to,value_inc_vat=excluded.value_inc_vat",

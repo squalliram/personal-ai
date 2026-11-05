@@ -24,6 +24,10 @@ It pulls my Octopus Energy smart-meter readings and tariffs. From them it shows 
 
 Setup, privacy, the dashboard and the MCP tools are documented in [`octopus_energy/README.md`](octopus_energy/README.md).
 
+Costs are estimates, not bills. Missing tariff coverage and unverified gas energy units remain unavailable rather than zero. The dashboard labels source freshness separately from export time; its five-minute reload checks only the published snapshot, not Octopus. Event suggestions are not a live event feed.
+
+For safe local viewing, serve only the generated dashboard directory over loopback rather than opening `file://`. See [operations](docs/energy-dashboard.md) and the [dated readiness evidence](docs/energy-readiness.md). The existing private website is `https://iramkhan.com/energy-usage/`; local validation alone does not establish its deployed data or freshness.
+
 ## Quick start
 
 Requires Python 3.10 or newer and has no third-party runtime dependencies.
@@ -84,4 +88,4 @@ python3 -m unittest discover -s tests -v
 ruff check . && ruff format --check .   # also run in CI; config in pyproject.toml
 ```
 
-CI runs on every push and pull request. When tests pass on `main`, the protected energy dashboard is redeployed (see [docs/energy-dashboard.md](docs/energy-dashboard.md)).
+CI runs Ruff and tests on every push and pull request, with Python 3.12 and Node 22. A successful `main` push triggers deployment only when all six cPanel secrets are configured. The workflow queues eligible runs, skips superseded tested commits, refuses dirty server checkouts and never resets away server changes. See [deployment operations](docs/energy-dashboard.md). No source-refresh schedule is created.

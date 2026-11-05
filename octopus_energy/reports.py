@@ -10,6 +10,14 @@ from .storage import connect
 LONDON = ZoneInfo("Europe/London")
 
 
+def _usage(value: float | None) -> str:
+    return f"{value:.2f} kWh" if value is not None else "kWh unavailable (gas source units unverified)"
+
+
+def _cost(value: float | None) -> str:
+    return f"£{value:.2f}" if value is not None else "cost unavailable/incomplete"
+
+
 def write_reports(database: Path, output_dir: Path) -> tuple[Path, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     conn = connect(database)
@@ -20,12 +28,16 @@ def write_reports(database: Path, output_dir: Path) -> tuple[Path, Path]:
         costly = expensive_days(conn, limit=5)
         baseline = overnight_baseline(conn)
         flagged = anomalies(conn)
-        daily = [f"# Daily Energy Report — {today}", "", "## Active tariffs"]
+        daily = [f"# Daily Energy Report — {today}", "", "## Stored tariff records"]
         daily += [f"- {r['fuel'].title()}: `{r['tariff_code'] or 'unavailable'}`" for r in tariffs]
         daily += ["", "## Available-period totals"]
         daily += [
-            f"- {r['fuel'].title()}: {r['consumption_kwh']:.2f} kWh; £{r['total_cost_gbp']:.2f}" for r in totals
+            f"- {r['fuel'].title()}: {_usage(r['consumption_kwh'])}; {_cost(r['total_cost_gbp'])}" for r in totals
         ] or ["- No interval data available."]
+        daily += [
+            "",
+            "Costs are unavailable when any required tariff coverage is missing. Gas source units are unverified, so gas kWh and unit costs are not calculated. Totals cover retrieved intervals, not necessarily complete billing days.",
+        ]
         daily += ["", "## Overnight baseline"]
         daily += [
             f"- {r['fuel'].title()}: {r['average_interval_kwh']:.3f} kWh per overnight interval ({r['intervals']} intervals)"
@@ -44,11 +56,11 @@ def write_reports(database: Path, output_dir: Path) -> tuple[Path, Path]:
         daily_path.write_text("\n".join(daily) + "\n", encoding="utf-8")
         monthly = ["# Monthly Energy Cost Analysis", "", "## Highest-cost days"]
         monthly += [
-            f"- {r['date']} {r['fuel']}: {r['consumption_kwh']:.2f} kWh; £{r['total_cost_gbp']:.2f}" for r in costly
-        ] or ["- No cost data available."]
+            f"- {r['date']} {r['fuel']}: {_usage(r['consumption_kwh'])}; {_cost(r['total_cost_gbp'])}" for r in costly
+        ] or ["- No complete cost data available."]
         monthly += [
             "",
-            "Costs include retrieved unit rates and one applicable daily standing charge per fuel/day. Historical rate records are retained so rate and consumption changes can be analysed separately.",
+            "Days with unavailable costs are excluded from this ranking. Costs include retrieved unit rates and one applicable daily standing charge per supply point with readings that day. Historical rate records are retained so rate and consumption changes can be analysed separately.",
         ]
         monthly_path = output_dir / "monthly-cost-analysis.md"
         monthly_path.write_text("\n".join(monthly) + "\n", encoding="utf-8")
