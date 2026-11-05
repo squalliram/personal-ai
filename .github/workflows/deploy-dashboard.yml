@@ -13,14 +13,30 @@ jobs:
   deploy:
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
-      secrets.CPANEL_SSH_HOST != '' &&
-      secrets.CPANEL_SSH_USERNAME != '' &&
-      secrets.CPANEL_SSH_PRIVATE_KEY != '' &&
-      secrets.CPANEL_APP_PATH != '' &&
-      secrets.CPANEL_DASHBOARD_PATH != ''
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
+      - name: Check deployment configuration
+        id: configuration
+        env:
+          CPANEL_SSH_HOST: ${{ secrets.CPANEL_SSH_HOST }}
+          CPANEL_SSH_USERNAME: ${{ secrets.CPANEL_SSH_USERNAME }}
+          CPANEL_SSH_PRIVATE_KEY: ${{ secrets.CPANEL_SSH_PRIVATE_KEY }}
+          CPANEL_SSH_KNOWN_HOSTS: ${{ secrets.CPANEL_SSH_KNOWN_HOSTS }}
+          CPANEL_APP_PATH: ${{ secrets.CPANEL_APP_PATH }}
+          CPANEL_DASHBOARD_PATH: ${{ secrets.CPANEL_DASHBOARD_PATH }}
+        run: |
+          for name in CPANEL_SSH_HOST CPANEL_SSH_USERNAME CPANEL_SSH_PRIVATE_KEY CPANEL_SSH_KNOWN_HOSTS CPANEL_APP_PATH CPANEL_DASHBOARD_PATH; do
+            if [ -z "${!name}" ]; then
+              echo "ready=false" >> "$GITHUB_OUTPUT"
+              echo "Deployment not configured; no connection attempted."
+              exit 0
+            fi
+          done
+          echo "ready=true" >> "$GITHUB_OUTPUT"
       - name: Configure deployment key
+        if: steps.configuration.outputs.ready == 'true'
         env:
           SSH_PRIVATE_KEY: ${{ secrets.CPANEL_SSH_PRIVATE_KEY }}
           SSH_KNOWN_HOSTS: ${{ secrets.CPANEL_SSH_KNOWN_HOSTS }}
@@ -30,14 +46,21 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
       - name: Update, refresh, and publish dashboard
+        if: steps.configuration.outputs.ready == 'true'
         env:
           CPANEL_SSH_HOST: ${{ secrets.CPANEL_SSH_HOST }}
           CPANEL_SSH_USERNAME: ${{ secrets.CPANEL_SSH_USERNAME }}
           CPANEL_APP_PATH: ${{ secrets.CPANEL_APP_PATH }}
           CPANEL_DASHBOARD_PATH: ${{ secrets.CPANEL_DASHBOARD_PATH }}
-        run: >-
-          ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes
-          "$CPANEL_SSH_USERNAME@$CPANEL_SSH_HOST"
-          "cd '$CPANEL_APP_PATH' && git pull --ff-only origin main &&
-          ./scripts/start-energy.sh --days 90 &&
-          DASHBOARD_TARGET='$CPANEL_DASHBOARD_PATH' ./scripts/publish-energy-dashboard.sh"
+          DEPLOY_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          # Remote paths are configuration, never executable shell fragments.
+          [[ "$CPANEL_APP_PATH" =~ ^/[a-zA-Z0-9_./-]+$ ]]
+          [[ "$CPANEL_DASHBOARD_PATH" =~ ^/[a-zA-Z0-9_./-]+$ ]]
+          [[ "$DEPLOY_SHA" =~ ^[a-f0-9]{40}$ ]]
+          ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            "$CPANEL_SSH_USERNAME@$CPANEL_SSH_HOST" \
+            "cd '$CPANEL_APP_PATH' && test -z \"\$(git status --porcelain)\" && \
+            git pull --ff-only origin main && test \"\$(git rev-parse HEAD)\" = '$DEPLOY_SHA' && \
+            ./scripts/start-energy.sh --days 90 && \
+            DASHBOARD_TARGET='$CPANEL_DASHBOARD_PATH' ./scripts/publish-energy-dashboard.sh"

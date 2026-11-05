@@ -11,6 +11,20 @@ def connect(path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
+    try:
+        if any(row["notnull"] for row in conn.execute("PRAGMA table_info(daily_costs)")
+               if row["name"] not in {"date", "fuel"}):
+            # These are derived values. Rebuild them from retained readings/rates
+            # instead of retaining legacy zeros and unverified gas-kWh amounts.
+            from .analytics import recompute_daily_costs
+            with conn:
+                conn.execute("BEGIN")
+                conn.execute("DROP TABLE daily_costs")
+                conn.execute("CREATE TABLE daily_costs (date TEXT NOT NULL, fuel TEXT NOT NULL, consumption_kwh REAL, unit_cost_gbp REAL, standing_charge_gbp REAL, total_cost_gbp REAL, PRIMARY KEY(date,fuel))")
+                recompute_daily_costs(conn)
+    except Exception:
+        conn.close()
+        raise
     return conn
 
 
