@@ -1,4 +1,7 @@
 *.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+__pycache__/
 reports/daily/*.md
 .env
 reports/energy/*.md

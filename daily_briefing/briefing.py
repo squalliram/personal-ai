@@ -21,7 +21,7 @@ def calendar_overlaps(events: list[dict]) -> list[tuple[dict, dict]]:
     for index, (left, start, end) in enumerate(timed):
         if not start or not end:
             continue
-        for right, right_start, _ in timed[index + 1:]:
+        for right, right_start, _ in timed[index + 1 :]:
             if not right_start or right_start >= end:
                 break
             overlaps.append((left, right))
@@ -50,7 +50,13 @@ def rank_tasks(tasks: list[dict], today: date) -> list[dict]:
 def render(report_date: date, generated_at: datetime, events: list[dict], tasks: list[dict], errors: list[str]) -> str:
     overlaps = calendar_overlaps(events)
     ranked = rank_tasks(tasks, report_date)
-    lines = [f"# Daily Intelligence Briefing — {report_date.isoformat()}", "", f"Generated: {generated_at.astimezone(LONDON).isoformat()}", "", "## Calendar commitments"]
+    lines = [
+        f"# Daily Intelligence Briefing — {report_date.isoformat()}",
+        "",
+        f"Generated: {generated_at.astimezone(LONDON).isoformat()}",
+        "",
+        "## Calendar commitments",
+    ]
     if events:
         seen = set()
         for event in events:
@@ -66,7 +72,9 @@ def render(report_date: date, generated_at: datetime, events: list[dict], tasks:
     else:
         lines.append("- No calendar events retrieved.")
     lines += ["", "## Overlapping commitments"]
-    lines += [f"- {a.get('title', 'Untitled')} overlaps {b.get('title', 'Untitled')}" for a, b in overlaps] or ["- None detected."]
+    lines += [f"- {a.get('title', 'Untitled')} overlaps {b.get('title', 'Untitled')}" for a, b in overlaps] or [
+        "- None detected."
+    ]
     lines += ["", "## Outstanding work (source data)"]
     if ranked:
         for task in ranked:
@@ -76,7 +84,9 @@ def render(report_date: date, generated_at: datetime, events: list[dict], tasks:
     else:
         lines.append("- No tasks retrieved.")
     lines += ["", "## AI-recommended priorities", "These are suggestions, not commitments."]
-    lines += [f"{i}. {task.get('title', 'Untitled task')}" for i, task in enumerate(ranked[:3], 1)] or ["- No recommendation possible: no tasks retrieved."]
+    lines += [f"{i}. {task.get('title', 'Untitled task')}" for i, task in enumerate(ranked[:3], 1)] or [
+        "- No recommendation possible: no tasks retrieved."
+    ]
     if errors:
         lines += ["", "## Connector failures"] + [f"- {error}" for error in errors]
     return "\n".join(lines) + "\n"

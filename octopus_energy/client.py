@@ -3,9 +3,10 @@ from __future__ import annotations
 import base64
 import json
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Iterator
+from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urljoin
 from urllib.request import Request, urlopen
@@ -40,7 +41,14 @@ class OctopusClient:
         if params:
             url += ("&" if "?" in url else "?") + urlencode(params)
         for attempt in range(self.retries + 1):
-            request = Request(url, headers={"Authorization": self._auth, "Accept": "application/json", "User-Agent": "personal-ai-octopus-readonly/1.0"})
+            request = Request(
+                url,
+                headers={
+                    "Authorization": self._auth,
+                    "Accept": "application/json",
+                    "User-Agent": "personal-ai-octopus-readonly/1.0",
+                },
+            )
             try:
                 with urlopen(request, timeout=self.timeout) as response:  # nosec B310: fixed HTTPS base or API pagination URL
                     return json.loads(response.read().decode("utf-8"))
@@ -51,7 +59,7 @@ class OctopusClient:
             except (URLError, TimeoutError, json.JSONDecodeError) as exc:
                 if attempt == self.retries:
                     raise OctopusAPIError(f"Octopus API request failed ({type(exc).__name__})") from None
-            time.sleep(min(8, 2 ** attempt))
+            time.sleep(min(8, 2**attempt))
         raise AssertionError("unreachable")
 
     def paginated(self, path: str, params: dict[str, str] | None = None) -> Iterator[dict[str, Any]]:
@@ -69,22 +77,38 @@ class OctopusClient:
     def meters(account: dict[str, Any]) -> list[Meter]:
         found: list[Meter] = []
         for prop in account.get("properties", []):
-            for fuel, point_key, id_key in (("electricity", "electricity_meter_points", "mpan"), ("gas", "gas_meter_points", "mprn")):
+            for fuel, point_key, id_key in (
+                ("electricity", "electricity_meter_points", "mpan"),
+                ("gas", "gas_meter_points", "mprn"),
+            ):
                 for point in prop.get(point_key, []):
                     agreements = point.get("agreements", [])
                     agreement = agreements[-1] if agreements else {}
                     for meter in point.get("meters", []):
                         serial = meter.get("serial_number")
                         if serial and point.get(id_key):
-                            found.append(Meter(fuel, str(point[id_key]), str(serial), agreement.get("tariff_code"), agreement.get("valid_from"), agreement.get("valid_to")))
+                            found.append(
+                                Meter(
+                                    fuel,
+                                    str(point[id_key]),
+                                    str(serial),
+                                    agreement.get("tariff_code"),
+                                    agreement.get("valid_from"),
+                                    agreement.get("valid_to"),
+                                )
+                            )
         return found
 
-    def consumption(self, meter: Meter, period_from: str | None = None, period_to: str | None = None) -> Iterator[dict[str, Any]]:
+    def consumption(
+        self, meter: Meter, period_from: str | None = None, period_to: str | None = None
+    ) -> Iterator[dict[str, Any]]:
         endpoint = f"{meter.fuel}-meter-points/{meter.point_id}/meters/{meter.serial_number}/consumption/"
         params = {key: value for key, value in {"period_from": period_from, "period_to": period_to}.items() if value}
         yield from self.paginated(endpoint, params)
 
-    def tariff_rates(self, meter: Meter, kind: str, period_from: str | None = None, period_to: str | None = None) -> Iterator[dict[str, Any]]:
+    def tariff_rates(
+        self, meter: Meter, kind: str, period_from: str | None = None, period_to: str | None = None
+    ) -> Iterator[dict[str, Any]]:
         if not meter.tariff_code:
             return
         endpoint = f"products/{product_code(meter.tariff_code)}/{meter.fuel}-tariffs/{meter.tariff_code}/{kind}/"
