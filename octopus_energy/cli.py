@@ -99,6 +99,8 @@ def sync(database: Path, account_number: str, api_key: str, days: int = 400) -> 
                         (meter_id, agreement.tariff_code, kind),
                         window_from,
                     )
+                    if agreement.valid_to and _parse(rates_from) >= _parse(agreement.valid_to):
+                        continue
                     rates = client.tariff_rates(
                         meter,
                         kind,
