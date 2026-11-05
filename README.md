@@ -20,7 +20,7 @@ Copy `.env.example` to `.env` and set `ACCOUNT_NUMBER` and `API_KEY`. Keep `.env
 ./scripts/start-energy.sh --days 400
 ```
 
-The foreground run discovers the account's electricity and gas meter points, active tariff codes, historical consumption, unit rates, and standing charges; it stores the result in `data/octopus_energy.sqlite3`. Later runs are incremental: each meter resumes from its newest stored consumption interval and each tariff charge from its newest `valid_from`, so `--days` only bounds the first sync of a meter. It uses HTTPS Basic authentication with the API key and an empty password. A success message means an authenticated, read-only API request completed; it never prints credentials, MPANs, MPRNs, serials, or account details.
+The foreground run discovers the account's electricity and gas meter points, active tariff codes, historical consumption, unit rates, and standing charges; it stores the result in `data/octopus_energy.sqlite3`. Later runs are incremental: consumption resumes 7 days before each meter's newest stored interval (to pick up readings Octopus backfills late), and each tariff charge type resumes from its newest stored `valid_from`. `--days` bounds the first consumption sync of a meter (the lookback never reaches before it) and applies to each charge type until that type has a stored rate. It uses HTTPS Basic authentication with the API key and an empty password. A success message means an authenticated, read-only API request completed; it never prints credentials, MPANs, MPRNs, serials, or account details.
 
 It also writes `reports/energy/YYYY-MM-DD.md` and `reports/energy/monthly-cost-analysis.md`. Reports use aggregate readings and never infer appliance-level usage.
 
