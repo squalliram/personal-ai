@@ -15,7 +15,11 @@ from .storage import connect, upsert_account, upsert_consumption, upsert_meter, 
 
 def load_env(path: Path) -> dict[str, str]:
     values = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return values
+    for line in lines:
         if "=" in line and not line.lstrip().startswith("#"):
             key, value = line.split("=", 1)
             values[key.strip()] = value.strip().strip("\"'")
@@ -47,11 +51,17 @@ def _consumption_resume_from(watermark: str | None, default_from: str) -> str:
 
 
 def sync(database: Path, account_number: str, api_key: str, days: int = 400) -> dict:
+    if days <= 0:
+        raise ValueError("Sync days must be positive")
+    if not account_number.strip() or not api_key.strip():
+        raise ValueError("Octopus account number and API key are required")
     started = utc_now()
     conn = connect(database)
     conn.execute("INSERT INTO sync_history(started_at,status) VALUES(?,?)", (started, "running"))
     sync_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.commit()
     counts = {"electricity": 0, "gas": 0}
+    empty_meters = 0
     try:
         client = OctopusClient(api_key)
         account = client.account(account_number)
@@ -59,6 +69,7 @@ def sync(database: Path, account_number: str, api_key: str, days: int = 400) -> 
         if not meters:
             raise OctopusAPIError("Account returned no supported smart meters")
         upsert_account(conn, account_number, started)
+        period_to = started
         default_from = _iso_utc(datetime.now(timezone.utc) - timedelta(days=days))
         for meter in meters:
             meter_id = upsert_meter(
@@ -75,9 +86,11 @@ def sync(database: Path, account_number: str, api_key: str, days: int = 400) -> 
                 "SELECT MAX(interval_start) FROM consumption WHERE meter_id=?", (meter_id,)
             ).fetchone()[0]
             consumption_from = _consumption_resume_from(watermark, default_from)
-            counts[meter.fuel] += upsert_consumption(
-                conn, meter_id, client.consumption(meter, period_from=consumption_from)
-            )
+            meter_records = upsert_consumption(conn, meter_id, client.consumption(meter, period_from=consumption_from))
+            counts[meter.fuel] += meter_records
+            if not meter_records:
+                empty_meters += 1
+                continue
             for kind in ("standard-unit-rates", "standing-charges"):
                 rates_from = _watermark(
                     conn,
@@ -85,15 +98,45 @@ def sync(database: Path, account_number: str, api_key: str, days: int = 400) -> 
                     (meter_id, kind),
                     default_from,
                 )
-                upsert_rate(conn, meter_id, kind, client.tariff_rates(meter, kind, period_from=rates_from))
+                if meter.agreements:
+                    # Account history repairs tariff changes missed by older syncs.
+                    rates_from = default_from
+                conn.execute(
+                    "DELETE FROM tariff_rates WHERE meter_id=? AND kind=? "
+                    "AND julianday(valid_from)<julianday(?) "
+                    "AND (valid_to IS NULL OR julianday(valid_to)>julianday(?))",
+                    (meter_id, kind, period_to, rates_from),
+                )
+                upsert_rate(
+                    conn,
+                    meter_id,
+                    kind,
+                    client.tariff_rates(meter, kind, period_from=rates_from, period_to=period_to),
+                )
+        if empty_meters:
+            status = "partial" if sum(counts.values()) else "no_data"
+            conn.rollback()
+            conn.execute(
+                "UPDATE sync_history SET ended_at=?,status=?,electricity_records=?,gas_records=? WHERE id=?",
+                (utc_now(), status, counts["electricity"], counts["gas"], sync_id),
+            )
+            conn.commit()
+            return {
+                "status": status,
+                "meters": len(meters),
+                "has_readings": bool(sum(counts.values())),
+                "empty_meters": empty_meters,
+                **counts,
+            }
         recompute_daily_costs(conn)
         conn.execute(
             "UPDATE sync_history SET ended_at=?,status=?,electricity_records=?,gas_records=? WHERE id=?",
             (utc_now(), "success", counts["electricity"], counts["gas"], sync_id),
         )
         conn.commit()
-        return {"status": "success", "meters": len(meters), **counts}
+        return {"status": "success", "meters": len(meters), "has_readings": True, "empty_meters": 0, **counts}
     except Exception as exc:
+        conn.rollback()
         conn.execute(
             "UPDATE sync_history SET ended_at=?,status=?,error_category=? WHERE id=?",
             (utc_now(), "failed", type(exc).__name__, sync_id),
@@ -112,14 +155,17 @@ def main() -> int:
     parser.add_argument("--report-dir", default="reports/energy")
     parser.add_argument("--dashboard-dir", default="reports/energy/dashboard")
     args = parser.parse_args()
-    env = {**load_env(Path(args.env_file)), **os.environ}
     try:
+        env = {**load_env(Path(args.env_file)), **os.environ}
         result = sync(Path(args.database), env["ACCOUNT_NUMBER"], env["API_KEY"], args.days)
+        if result["status"] != "success":
+            print(f"Octopus read-only sync incomplete: status={result['status']}; previous data and outputs preserved")
+            return 1
         write_reports(Path(args.database), Path(args.report_dir))
         write_dashboard(Path(args.database), Path(args.dashboard_dir))
         print("Octopus read-only sync succeeded: " + ", ".join(f"{key}={value}" for key, value in result.items()))
         return 0
-    except (KeyError, OSError, OctopusAPIError, ValueError) as exc:
+    except (KeyError, OSError, OctopusAPIError, ValueError, sqlite3.Error) as exc:
         print(f"Octopus sync failed safely: {type(exc).__name__}")
         return 1
 

@@ -157,7 +157,7 @@ class FakeSyncClient:
         self.calls.append((meter.fuel, "consumption", period_from))
         return iter(self.readings.get(meter.fuel, []))
 
-    def tariff_rates(self, meter, kind, period_from=None):
+    def tariff_rates(self, meter, kind, period_from=None, period_to=None):
         self.calls.append((meter.fuel, kind, period_from))
         return iter(self.rates.get(kind, []))
 
