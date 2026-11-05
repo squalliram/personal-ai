@@ -1,0 +1,7 @@
+*.sqlite3
+reports/daily/*.md
+.env
+reports/energy/*.md
+.DS_Store
+!data/.gitkeep
+!reports/daily/.gitkeep

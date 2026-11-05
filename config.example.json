@@ -1,0 +1,6 @@
+{
+  "timezone": "Europe/London",
+  "calendar": {"connector": "approved-mcp", "mode": "read-only"},
+  "notion": {"connector": "approved-mcp", "mode": "read-only", "discover_schema_before_query": true},
+  "storage": {"database": "data/daily_briefing.sqlite3", "reports": "reports/daily"}
+}
