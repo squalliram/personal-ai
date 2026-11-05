@@ -21,16 +21,18 @@ It does **not** identify appliances. Half-hourly meter data measures the whole p
 ## Deployment model
 
 1. cPanel hosts a clone at `/home/iramkhan/personal-ai` outside the public web root.
-2. A server-side `.env` in that directory supplies `ACCOUNT_NUMBER` and `API_KEY`.
-3. A successful GitHub `Test` workflow triggers `Deploy protected energy dashboard`.
-4. The deploy job SSHes to cPanel, resets the clone to the exact commit that passed `Test`, skipping if `main` has since moved on (untracked files such as `.env` and the SQLite database are kept), runs a read-only incremental sync (90-day window on first run), generates the dashboard, and copies only `index.html` and `data.json` to the protected web directory.
+2. `scripts/start-energy.sh` uses `$PYTHON` or the first Python 3.10+ it finds, including CloudLinux's `/opt/alt/python3*/bin/python3`, because the server's default `python3` may be older.
+3. A server-side `.env` in that directory supplies `ACCOUNT_NUMBER` and `API_KEY`.
+4. A successful GitHub `Test` workflow triggers `Deploy protected energy dashboard`.
+5. The deploy job SSHes to cPanel, resets the clone to the exact commit that passed `Test`, skipping if `main` has since moved on (untracked files such as `.env` and the SQLite database are kept), runs a read-only incremental sync (90-day window on first run), generates the dashboard, and copies only `index.html` and `data.json` to the protected web directory.
 
 Required GitHub repository secrets:
 
 - `CPANEL_SSH_HOST`
 - `CPANEL_SSH_USERNAME`
 - `CPANEL_SSH_PRIVATE_KEY`
-- `CPANEL_SSH_KNOWN_HOSTS`
+- `CPANEL_SSH_KNOWN_HOSTS` (`ssh-keyscan -p <port> <host>` output; non-22 ports appear as `[host]:port`)
+- `CPANEL_SSH_PORT` (optional, defaults to 22)
 - `CPANEL_APP_PATH` (`/home/iramkhan/personal-ai`)
 - `CPANEL_DASHBOARD_PATH` (the protected cPanel directory for `/energy-usage`)
 

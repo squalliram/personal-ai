@@ -60,12 +60,14 @@ jobs:
         env:
           CPANEL_SSH_HOST: ${{ secrets.CPANEL_SSH_HOST }}
           CPANEL_SSH_USERNAME: ${{ secrets.CPANEL_SSH_USERNAME }}
+          # Optional; defaults to 22.
+          CPANEL_SSH_PORT: ${{ secrets.CPANEL_SSH_PORT }}
           CPANEL_APP_PATH: ${{ secrets.CPANEL_APP_PATH }}
           CPANEL_DASHBOARD_PATH: ${{ secrets.CPANEL_DASHBOARD_PATH }}
           # Deploy exactly the commit Test checked; a newer main commit is deployed by its own run.
           DEPLOY_SHA: ${{ github.event.workflow_run.head_sha }}
         run: >-
-          ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes
+          ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes -p "${CPANEL_SSH_PORT:-22}"
           "$CPANEL_SSH_USERNAME@$CPANEL_SSH_HOST"
           "cd '$CPANEL_APP_PATH' && git fetch origin main &&
           if [ \"\$(git rev-parse origin/main)\" != '$DEPLOY_SHA' ]; then
