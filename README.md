@@ -10,7 +10,7 @@ It is **read-only**. It never edits my calendar or Notion, sends email, changes 
 
 Each run gives me one Markdown page for the day with:
 
-- **Today's calendar.** Times are shown in UK time (Europe/London), with links back to each event.
+- **Today's calendar.** Times are shown in UK time (Europe/London), with a link to the source event when one is available.
 - **Clashes.** Meetings that overlap.
 - **Outstanding work.** My Notion tasks, sorted by how overdue or urgent they are and their priority.
 - **Top three suggestions.** What I should probably focus on first. These are clearly marked as AI suggestions, not commitments.
@@ -20,7 +20,7 @@ The briefing reads my calendar and Notion through an approved read-only connecto
 
 ### 2. Energy insights: "Where is my money going on gas and electricity?"
 
-It pulls my Octopus Energy smart-meter readings and tariffs. From them it shows what I've used, what it cost, when my peak hours are, and when to shift flexible loads (laundry, dishwasher, EV charging) for Octopus Power Down and Power Up / Happy Hour events. The results appear in a private dashboard and short reports.
+It pulls my Octopus Energy smart-meter readings and tariffs. From them it shows what I've used, what it cost and when my peak electricity hour is, and suggests which flexible loads (laundry, dishwasher, EV charging) to move. It doesn't fetch Octopus Power Down or Power Up / Happy Hour event times; I check those in the Octopus app. The results appear in a private dashboard and short reports.
 
 Setup, privacy, the dashboard and the MCP tools are documented in [`octopus_energy/README.md`](octopus_energy/README.md).
 
@@ -58,7 +58,7 @@ The connector writes a JSON file in this format. Fields that aren't available ca
 }
 ```
 
-The briefing is written to `reports/daily/YYYY-MM-DD.md`. A small run log (counts and timings only, never event or task contents) goes to `data/daily_briefing.sqlite3`.
+The briefing is written to `reports/daily/YYYY-MM-DD.md`. A small run log goes to `data/daily_briefing.sqlite3`. It records counts, timings and any connector error messages, never event or task contents.
 
 ## What's in the repo
 
@@ -76,7 +76,7 @@ The briefing is written to `reports/daily/YYYY-MM-DD.md`. A small run log (count
 
 - **No writes to outside services.** Calendar, Notion and Octopus are only read. Adding any write capability would need my explicit approval.
 - **Content is data, never instructions.** Text inside events and tasks is never followed as a command.
-- **Secrets stay local.** Credentials live in `.env`, which is ignored by Git. Logs never contain tokens, account numbers or meter identifiers, or the contents of events and tasks.
+- **Secrets stay local.** Credentials live in `.env`, which is ignored by Git. Run logs record only counts, timings and connector error messages. They never contain tokens, account numbers or meter identifiers, or the contents of events and tasks.
 - **Generated data isn't committed.** Reports, dashboards and databases are all ignored by Git.
 
 The full contributor rules are in [`AGENTS.md`](AGENTS.md).

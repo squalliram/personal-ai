@@ -5,7 +5,7 @@ This package turns my Octopus Energy smart-meter data into answers I can act on:
 - **How much gas and electricity did I use, and what did it cost?** Daily, weekly, monthly and yearly.
 - **Which days were most expensive, and was anything unusual?**
 - **How much do I use overnight while everything should be idle?** A high overnight baseline usually means something is left on.
-- **When is my peak hour, and what should I move?** For example, shifting laundry or EV charging into an Octopus Power Up / Happy Hour slot, or cutting back during a Power Down event.
+- **When is my peak hour, and what should I move?** For example, shifting laundry or EV charging out of the peak, into a Power Up / Happy Hour slot, or away from a Power Down event. Octopus event times aren't fetched; check them in the Octopus app.
 
 It only **reads** from Octopus. It never switches tariffs, changes account settings or controls appliances. Smart meters measure the whole home, so it never claims to know what individual appliances used.
 
@@ -29,6 +29,8 @@ Later consumption runs are **incremental**. Consumption is re-read from 7 days b
 
 Missing tariff coverage makes costs unavailable, not zero. Gas source units are currently unverified: raw readings are retained, but gas kWh and unit costs are withheld. Estimates cover retrieved intervals and are not reconciled bills or a guarantee of complete billing-day coverage.
 
+`--days` limits how far back the first consumption sync of each meter goes. It also bounds rate downloads: when the account returns tariff agreement history, unit rates and standing charges are re-read for the whole `--days` window on each sync; otherwise they resume from the newest stored rate.
+
 Other options: `--database`, `--env-file`, `--report-dir`, `--dashboard-dir` (see `python3 -m octopus_energy.cli --help`).
 
 ## What you get
@@ -36,7 +38,7 @@ Other options: `--database`, `--env-file`, `--report-dir`, `--dashboard-dir` (se
 | Output | What's in it |
 | --- | --- |
 | `reports/energy/YYYY-MM-DD.md` | Stored tariff records, available usage/cost estimates, electricity overnight baseline (00:00–05:00 UK time), and unusual days (more than two standard deviations above normal) |
-| `reports/energy/monthly-cost-analysis.md` | Highest-cost days with complete pricing, including unit rates plus one standing charge per supply point |
+| `reports/energy/monthly-cost-analysis.md` | Highest-cost days with complete pricing: date, fuel, usage and total cost (unit rates plus one standing charge per supply point) |
 | `reports/energy/dashboard/index.html` | Interactive dashboard (see below) |
 | `data/octopus_energy.sqlite3` | Local database of meters, readings, rates, daily costs and sync history |
 
