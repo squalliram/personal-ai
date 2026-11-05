@@ -196,21 +196,21 @@ class SyncTests(unittest.TestCase):
         return {(fuel, kind): period_from for fuel, kind, period_from in FakeSyncClient.calls}
 
     def test_first_sync_uses_days_window_then_resumes_from_watermarks(self):
-        result = cli.sync(self.db, ACCOUNT, "key", days=30)
+        result = cli.sync(self.db, ACCOUNT, "key", days=3650)
         self.assertEqual((result["electricity"], result["gas"]), (2, 1))
-        expected = datetime.now(timezone.utc) - timedelta(days=30)
+        expected = datetime.now(timezone.utc) - timedelta(days=3650)
         for period_from in self.period_froms().values():
             actual = datetime.fromisoformat(period_from.replace("Z", "+00:00"))
             self.assertLess(abs(actual - expected), timedelta(minutes=1))
 
         FakeSyncClient.calls = []
         FakeSyncClient.readings["electricity"].append(half_hour("2026-11-01T01:00:00Z", "2026-11-01T01:30:00Z"))
-        result = cli.sync(self.db, ACCOUNT, "key", days=30)
+        result = cli.sync(self.db, ACCOUNT, "key", days=3650)
         self.assertEqual(
             self.period_froms(),
             {
-                ("electricity", "consumption"): "2026-11-01T00:30:00Z",
-                ("gas", "consumption"): "2026-11-01T00:00:00Z",
+                ("electricity", "consumption"): "2026-10-25T00:30:00Z",
+                ("gas", "consumption"): "2026-10-25T00:00:00Z",
                 ("electricity", "standard-unit-rates"): "2026-11-01T00:00:00Z",
                 ("gas", "standard-unit-rates"): "2026-11-01T00:00:00Z",
                 ("electricity", "standing-charges"): "2026-04-01T00:00:00Z",
@@ -223,6 +223,14 @@ class SyncTests(unittest.TestCase):
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM tariff_rates").fetchone()[0], 6)
         finally:
             conn.close()
+
+    def test_consumption_lookback_is_clamped_to_days_window(self):
+        resume = cli._consumption_resume_from
+        self.assertEqual(resume(None, "2026-08-01T00:00:00Z"), "2026-08-01T00:00:00Z")
+        self.assertEqual(resume("2026-11-01T00:30:00Z", "2026-08-01T00:00:00Z"), "2026-10-25T00:30:00Z")
+        self.assertEqual(resume("2026-11-01T01:30:00+01:00", "2026-08-01T00:00:00Z"), "2026-10-25T00:30:00Z")
+        self.assertEqual(resume("2026-11-01T00:30:00Z", "2026-10-30T00:00:00Z"), "2026-10-30T00:00:00Z")
+        self.assertEqual(resume("2026-06-01T00:00:00Z", "2026-08-01T00:00:00Z"), "2026-06-01T00:00:00Z")
 
     def test_dashboard_data_json_and_cli_output_contain_no_identifiers(self):
         env_file = self.root / ".env"

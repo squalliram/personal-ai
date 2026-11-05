@@ -27,6 +27,25 @@ def _watermark(conn: sqlite3.Connection, query: str, params: tuple, default: str
     return conn.execute(query, params).fetchone()[0] or default
 
 
+CONSUMPTION_LOOKBACK = timedelta(days=7)
+
+
+def _iso_utc(instant: datetime) -> str:
+    return instant.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _consumption_resume_from(watermark: str | None, default_from: str) -> str:
+    """Re-read a short window before the watermark so late backfilled intervals are picked up.
+
+    The lookback never reaches earlier than the --days window, unless the watermark itself is older.
+    """
+    if not watermark:
+        return default_from
+    mark = datetime.fromisoformat(watermark.replace("Z", "+00:00"))
+    floor = datetime.fromisoformat(default_from.replace("Z", "+00:00"))
+    return _iso_utc(min(mark, max(mark - CONSUMPTION_LOOKBACK, floor)))
+
+
 def sync(database: Path, account_number: str, api_key: str, days: int = 400) -> dict:
     started = utc_now()
     conn = connect(database)
@@ -40,7 +59,7 @@ def sync(database: Path, account_number: str, api_key: str, days: int = 400) -> 
         if not meters:
             raise OctopusAPIError("Account returned no supported smart meters")
         upsert_account(conn, account_number, started)
-        default_from = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat().replace("+00:00", "Z")
+        default_from = _iso_utc(datetime.now(timezone.utc) - timedelta(days=days))
         for meter in meters:
             meter_id = upsert_meter(
                 conn,
@@ -52,9 +71,10 @@ def sync(database: Path, account_number: str, api_key: str, days: int = 400) -> 
                 valid_to=meter.valid_to,
                 synced_at=started,
             )
-            consumption_from = _watermark(
-                conn, "SELECT MAX(interval_start) FROM consumption WHERE meter_id=?", (meter_id,), default_from
-            )
+            watermark = conn.execute(
+                "SELECT MAX(interval_start) FROM consumption WHERE meter_id=?", (meter_id,)
+            ).fetchone()[0]
+            consumption_from = _consumption_resume_from(watermark, default_from)
             counts[meter.fuel] += upsert_consumption(
                 conn, meter_id, client.consumption(meter, period_from=consumption_from)
             )
