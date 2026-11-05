@@ -43,7 +43,8 @@ jobs:
     if: needs.preflight.outputs.ready == 'true'
     runs-on: ubuntu-latest
     # Job-level so only runs that passed Test and preflight wait in the deploy queue.
-    # queue: max keeps every pending run, so an older one can't replace the newest commit's run.
+    # queue: max keeps up to 100 pending runs (GitHub cancels any beyond that), so an older run can't replace
+    # the newest commit's pending run.
     concurrency:
       group: deploy-dashboard
       cancel-in-progress: false
