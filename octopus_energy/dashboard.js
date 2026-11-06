@@ -34,6 +34,10 @@ function londonDate(now = new Date()) {
 }
 
 function periodEnd(key, period) {
+  if (period === 'latest-day') {
+    const start = new Date(key);
+    return {start, end: new Date(start.getTime() + 3600000)};
+  }
   const start = new Date(key + (period === 'month' ? '-01' : period === 'year' ? '-01-01' : '') + 'T00:00:00Z');
   const end = new Date(start);
   if (period === 'week') end.setUTCDate(end.getUTCDate() + 7);
@@ -46,6 +50,10 @@ function periodEnd(key, period) {
 function trendChange(groups, period, today = londonDate()) {
   const last = groups.at(-1), prior = groups.at(-2);
   if (!last || !prior || last.kwh === null || prior.kwh === null || prior.kwh === 0) return null;
+  if (period === 'latest-day') {
+    return completePeriod(last, period, today) && completePeriod(prior, period, today) && prior.end === last.start ?
+      (last.kwh - prior.kwh) / prior.kwh * 100 : null;
+  }
   for (const group of [prior, last]) {
     const {start, end} = periodEnd(group.key, period);
     if (end.toISOString().slice(0, 10) > today || group.dates.size !== Math.round((end - start) / DAY_MS)) return null;
@@ -69,6 +77,27 @@ function validDate(value) {
     Number.isFinite(Date.parse(value)) && new Date(value + 'T00:00:00Z').toISOString().slice(0, 10) === value;
 }
 
+function validInstant(value) {
+  return typeof value === 'string' &&
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value) &&
+    validDate(value.slice(0, 10)) && Number(value.slice(11, 13)) < 24 && Number.isFinite(Date.parse(value));
+}
+
+function validRequestId(value) {
+  return typeof value === 'string' && /^[a-f0-9]{32}$/.test(value);
+}
+
+// Inputs are validated UTCZ timestamps. Date.parse loses the runner's microseconds.
+function compareUtcTimestamps(left, right) {
+  const leftSeconds = left.slice(0, 19), rightSeconds = right.slice(0, 19);
+  if (leftSeconds !== rightSeconds) return leftSeconds < rightSeconds ? -1 : 1;
+  const fraction = value => value[19] === '.' ? value.slice(20, -1) : '';
+  const leftFraction = fraction(left), rightFraction = fraction(right);
+  const width = Math.max(leftFraction.length, rightFraction.length);
+  const a = leftFraction.padEnd(width, '0'), b = rightFraction.padEnd(width, '0');
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
 function validateData(data) {
   if (!data || !Number.isFinite(Date.parse(data.generated_at)) || !Array.isArray(data.daily) || !Array.isArray(data.hourly)) throw new Error('Invalid dashboard data');
   const fuels = ['electricity', 'gas'];
@@ -85,10 +114,64 @@ function validateData(data) {
   for (const row of data.hourly) {
     if (!row || !fuels.includes(row.fuel) || !Number.isInteger(row.hour) || row.hour < 0 || row.hour > 23 || !Number.isFinite(row.kwh)) throw new Error('Invalid hourly data');
   }
+  if (data.latest_day !== undefined) {
+    if (!data.latest_day || typeof data.latest_day !== 'object' || Array.isArray(data.latest_day)) throw new Error('Invalid latest day');
+    for (const fuel of fuels) {
+      const day = data.latest_day[fuel];
+      if (day === null || day === undefined) continue;
+      if (!validDate(day.date) || day.complete !== true || day.cost_basis !== 'usage_excludes_standing_charge' ||
+          !Array.isArray(day.hours) || ![23, 24, 25].includes(day.hours.length) || day.date >= londonDate(new Date(data.generated_at))) throw new Error('Invalid latest day');
+      let previous = null;
+      for (const row of day.hours) {
+        if (!row || !validInstant(row.start) || !validInstant(row.end) ||
+            Date.parse(row.end) - Date.parse(row.start) !== 3600000 || (previous && Date.parse(row.start) !== previous) ||
+            londonDate(new Date(row.start)) !== day.date || !Number.isFinite(row.kwh) ||
+            !(row.cost === null || Number.isFinite(row.cost))) throw new Error('Invalid latest hour');
+        previous = Date.parse(row.end);
+      }
+      const clock = value => new Intl.DateTimeFormat('en-GB', {timeZone: LONDON_TIMEZONE, hour: '2-digit', minute: '2-digit', hourCycle: 'h23'}).format(new Date(value));
+      const next = new Date(day.date + 'T00:00:00Z'); next.setUTCDate(next.getUTCDate() + 1);
+      if (clock(day.hours[0].start) !== '00:00' || clock(day.hours.at(-1).end) !== '00:00' ||
+          londonDate(new Date(day.hours.at(-1).end)) !== next.toISOString().slice(0, 10)) throw new Error('Incomplete latest day');
+    }
+  }
   return data;
 }
 
+function viewGroups(data, fuel, period) {
+  if (period !== 'latest-day') return groupRows(data.daily, fuel, period);
+  const day = data.latest_day?.[fuel];
+  return day ? day.hours.map(row => ({...row, key: row.start, dates: new Set([day.date]), reasons: new Set()})) : [];
+}
+
+function validateRefreshStatus(status) {
+  const results = [null, 'running', 'success', 'no_data', 'partial', 'failed'];
+  const categories = [null, 'invalid_configuration', 'lock_unavailable', 'inherited_lock_invalid', 'request_claim_failed',
+    'sync_failed', 'sync_timeout', 'provider_error', 'database_error', 'io_error', 'validation_error', 'publish_failed',
+    'publish_timeout', 'status_publish_failed', 'status_publish_timeout', 'interrupted', 'release_check_failed',
+    'superseded_release', 'release_head_mismatch'];
+  const timestamp = value => value === null || (validInstant(value) && value.endsWith('Z'));
+  if (!status || status.schema_version !== 1 || !results.includes(status.result) ||
+      ![null, 'pending', 'running'].includes(status.request_state) || !categories.includes(status.error_category) ||
+      !timestamp(status.last_attempt_at) || !timestamp(status.last_success_at) || !status.latest_reading_at ||
+      Array.isArray(status.latest_reading_at) ||
+      (status.request_id !== undefined && status.request_id !== null && !validRequestId(status.request_id)) ||
+      !['electricity', 'gas'].every(fuel => timestamp(status.latest_reading_at[fuel]))) throw new Error('Invalid refresh status');
+  return {...status, request_id: status.request_id ?? null};
+}
+
+function refreshFailureMessage(category) {
+  if (category === 'superseded_release') return 'A newer update is publishing. The current snapshot is kept.';
+  if (['sync_failed', 'sync_timeout', 'provider_error'].includes(category)) return 'Octopus could not be fetched. Try again later.';
+  if (['publish_failed', 'publish_timeout', 'status_publish_failed', 'status_publish_timeout'].includes(category)) return 'The update could not be published.';
+  if (['lock_unavailable', 'inherited_lock_invalid'].includes(category)) return 'The server is busy with another update.';
+  if (category === 'validation_error') return 'New readings could not be validated.';
+  if (category === 'interrupted') return 'The update was interrupted.';
+  return 'The server could not complete this update. Please try again later.';
+}
+
 function completePeriod(group, period, today = londonDate()) {
+  if (period === 'latest-day') return group.dates.size === 1 && [...group.dates][0] < today;
   const {start, end} = periodEnd(group.key, period);
   return end.toISOString().slice(0, 10) <= today && group.dates.size === Math.round((end - start) / DAY_MS);
 }
@@ -106,6 +189,10 @@ function anomalyModel(groups, period, today = londonDate()) {
 }
 
 function periodLabel(key, period, compact = false) {
+  if (period === 'latest-day') return new Intl.DateTimeFormat('en-GB', {
+    timeZone: LONDON_TIMEZONE, ...(compact ? {} : {day: 'numeric', month: 'short', year: 'numeric'}),
+    hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZoneName: 'short',
+  }).format(new Date(key));
   const options = period === 'year' ? {year: 'numeric'} :
     period === 'month' ? {month: compact ? 'short' : 'long', year: 'numeric'} :
       {day: 'numeric', month: compact ? 'short' : 'long', year: 'numeric'};
@@ -115,6 +202,7 @@ function periodLabel(key, period, compact = false) {
 
 function periodRangeLabel(key, period) {
   const {start, end} = periodEnd(key, period);
+  if (period === 'latest-day') return `${periodLabel(start.toISOString(), period)} → ${periodLabel(end.toISOString(), period)} Europe/London (end exclusive)`;
   // Keys are London calendar dates, not UTC instants. Midnight labels also hold on 23/25-hour DST days.
   const label = date => periodLabel(date.toISOString().slice(0, 10), 'day');
   return `${label(start)} 00:00 → ${label(end)} 00:00 Europe/London (end exclusive)`;
@@ -157,7 +245,7 @@ function contributorEstimate(group, period, fuel, hourly, baseline) {
 
 function tooltipContent(group, period, fuel, hourly, model) {
   const usage = group.kwh === null ? 'Usage unavailable' : numberLabel(group.kwh) + ' kWh';
-  const cost = group.cost === null ? 'Cost unavailable' : '£' + group.cost.toFixed(2) + ' estimated cost';
+  const cost = group.cost === null ? 'Cost unavailable' : group.cost > 0 && group.cost < 0.005 ? 'Under £0.01 estimated cost' : '£' + group.cost.toFixed(2) + ' estimated cost';
   let detail = '';
   if (model.high.has(group.key)) {
     const estimate = contributorEstimate(group, period, fuel, hourly, model.baseline);
@@ -173,7 +261,7 @@ function tooltipContent(group, period, fuel, hourly, model) {
   }
   const coverage = completePeriod(group, period) ? '' : '<p class="muted">Partial period or missing dates; no high-point assessment.</p>';
   return `<h3>${escapeHtml(periodLabel(group.key, period))}</h3><p class="tooltip-range">${escapeHtml(periodRangeLabel(group.key, period))}</p>
-    <dl><div><dt>Energy used</dt><dd>${usage}</dd></div><div><dt>Cost</dt><dd>${cost}</dd></div></dl>${coverage}${detail}`;
+    <dl><div><dt>Energy used</dt><dd>${usage}</dd></div><div><dt>${period === 'latest-day' ? 'Usage cost (standing charge excluded)' : 'Cost'}</dt><dd>${cost}</dd></div></dl>${coverage}${detail}`;
 }
 
 function chartLayout(groups) {
@@ -197,9 +285,10 @@ function chartLayout(groups) {
 
 function initializeDashboard() {
   let data = null, fuel = 'electricity', period = 'day', busy = false, loadError = false;
+  let refreshBusy = false, lastRefreshStatus = null;
   const $ = selector => document.querySelector(selector);
   const formatted = value => value ? new Date(value).toLocaleString('en-GB', {timeZone: LONDON_TIMEZONE}) : 'unavailable';
-  const money = value => value === null ? 'Cost unavailable' : '£' + value.toFixed(2) + ' estimated cost';
+  const money = value => value === null ? 'Cost unavailable' : value > 0 && value < 0.005 ? 'Under £0.01 estimated cost' : '£' + value.toFixed(2) + ' estimated cost';
   const setStatus = (state, message) => { $('#status').dataset.state = state; $('#status').textContent = message; };
   let repositionTooltip = () => {};
 
@@ -218,7 +307,7 @@ function initializeDashboard() {
     }
     const layout = chartLayout(groups), model = anomalyModel(groups, period);
     const {left, right, top, bottom, points, ticks} = layout;
-    const xTitle = {day: 'Date', week: 'Week commencing', month: 'Month', year: 'Year'}[period] + ' (Europe/London)';
+    const xTitle = {day: 'Date', week: 'Week commencing', month: 'Month', year: 'Year', 'latest-day': 'Time'}[period] + ' (Europe/London)';
     let previousKnown = false;
     const path = points.map(point => {
       if (point.y === null) { previousKnown = false; return ''; }
@@ -339,7 +428,11 @@ function initializeDashboard() {
 
   function render() {
     if (!data) return;
-    const groups = groupRows(data.daily, fuel, period), last = groups.at(-1);
+    const groups = viewGroups(data, fuel, period);
+    const latestDay = period === 'latest-day' ? data.latest_day?.[fuel] : null;
+    const last = latestDay ? {key: latestDay.date, reasons: new Set(),
+      kwh: groups.reduce((sum, row) => sum + row.kwh, 0),
+      cost: groups.some(row => row.cost === null) ? null : groups.reduce((sum, row) => sum + row.cost, 0)} : groups.at(-1);
     const change = trendChange(groups, period);
     const hours = data.hourly.filter(row => row.fuel === fuel);
     const peak = hours.length ? hours.reduce((a, b) => a.kwh >= b.kwh ? a : b) : null;
@@ -349,15 +442,21 @@ function initializeDashboard() {
     const reasons = {missing_unit_rate: 'missing unit rates', missing_standing_charge: 'missing standing charges', unknown_gas_units: 'unverified gas units'};
     const reason = last ? [...last.reasons].map(value => reasons[value] || 'incomplete source data').join(', ') : '';
     if (loadError) setStatus('error', 'Reload failed. Showing the last loaded snapshot; it may be out of date. Check access and retry.');
+    else if (period === 'latest-day' && !last) setStatus('warning', 'No complete London day is available for ' + fuel + '. Use the daily view; source coverage or confirmed gas units may be unavailable.');
     else if (!last) setStatus('warning', 'No recorded ' + fuel + ' data. Run an authenticated source sync and publish the dashboard.');
     else if (last.kwh === null) setStatus('warning', 'Usage unavailable: source units are unverified. Do not treat raw gas volume as kWh.');
     else if (last.cost === null && freshness.state === 'ready') setStatus('warning', 'Usage is available, but costs are unavailable because source pricing is incomplete.');
     else setStatus(freshness.state, freshness.text);
-    $('#updated').textContent = `Snapshot exported ${formatted(data.generated_at)} · Latest ${fuel} reading ${formatted(data.latest_reading_at?.[fuel])} · Last successful sync ${formatted(data.last_successful_sync_at)} · Europe/London`;
+    $('#updated').textContent = `Data as of · Latest electricity reading ${formatted(data.latest_reading_at?.electricity)} · Latest gas reading ${formatted(data.latest_reading_at?.gas)} · Last successful sync ${formatted(lastRefreshStatus?.last_success_at || data.last_successful_sync_at)} · Snapshot exported ${formatted(data.generated_at)} · Europe/London`;
     $('#notice').textContent = data.notice || 'Whole-home meter data cannot identify individual appliances.';
-    $('#cards').innerHTML = `<article class="card"><h2>${fuel} ${period}${period === 'week' ? ' (Monday start)' : ''}</h2><div class="number">${last ? last.kwh === null ? 'Usage unavailable' : last.kwh.toFixed(1) + ' kWh' : 'No data'}</div><p class="muted">${last ? money(last.cost) : 'Cost unavailable'}${reason ? ' (' + reason + ')' : ''}${last ? ' · ' + last.key : ''}</p></article><article class="card"><h2>Recorded-period trend</h2><div class="number">${change === null ? 'Not comparable' : (change >= 0 ? '+' : '') + change.toFixed(1) + '%'}</div><p class="muted">Requires adjacent past periods with all dates present. Missing intervals are not adjusted.</p></article><article class="card"><h2>Historical peak hour</h2><div class="number">${showHourlyPeak ? peakLabel : 'Review heating'}</div><p class="muted">${showHourlyPeak ? 'Europe/London, averaged across available readings. Not a cheapest-rate prediction.' : 'Compare cold-day demand and heating schedules.'}</p></article>`;
+    $('#cards').innerHTML = `<article class="card"><h2>${fuel} ${period === 'latest-day' ? 'latest available day' : period}${period === 'week' ? ' (Monday start)' : ''}</h2><div class="number">${last ? last.kwh === null ? 'Usage unavailable' : last.kwh.toFixed(1) + ' kWh' : 'No data'}</div><p class="muted">${last ? money(last.cost) : 'Cost unavailable'}${reason ? ' (' + reason + ')' : ''}${last ? ' · ' + last.key : ''}${period === 'latest-day' ? ' · Usage cost excludes standing charge.' : ''}</p></article><article class="card"><h2>Recorded-period trend</h2><div class="number">${change === null ? 'Not comparable' : (change >= 0 ? '+' : '') + change.toFixed(1) + '%'}</div><p class="muted">${period === 'latest-day' ? 'Compares adjacent recorded hours in the complete London day.' : 'Requires adjacent past periods with all dates present. Missing intervals are not adjusted.'}</p></article><article class="card"><h2>Historical peak hour</h2><div class="number">${showHourlyPeak ? peakLabel : 'Review heating'}</div><p class="muted">${showHourlyPeak ? 'Europe/London, averaged across available readings. Not a cheapest-rate prediction.' : 'Compare cold-day demand and heating schedules.'}</p></article>`;
     $('#title').textContent = fuel[0].toUpperCase() + fuel.slice(1) + ' ' + period + ' recorded consumption';
     $('#range').textContent = last ? `${groups[0].key} to ${last.key} · Up to 90 recorded periods. Latest period may be partial.` : 'No data for this fuel.';
+    if (period === 'latest-day') {
+      $('#title').textContent = fuel[0].toUpperCase() + fuel.slice(1) + ' latest available day';
+      const dateLabel = latestDay ? new Intl.DateTimeFormat('en-GB', {timeZone: 'UTC', day: 'numeric', month: 'short', year: 'numeric'}).format(new Date(latestDay.date + 'T00:00:00Z')) : '';
+      $('#range').textContent = latestDay ? `Latest available day: ${dateLabel} · ${groups.length} hourly periods · Usage cost excludes standing charge. Full recorded coverage for supply points observed that day.` : 'No complete London day available for this fuel.';
+    }
     $('#action').textContent = loadError || !last || last.kwh === null || last.cost === null || freshness.state !== 'ready' ? 'Refresh and check meter data and tariff rates before making decisions. Confirm any event invitation in your Octopus account.' :
       fuel === 'electricity' ? 'For reward events, follow only your Octopus-confirmed invitation. Outside events, check your tariff before moving flexible loads; your peak-demand hour is not necessarily your highest-cost hour.' :
       'If gas demand rises, check heating times, thermostat settings, hot-water demand and draughts. Keep essential heating and frost protection on.';
@@ -365,7 +464,7 @@ function initializeDashboard() {
   }
 
   async function load() {
-    if (busy) return;
+    if (busy) return false;
     busy = true;
     $('#refresh').disabled = true;
     if (!data) setStatus('loading', 'Loading dashboard data…');
@@ -377,15 +476,131 @@ function initializeDashboard() {
       data = validateData(await response.json());
       loadError = false;
       render();
+      return true;
     } catch (_) {
       loadError = true;
       if (data) render();
       else setStatus('error', location.protocol === 'file:' ? 'Serve this directory over loopback HTTP to load data.json. See the dashboard operations guide.' : 'Cannot load dashboard data. Check authentication, network access and published files, then retry.');
+      return false;
     } finally {
       clearTimeout(timeout);
       busy = false;
-      $('#refresh').disabled = false;
+      $('#refresh').disabled = refreshBusy;
     }
+  }
+
+  async function refreshJson(path, options = {}) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    try {
+      const response = await fetch(new URL(path, document.baseURI), {
+        cache: 'no-store', credentials: 'same-origin', redirect: 'error', ...options, signal: controller.signal,
+      });
+      return {response, body: await response.json()};
+    } finally { clearTimeout(timeout); }
+  }
+
+  async function requestRefresh() {
+    if (refreshBusy || busy) return;
+    refreshBusy = true;
+    $('#refresh').disabled = true;
+    const message = (state, text) => { $('#refresh-status').dataset.state = state; $('#refresh-status').textContent = text; };
+    const finish = (state, text) => {
+      refreshBusy = false;
+      $('#refresh').disabled = busy;
+      message(state, text);
+    };
+    let beforeReadings = data ? {...data.latest_reading_at} : null;
+    const finishTerminal = (status, previous = false) => {
+      const prefix = previous ? 'Previous attempt: ' : '';
+      const queued = status.request_state === 'pending' ?
+        status.result === 'success' ? ' Another update is queued.' : ' A retry is queued.' : '';
+      if (status.result === 'failed' || status.result === 'partial') {
+        const neutral = status.error_category === 'superseded_release';
+        finish(neutral ? 'requested' : 'error', prefix +
+          (status.result === 'partial' ? 'Only part of the source was available. ' : '') +
+          refreshFailureMessage(status.error_category) + (neutral ? '' : ' Old data is kept.') + queued);
+      } else {
+        const newer = ['electricity', 'gas'].some(kind => Date.parse(data?.latest_reading_at?.[kind]) > Date.parse(beforeReadings[kind] || '1970-01-01T00:00:00Z'));
+        const text = status.result === 'no_data' || !newer ?
+          'No newer readings from Octopus yet. A 1–2 day meter-data lag is normal. The latest published snapshot is kept.' :
+          'Updated. New latest-reading timestamps and the last successful sync are shown in Data as of.';
+        finish('ready', prefix + text + queued);
+      }
+    };
+    let baseline;
+    message('requested', 'Requested: preparing a background fetch.');
+    try {
+      const initial = await refreshJson('status.json');
+      if (!initial.response.ok) throw new Error('Status unavailable');
+      baseline = validateRefreshStatus(initial.body);
+      beforeReadings ??= baseline.latest_reading_at;
+      const reply = await refreshJson('refresh.php', {method: 'POST', headers: {'X-Energy-Refresh': '1'}});
+      if (reply.body?.state === 'auth_unavailable') {
+        finish('error', 'Protected refresh authentication is unavailable on this hosting handler. The existing snapshot is kept.'); return;
+      }
+      if (reply.response.status === 429 && reply.body?.state === 'rate_limited') {
+        const retry = Number.isFinite(reply.body.retry_after) ? Math.max(1, Math.min(300, Math.ceil(reply.body.retry_after))) : 300;
+        finish('warning', `Rate limited. Try again in ${retry} seconds. The existing snapshot is kept.`); return;
+      }
+      if (!reply.response.ok || !['pending', 'already_running', 'retry_queued'].includes(reply.body?.state)) throw new Error('Request unavailable');
+      const timestamp = value => value === null || (validInstant(value) && value.endsWith('Z'));
+      if (!Object.hasOwn(reply.body, 'request_id') || !Object.hasOwn(reply.body, 'last_attempt_at') ||
+          !(reply.body.request_id === null || validRequestId(reply.body.request_id)) ||
+          !timestamp(reply.body.last_attempt_at)) throw new Error('Invalid request acknowledgement');
+      const requestId = reply.body.request_id;
+      const acknowledgedAttempt = reply.body.last_attempt_at;
+      const retryAttempt = reply.body.state === 'retry_queued' ? reply.body.last_attempt_at : null;
+      if (reply.body.state !== 'pending' && acknowledgedAttempt === null) throw new Error('Missing acknowledged attempt');
+      const joining = reply.body.state === 'already_running';
+      const untracked = () => finish('warning', 'An earlier request is queued or delayed, but its outcome cannot be tracked here. Check Data as of later; the existing snapshot is kept.');
+      if (reply.body.state === 'pending' && requestId === null) { untracked(); return; }
+      const deadline = Date.now() + 10 * 60 * 1000;
+      message(joining ? 'running' : 'requested', joining ? 'Already running: fetching from Octopus.' : 'Requested. Waiting for the background runner.');
+      let observedSuccess = baseline.last_success_at;
+      async function poll() {
+        if (Date.now() >= deadline) {
+          finish('warning', 'Unable to confirm this request’s outcome. It may still be queued or delayed. The existing snapshot is kept; check Data as of or try again later.'); return;
+        }
+        try {
+          const result = await refreshJson('status.json');
+          if (!result.response.ok) throw new Error('Status unavailable');
+          const status = validateRefreshStatus(result.body);
+          lastRefreshStatus = status;
+          const successChanged = status.last_success_at !== null &&
+            (observedSuccess === null || compareUtcTimestamps(status.last_success_at, observedSuccess) > 0);
+          if (successChanged) {
+            if (busy) { setTimeout(poll, 2000); return; }
+            if (!await load()) { finish('error', 'The update finished, but the published snapshot could not be reloaded. Old data is kept.'); return; }
+            observedSuccess = status.last_success_at;
+          }
+          const attemptOrder = status.last_attempt_at !== null && acknowledgedAttempt !== null ?
+            compareUtcTimestamps(status.last_attempt_at, acknowledgedAttempt) : null;
+          const tracked = requestId !== null && status.request_id === requestId && status.last_attempt_at !== null &&
+            (reply.body.state === 'pending' || (attemptOrder !== null && attemptOrder >= 0));
+          const activeJoin = joining && requestId === null && attemptOrder === 0;
+          const legacyRetry = retryAttempt !== null && requestId === null && status.request_id === null &&
+            attemptOrder === 0 && status.request_state === 'pending' &&
+            ['no_data', 'partial', 'failed'].includes(status.result);
+          const matches = tracked || activeJoin || legacyRetry;
+          if ((status.request_state === 'running' || status.result === 'running') && matches) {
+            message('running', 'Fetching from Octopus…');
+          } else {
+            const previousRetry = reply.body.state === 'retry_queued' && matches && attemptOrder === 0 &&
+              status.request_state === 'pending' && ['no_data', 'partial', 'failed'].includes(status.result);
+            if (['success', 'no_data', 'partial', 'failed'].includes(status.result) && matches) {
+              finishTerminal(status, previousRetry); return;
+            }
+            if (reply.body.state === 'retry_queued' && requestId === null) { untracked(); return; }
+            message('requested', status.result === 'running' || status.request_state === 'running' ?
+              'Requested. Another update is running; this request is still queued.' :
+              'Requested. Waiting for the background runner to handle this request.');
+          }
+          setTimeout(poll, 2000);
+        } catch (_) { finish('error', 'Refresh status is unavailable. The existing snapshot is kept; check again later.'); }
+      }
+      await poll();
+    } catch (_) { finish('error', 'The refresh could not be requested. The existing snapshot is kept; check access and try again.'); }
   }
 
   for (const kind of ['fuel', 'period']) {
@@ -399,7 +614,7 @@ function initializeDashboard() {
       render();
     });
   }
-  $('#refresh').onclick = load;
+  $('#refresh').onclick = requestRefresh;
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') load(); });
   setInterval(() => { if (document.visibilityState === 'visible') load(); }, 5 * 60 * 1000);
   for (const event of ['resize', 'scroll']) {

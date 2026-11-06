@@ -1,6 +1,8 @@
 *.sqlite3
 *.sqlite3-wal
 *.sqlite3-shm
+# Private config, ID-only request flags, atomic flag temp files and logs.
+data/energy-refresh/
 __pycache__/
 reports/daily/*.md
 .env

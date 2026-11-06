@@ -67,12 +67,14 @@ jobs:
           CPANEL_APP_PATH: ${{ secrets.CPANEL_APP_PATH }}
           CPANEL_DASHBOARD_PATH: ${{ secrets.CPANEL_DASHBOARD_PATH }}
           DEPLOY_SHA: ${{ github.event.workflow_run.head_sha }}
+          ENERGY_REFRESH_INTERVAL_MINUTES: ${{ vars.ENERGY_REFRESH_INTERVAL_MINUTES || '60' }}
         run: |
           # Remote paths are configuration, never executable shell fragments.
           [[ "$CPANEL_APP_PATH" =~ ^/[a-zA-Z0-9_./-]+$ ]] || exit 1
           [[ "$CPANEL_DASHBOARD_PATH" =~ ^/[a-zA-Z0-9_./-]+$ ]] || exit 1
           [[ "$DEPLOY_SHA" =~ ^[a-f0-9]{40}$ ]] || exit 1
           [[ "${CPANEL_SSH_PORT:-22}" =~ ^[0-9]+$ ]] || exit 1
+          [[ "${ENERGY_REFRESH_INTERVAL_MINUTES:-60}" =~ ^[1-9][0-9]*$ ]] || exit 1
           ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes -o StrictHostKeyChecking=yes -p "${CPANEL_SSH_PORT:-22}" \
             "$CPANEL_SSH_USERNAME@$CPANEL_SSH_HOST" \
             "cd '$CPANEL_APP_PATH' && command -v flock >/dev/null && test -d .git && \
@@ -82,9 +84,8 @@ jobs:
             if [ \"\$(git rev-parse origin/main)\" != '$DEPLOY_SHA' ]; then \
             echo 'origin/main has moved past the tested commit; skipping deploy.'; exit 0; fi && \
             git merge --ff-only '$DEPLOY_SHA' && test \"\$(git rev-parse HEAD)\" = '$DEPLOY_SHA' && \
-            ./scripts/start-energy.sh --days 90 --gas-units kwh && \
-            git fetch --no-tags origin main && \
-            if [ \"\$(git rev-parse origin/main)\" != '$DEPLOY_SHA' ]; then \
-            echo 'origin/main changed during collection; skipping publication.'; exit 0; fi && \
-            test \"\$(git rev-parse HEAD)\" = '$DEPLOY_SHA' && \
-            DASHBOARD_TARGET='$CPANEL_DASHBOARD_PATH' ./scripts/publish-energy-dashboard.sh"
+            DASHBOARD_TARGET='$CPANEL_DASHBOARD_PATH' \
+            ENERGY_REFRESH_INTERVAL_MINUTES='${ENERGY_REFRESH_INTERVAL_MINUTES:-60}' \
+            ./scripts/install-energy-refresh.sh && \
+            ENERGY_REFRESH_EXPECTED_SHA='$DEPLOY_SHA' \
+            ./scripts/refresh-energy.sh --force --inherited-lock-fd 9"

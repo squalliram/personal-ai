@@ -62,6 +62,8 @@ class DeploymentSafetyTests(unittest.TestCase):
             EXPECTED_SHA="a" * 40,
             SYNC_MARKER=str(self.root / "sync-marker"),
             SYNC_ARGUMENTS=str(self.root / "sync-arguments"),
+            REFRESH_ARGUMENTS=str(self.root / "refresh-arguments"),
+            RELEASE_SHA_CAPTURE=str(self.root / "release-sha"),
         )
         # Exercise util-linux flock in CI. macOS uses the same kernel-lock
         # semantics through its standard-library fcntl module.
@@ -106,6 +108,26 @@ esac
             scripts / "publish-energy-dashboard.sh",
             '#!/bin/sh\nprintf "PUBLISH\\n" >> "$COMMAND_LOG"\n',
         )
+        self.executable(
+            scripts / "install-energy-refresh.sh",
+            '#!/bin/sh\nprintf "INSTALL\\n" >> "$COMMAND_LOG"\n[ "$SCENARIO" != install_failure ]\n',
+        )
+        # The runner owns the post-collection release check before publishing.
+        # Its real implementation is exercised by the runner tests.
+        self.executable(
+            scripts / "refresh-energy.sh",
+            """#!/bin/sh
+printf "%s\\n" "$@" > "$REFRESH_ARGUMENTS"
+printf "%s\\n" "$ENERGY_REFRESH_EXPECTED_SHA" > "$RELEASE_SHA_CAPTURE"
+./scripts/start-energy.sh --days 90 --gas-units kwh &&
+git fetch --no-tags origin main &&
+if [ "$(git rev-parse origin/main)" != "$ENERGY_REFRESH_EXPECTED_SHA" ]; then
+  echo 'origin/main changed during collection; skipping publication.'; exit 0
+fi &&
+test "$(git rev-parse HEAD)" = "$ENERGY_REFRESH_EXPECTED_SHA" &&
+./scripts/publish-energy-dashboard.sh
+""",
+        )
         # Match the GitHub Actions default Bash runner's fail-fast behavior.
         result = subprocess.run(
             ["bash", "-e", "-c", self.command], env=self.env, capture_output=True, text=True, timeout=5
@@ -143,6 +165,15 @@ esac
             ["--days", "90", "--gas-units", "kwh"],
         )
         self.assertLess(commands.index("SYNC"), commands.index("PUBLISH"))
+        self.assertLess(commands.index("INSTALL"), commands.index("SYNC"))
+        self.assertEqual(
+            Path(self.env["REFRESH_ARGUMENTS"]).read_text().splitlines(),
+            ["--force", "--inherited-lock-fd", "9"],
+        )
+        self.assertEqual(Path(self.env["RELEASE_SHA_CAPTURE"]).read_text().strip(), self.env["EXPECTED_SHA"])
+
+    def test_failed_cron_installation_never_starts_collection(self):
+        self.assert_scenario("install_failure", 1)
 
     def test_dirty_checkout_never_updates_or_publishes(self):
         commands = self.assert_scenario("dirty", 1)
@@ -205,6 +236,8 @@ esac
             ("CPANEL_DASHBOARD_PATH", "/tmp/unsafe path"),
             ("DEPLOY_SHA", "not-a-tested-sha"),
             ("CPANEL_SSH_PORT", "22;command"),
+            ("ENERGY_REFRESH_INTERVAL_MINUTES", "0"),
+            ("ENERGY_REFRESH_INTERVAL_MINUTES", "60;command"),
         ):
             with self.subTest(key=key):
                 self.capture.unlink(missing_ok=True)
