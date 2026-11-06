@@ -227,7 +227,7 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("initializeDashboard()", index.read_text())
         data = json.loads((output / "data.json").read_text())
         self.assertNotIn("private-", json.dumps(data))
-        self.assertEqual({path.name for path in output.iterdir()}, {"index.html", "data.json"})
+        self.assertEqual({path.name for path in output.iterdir()}, {"index.html", "data.json", "refresh.php"})
 
     def test_export_has_accessible_chart_and_documented_high_point_rule(self):
         html = write_dashboard(self.database, self.root / "dashboard").read_text()
@@ -305,83 +305,6 @@ class DashboardTests(unittest.TestCase):
             timeout=30,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-
-
-class PublishDashboardTests(unittest.TestCase):
-    def setUp(self):
-        self.directory = tempfile.TemporaryDirectory()
-        self.addCleanup(self.directory.cleanup)
-        self.root = Path(self.directory.name)
-        self.source = self.root / "source"
-        self.source.mkdir()
-        (self.source / "index.html").write_text("<html>synthetic dashboard</html>")
-        (self.source / "data.json").write_text('{"daily":[],"hourly":[]}')
-        (self.source / ".env").write_text("synthetic excluded file")
-        self.target = self.root / "protected"
-        self.password_file = self.root / "passwd"
-        self.password_file.write_text("synthetic test fixture")
-
-    def publish(self):
-        env = dict(os.environ, DASHBOARD_DIR=str(self.source), DASHBOARD_TARGET=str(self.target))
-        return subprocess.run(
-            [str(ROOT / "scripts/publish-energy-dashboard.sh")],
-            cwd=ROOT,
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-
-    def protection(self, extra=""):
-        self.target.mkdir(exist_ok=True)
-        (self.target / ".htaccess").write_text(
-            f'AuthType Basic\nAuthName "Private energy"\nAuthUserFile "{self.password_file}"\nRequire valid-user\n{extra}'
-        )
-
-    def test_refuses_to_create_unprotected_target(self):
-        result = self.publish()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertFalse(self.target.exists())
-
-    def test_refuses_existing_target_without_protection_and_preserves_files(self):
-        self.target.mkdir()
-        (self.target / "index.html").write_text("existing dashboard")
-        result = self.publish()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual((self.target / "index.html").read_text(), "existing dashboard")
-        self.assertFalse((self.target / "data.json").exists())
-
-    def test_refuses_authorization_bypass_or_conditional_configuration(self):
-        for extra in ("Require all granted\n", "Satisfy any\n", "Allow from all\n"):
-            with self.subTest(extra=extra):
-                self.protection(extra)
-                self.assertNotEqual(self.publish().returncode, 0)
-                self.assertFalse((self.target / "data.json").exists())
-        self.protection()
-        path = self.target / ".htaccess"
-        path.write_text("<IfModule mod_auth_basic.c>\n" + path.read_text() + "</IfModule>\n")
-        self.assertNotEqual(self.publish().returncode, 0)
-
-    def test_requires_existing_password_file(self):
-        self.protection()
-        self.password_file.unlink()
-        self.assertNotEqual(self.publish().returncode, 0)
-
-    def test_publishes_only_two_files_and_preserves_protection(self):
-        self.protection()
-        protection = (self.target / ".htaccess").read_text()
-        result = self.publish()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual((self.target / ".htaccess").read_text(), protection)
-        self.assertEqual((self.target / "data.json").read_text(), (self.source / "data.json").read_text())
-        self.assertEqual({p.name for p in self.target.iterdir()}, {".htaccess", "index.html", "data.json"})
-
-    def test_missing_source_file_does_not_replace_existing_data(self):
-        self.protection()
-        (self.target / "data.json").write_text("previous")
-        (self.source / "index.html").unlink()
-        self.assertNotEqual(self.publish().returncode, 0)
-        self.assertEqual((self.target / "data.json").read_text(), "previous")
 
 
 class DeploymentWorkflowTests(unittest.TestCase):

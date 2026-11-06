@@ -8,9 +8,81 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from .analytics import _Rates
 from .storage import connect, get_gas_units
 
 LONDON = ZoneInfo("Europe/London")
+
+
+def _latest_days(conn, raw, gas_units):
+    """Full recorded London days; hourly costs exclude the fixed standing charge."""
+    days = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
+    today = datetime.now(LONDON).date()
+    for row in raw:
+        if row["fuel"] == "gas" and gas_units != "kwh":
+            continue
+        start = datetime.fromisoformat(row["interval_start"].replace("Z", "+00:00")).astimezone(timezone.utc)
+        end = datetime.fromisoformat(row["interval_end"].replace("Z", "+00:00")).astimezone(timezone.utc)
+        cursor = start
+        while cursor < end:
+            date = cursor.astimezone(LONDON).date()
+            boundary = datetime.combine(date + timedelta(days=1), datetime.min.time(), LONDON).astimezone(timezone.utc)
+            stop = min(end, boundary)
+            if date < today:
+                days[row["fuel"]][date][row["point_id"]].append((cursor, stop, start, end, row))
+            cursor = stop
+
+    def covers(spans, start, end):
+        cursor = start
+        for left, right, *_ in sorted(spans, key=lambda span: span[:2]):
+            if left > cursor:
+                return False
+            cursor = max(cursor, right)
+        return cursor >= end
+
+    rates = _Rates(conn)
+    result = {"electricity": None, "gas": None}
+    for fuel, dates in days.items():
+        for date, points in sorted(dates.items(), reverse=True):
+            start = datetime.combine(date, datetime.min.time(), LONDON).astimezone(timezone.utc)
+            end = datetime.combine(date + timedelta(days=1), datetime.min.time(), LONDON).astimezone(timezone.utc)
+            if not all(covers(spans, start, end) for spans in points.values()):
+                continue
+            bins = [{"kwh": 0.0, "cost": 0.0} for _ in range(int((end - start).total_seconds() / 3600))]
+            for spans in points.values():
+                for left, right, original_start, original_end, row in spans:
+                    # Preserve daily-cost semantics: never invent allocation across a tariff change inside a reading.
+                    rate = rates.value(row["meter_id"], "standard-unit-rates", original_start, original_end)
+                    duration = (original_end - original_start).total_seconds()
+                    cursor = left
+                    while cursor < right:
+                        index = int((cursor - start).total_seconds() // 3600)
+                        stop = min(right, start + timedelta(hours=index + 1))
+                        kwh = float(row["consumption_kwh"]) * (stop - cursor).total_seconds() / duration
+                        bucket = bins[index]
+                        bucket["kwh"] += kwh
+                        bucket["cost"] = (
+                            bucket["cost"] + kwh * rate / 100
+                            if bucket["cost"] is not None and rate is not None
+                            else None
+                        )
+                        cursor = stop
+            result[fuel] = {
+                "date": date.isoformat(),
+                "complete": True,
+                "cost_basis": "usage_excludes_standing_charge",
+                "hours": [
+                    {
+                        "start": (start + timedelta(hours=index)).astimezone(LONDON).isoformat(),
+                        "end": (start + timedelta(hours=index + 1)).astimezone(LONDON).isoformat(),
+                        "kwh": round(bucket["kwh"], 3),
+                        "cost": round(bucket["cost"], 6) if bucket["cost"] is not None else None,
+                    }
+                    for index, bucket in enumerate(bins)
+                ],
+            }
+            break
+    return result
 
 
 def dashboard_data(database: Path) -> dict:
@@ -42,7 +114,7 @@ def dashboard_data(database: Path) -> dict:
                 row["cost_status"] = "incomplete" if row["cost"] is None else "complete"
                 row["cost_reason"] = ",".join(reasons) or None
         raw = conn.execute(
-            "SELECT m.fuel,c.interval_start,c.interval_end,c.consumption_kwh "
+            "SELECT m.fuel,m.point_id,c.meter_id,c.interval_start,c.interval_end,c.consumption_kwh "
             "FROM consumption c JOIN meters m ON m.id=c.meter_id "
             "ORDER BY c.interval_start"
         ).fetchall()
@@ -95,6 +167,7 @@ def dashboard_data(database: Path) -> dict:
             "last_successful_sync_at": sync["ended_at"] if sync else None,
             "daily": daily,
             "hourly": hourly,
+            "latest_day": _latest_days(conn, raw, gas_units),
             "notice": "Whole-home meter data cannot identify individual appliances. Add smart-plug data for device attribution.",
         }
     finally:
@@ -136,16 +209,19 @@ a{color:var(--e)}[data-state="warning"],[data-state="error"]{color:var(--gold-li
 </style></head><body><main>
 <p class="eyebrow">READ-ONLY OCTOPUS INTELLIGENCE</p><h1>Energy decisions,<br><em>not just readings.</em></h1>
 <p id="status" role="status" aria-live="polite">Loading dashboard data…</p>
-<p id="updated" class="muted"></p>
-<button id="refresh" type="button">Reload published data</button>
-<p class="muted">Checks this published snapshot every 5 minutes. This page does not sync Octopus or provide live meter readings.</p>
+<p id="updated" class="muted">Data as of: electricity unavailable · gas unavailable · last successful sync unavailable.</p>
+<button id="refresh" type="button">Fetch latest data</button>
+<p id="refresh-status" role="status" aria-live="polite"></p>
+<p class="muted">Fetch latest data requests a protected background sync. Meter readings can lag by 1–2 days.
+This snapshot also reloads every 5 minutes; neither mode is a live meter feed.</p>
 <section class="card" aria-label="Chart filters"><b>Fuel</b><p>
 <button data-fuel="electricity" class="active" aria-pressed="true">Electricity</button>
 <button data-fuel="gas" aria-pressed="false">Gas</button></p><b>Period</b><p>
 <button data-period="day" class="active" aria-pressed="true">Daily</button>
 <button data-period="week" aria-pressed="false">Weekly</button>
 <button data-period="month" aria-pressed="false">Monthly</button>
-<button data-period="year" aria-pressed="false">Yearly</button></p></section>
+<button data-period="year" aria-pressed="false">Yearly</button>
+<button data-period="latest-day" aria-pressed="false">Latest day</button></p></section>
 <section class="grid" id="cards"></section>
 <section class="card chart-card"><h2 id="title">Consumption</h2>
 <p id="range" class="muted"></p>
@@ -162,6 +238,10 @@ Null, missing-date and ongoing periods are excluded. Equal values produce no hig
 Likely contributors appear only on high points and are estimates, not measured devices:
 fuel, calendar season at the period midpoint (whole years are mixed-season), historical hourly peak where available,
 and uplift of at least 50% versus a smaller uplift. Season is not observed weather; an hourly profile is not that point's timing.</p></section>
+<p class="muted">Latest day shows the most recent complete past Europe/London day for each fuel, with 23, 24 or 25 actual
+hourly buckets. Repeated autumn hours retain their BST/GMT offsets. Coverage is checked for every supply point observed
+that day; replacement meters are combined. Readings crossing hourly boundaries are split by duration.
+Hourly costs cover usage only and exclude standing charge; missing unit rates remain unavailable.</p>
 <section class="grid"><article class="card"><h2>Suggested next action</h2><p id="action" class="tip"></p></article>
 <article class="card"><h2>Confirmed Octopus events only</h2><p class="muted">No live event feed is connected.
 For an invited Power Down session, delay flexible demand such as laundry or EV charging.
@@ -178,6 +258,9 @@ Never turn off medical, frost-protection or essential devices. Do not increase u
 def write_dashboard(database: Path, output_dir: Path) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "data.json").write_text(json.dumps(dashboard_data(database)), encoding="utf-8")
+    (output_dir / "refresh.php").write_text(
+        Path(__file__).with_name("refresh.php").read_text(encoding="utf-8"), encoding="utf-8"
+    )
     out = output_dir / "index.html"
     out.write_text(HTML, encoding="utf-8")
     return out

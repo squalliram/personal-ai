@@ -24,7 +24,7 @@ It pulls my Octopus Energy smart-meter readings and tariffs. From them it shows 
 
 For setup, [screenshots](octopus_energy/README.md#screenshots), a local preview and testing instructions, see the [Octopus Energy guide](octopus_energy/README.md#quick-start), or [try the synthetic demo without an API key](octopus_energy/README.md#try-it-with-demo-data). The guide also covers privacy and the read-only MCP tools.
 
-Costs are estimates, not bills. Missing tariff coverage and unverified gas energy units remain unavailable rather than zero. Confirmed gas kWh readings can be enabled explicitly with `--gas-units kwh`; unconfigured runs default to `unknown`. The dashboard labels source freshness separately from export time; its five-minute reload checks only the published snapshot, not Octopus. Event suggestions are not a live event feed.
+Costs are estimates, not bills. Missing tariff coverage and unverified gas energy units remain unavailable rather than zero. Confirmed gas kWh readings can be enabled explicitly with `--gas-units kwh`; unconfigured runs default to `unknown`. The dashboard separates export time, source refresh status and reading freshness. Its normal reload fetches the published snapshot; the protected source-refresh button queues a real Octopus sync for the server's next cron tick. Event suggestions are not a live event feed.
 
 For safe local viewing, serve only the generated dashboard directory over loopback rather than opening `file://`. See [operations](docs/energy-dashboard.md) and the [dated readiness evidence](docs/energy-readiness.md). The existing private website is `https://iramkhan.com/energy-usage/`; local validation alone does not establish its deployed data or freshness.
 
@@ -40,7 +40,7 @@ Requires Python 3.10 or newer and has no third-party runtime dependencies.
 ./scripts/start-energy.sh
 ```
 
-Both run once, in the foreground, and then exit. There is no background service or scheduler. The `stop*.sh` scripts exist only for symmetry and do nothing.
+Both start commands run once, in the foreground, and then exit. The separately approved website deployment installs a one-minute energy cron tick, collecting when due (60 minutes by default) or requested. It does not schedule the daily briefing. The `stop*.sh` scripts exist only for symmetry and do nothing; they do not disable cron.
 
 ### Briefing snapshot format
 
@@ -88,4 +88,4 @@ python3 -m unittest discover -s tests -v
 ruff check . && ruff format --check .   # also run in CI; config in pyproject.toml
 ```
 
-CI runs Ruff and tests on every push and pull request, with Python 3.12 and Node 22. A successful `main` push triggers deployment only when all six cPanel secrets are configured. The workflow queues eligible runs, skips superseded tested commits, refuses dirty server checkouts and never resets away server changes. See [deployment operations](docs/energy-dashboard.md). No source-refresh schedule is created.
+CI runs Ruff, PHP syntax/endpoint checks and tests on every push and pull request, with Python 3.12 and Node 22. A successful `main` push triggers deployment only when all six cPanel secrets are configured. The workflow queues eligible runs, skips superseded tested commits, refuses dirty server checkouts and never resets away server changes. It installs one marked energy cron entry, preserving all unrelated entries. See [refresh setup and operations](octopus_energy/README.md#scheduled-and-on-demand-refresh).
