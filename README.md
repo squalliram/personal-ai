@@ -53,7 +53,7 @@ The briefing and energy start commands run once, in the foreground, and then exi
 
 ### Briefing snapshot format
 
-The connector writes a JSON file in this format. Fields that aren't available can be left out:
+The connector writes a JSON file in this format. Fields that aren't available can be left out. Malformed items are dropped and counted in the report's connector-failures section rather than crashing the run (`daily_briefing/snapshot.py` is the contract):
 
 ```json
 {

@@ -40,6 +40,13 @@ browser ── HTTPS/loopback ──> command_centre (WSGI)
 ```
 
 - **WSGI** so the same app runs locally (`wsgiref`, threaded) and later under cPanel's Passenger "Setup Python App" without a framework.
+
+### Distribution model (reconciled with independent review)
+
+Devin's assessment argued against a live web app and for extending the static `dashboard.py` + `data.json` + protected-publication pattern. The adopted position is a hybrid:
+
+- **Interactive use is a live local app.** Static JSON cannot provide passphrase sessions, live health states, an audit trail or per-request permission checks. The app's added attack surface is bounded: loopback-only by default, TLS required otherwise, Host allow-list, CSRF and Origin checks, rate limits, no framework, no external requests (no fonts or CDN), `textContent`-only rendering.
+- **Anything published stays static.** The energy dashboard remains a static artifact behind Basic Auth, and any future published command-centre artifact must go through `octopus_energy.publisher`. Nothing is published without explicit owner approval.
 - **Separate app database** (`data/command_centre.sqlite3`) for the audit log only. Existing databases are never opened for writing.
 - **Sessions in memory.** No session token is written to disk; a restart signs the owner out.
 
@@ -94,6 +101,10 @@ An independent Factory review agent (not Devin) assessed the repository separate
 | No sync, refresh or publish buttons in Phase 1 | Agree | Adopted |
 | Package name `personal_ai_app` | Suggested | Used `command_centre` to match the product name |
 
+### Independent assessment reconciliation (Devin)
+
+Devin's report on `main` was verified against the code. Confirmed and actioned: the snapshot-validation crash (fixed in `daily_briefing/snapshot.py` with regression tests), the missing CI secret scan (added to `test.yml`), and the missing `data/` backup runbook (added to [operations](operations.md)). Its test count (~126) came from a dated readiness doc; `main` actually runs 260 tests. Agreed but deferred: shared core extraction (Phase 2+, starting from `snapshot.py`), briefing-item persistence, unified scheduler (Phase 5). Its HTTP-to-HTTPS redirect finding is pre-existing, documented in `docs/energy-readiness.md`, and now on the owner decision list.
+
 ## 4. Milestones
 
 | Phase | Scope | State |
@@ -114,3 +125,4 @@ An independent Factory review agent (not Devin) assessed the repository separate
 4. Hosting target for the command centre: local only, or cPanel behind HTTPS.
 5. Data sources for career, finance, family and health.
 6. Approval to tighten `.env` permissions in the main checkout.
+7. Approval to ask the hosting provider for an HTTP-to-HTTPS redirect ahead of Basic Auth on `iramkhan.com/energy-usage/` (pre-existing finding; fix documented in `docs/energy-dashboard.md`).
