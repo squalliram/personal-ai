@@ -1,11 +1,11 @@
 import argparse
-import json
 import time
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from .briefing import render
+from .snapshot import load
 from .storage import initialize, record_run
 
 
@@ -19,15 +19,8 @@ def main() -> int:
     args = parser.parse_args()
     start = time.monotonic()
     now = datetime.now(ZoneInfo("Europe/London"))
-    errors = []
-    try:
-        snapshot = json.loads(Path(args.snapshot).read_text(encoding="utf-8"))
-        events = snapshot.get("events", [])
-        tasks = snapshot.get("tasks", [])
-        errors = snapshot.get("errors", [])
-    except (OSError, json.JSONDecodeError) as exc:
-        events, tasks, errors = [], [], [f"Snapshot input failure: {type(exc).__name__}"]
-    report = render(now.date(), now, events, tasks, errors)
+    snapshot = load(args.snapshot)
+    report = render(now.date(), now, snapshot.events, snapshot.tasks, snapshot.errors)
     output = Path(args.output_dir) / f"{now.date().isoformat()}.md"
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(report, encoding="utf-8")
@@ -39,9 +32,9 @@ def main() -> int:
         started_at=now.isoformat(),
         ended_at=datetime.now(ZoneInfo("Europe/London")).isoformat(),
         duration_ms=int((time.monotonic() - start) * 1000),
-        calendar_events=len(events),
-        tasks=len(tasks),
-        errors=errors,
+        calendar_events=len(snapshot.events),
+        tasks=len(snapshot.tasks),
+        errors=snapshot.errors,
     )
     return 0
 

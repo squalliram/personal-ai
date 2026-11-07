@@ -28,6 +28,12 @@ Costs are estimates, not bills. Missing tariff coverage and unverified gas energ
 
 For safe local viewing, serve only the generated dashboard directory over loopback rather than opening `file://`. See [operations](docs/energy-dashboard.md) and the [dated readiness evidence](docs/energy-readiness.md). The existing private website is `https://iramkhan.com/energy-usage/`; local validation alone does not establish its deployed data or freshness.
 
+### 3. Command Centre: "One private place to see all of it"
+
+A local, read-only web app that brings the briefing history, energy insights, integration health and automation status into one dashboard. It needs a passphrase sign-in, only reads the existing databases, and labels every figure as measured, estimated or inferred. Modules without a connected source (career, finance, family, health, calendar sync) show as "not connected" rather than placeholder data. It cannot start or stop schedules yet.
+
+See the [Command Centre architecture](docs/command-centre/architecture.md) and [operations guide](docs/command-centre/operations.md).
+
 ## Quick start
 
 Requires Python 3.10 or newer and has no third-party runtime dependencies.
@@ -38,13 +44,16 @@ Requires Python 3.10 or newer and has no third-party runtime dependencies.
 
 # Energy sync + reports + dashboard (needs .env, see octopus_energy/README.md)
 ./scripts/start-energy.sh
+
+# Command Centre (loopback only; set a passphrase hash first, see docs/command-centre/operations.md)
+./scripts/start-command-centre.sh
 ```
 
-Both start commands run once, in the foreground, and then exit. The separately approved website deployment installs a one-minute energy cron tick, collecting when due (60 minutes by default) or requested. It does not schedule the daily briefing. The `stop*.sh` scripts exist only for symmetry and do nothing; they do not disable cron.
+The briefing and energy start commands run once, in the foreground, and then exit. The Command Centre runs in the foreground until you stop it with Ctrl-C. The separately approved website deployment installs a one-minute energy cron tick, collecting when due (60 minutes by default) or requested. It does not schedule the daily briefing. The `stop*.sh` scripts exist only for symmetry and do nothing; they do not disable cron.
 
 ### Briefing snapshot format
 
-The connector writes a JSON file in this format. Fields that aren't available can be left out:
+The connector writes a JSON file in this format. Fields that aren't available can be left out. Malformed items are dropped and counted in the report's connector-failures section rather than crashing the run (`daily_briefing/snapshot.py` is the contract):
 
 ```json
 {
@@ -66,6 +75,7 @@ The briefing is written to `reports/daily/YYYY-MM-DD.md`. A small run log goes t
 | --- | --- |
 | `daily_briefing/` | Builds the daily briefing from a snapshot |
 | `octopus_energy/` | Octopus Energy sync, cost analysis, dashboard and MCP server ([README](octopus_energy/README.md)) |
+| `command_centre/` | Read-only Command Centre web app and API ([architecture](docs/command-centre/architecture.md)) |
 | `agents/` | Instructions for the AI agents that run each workflow ([daily briefing](agents/daily-briefing.md), [energy analyst](agents/energy-analyst.md)) |
 | `scripts/` | Start, stop and dashboard-publish scripts |
 | `docs/` | Operating guides, e.g. [energy dashboard deployment](docs/energy-dashboard.md) |

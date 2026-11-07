@@ -32,3 +32,14 @@ jobs:
           php --version
           php -l octopus_energy/refresh.php
       - run: python -m unittest discover -s tests -v
+      - name: Scan tracked files for committed secrets
+        # High-signal patterns only, with length floors so test sentinels such as
+        # "sk_live_SECRET" do not match. git grep exits 1 on no match, 2+ on error.
+        run: |
+          status=0
+          git grep -nIEi '(sk_live_[a-z0-9]{16,}|sk-[a-z0-9]{20,}|xox[baprs]-[a-z0-9-]{10,}|-----begin (rsa |ec |openssh |pgp )?private key-----|pbkdf2_sha256$[0-9]+$[a-z0-9_-]{16,}$[a-z0-9+/=_-]{16,}|(api[_-]?key|secret|password|token)["'"'"']?[[:space:]]*[:=][[:space:]]*["'"'"'][a-z0-9+/=_-]{24,}["'"'"'])' -- . || status=$?
+          case "$status" in
+            0) echo "Possible committed secret found" >&2; exit 1;;
+            1) echo "No committed secrets detected";;
+            *) echo "Secret scan failed to run (exit $status)" >&2; exit 1;;
+          esac

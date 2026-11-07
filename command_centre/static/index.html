@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Personal AI Command Centre</title>
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/app.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<section id="login-view" class="login" hidden>
+  <form id="login-form" class="card login-card" novalidate>
+    <p class="eyebrow">PERSONAL AI</p>
+    <h1>Command Centre</h1>
+    <label for="password">Passphrase</label>
+    <input id="password" name="password" type="password" autocomplete="current-password" required maxlength="1024">
+    <button type="submit" class="primary">Sign in</button>
+    <p id="login-status" role="status" aria-live="polite"></p>
+  </form>
+</section>
+<div id="app-view" class="shell" hidden>
+  <header class="topbar">
+    <button id="menu-toggle" type="button" aria-expanded="false" aria-controls="nav">Menu</button>
+    <span class="brand">Command Centre</span>
+    <span id="permission-badge" class="badge" title="Session permission level"></span>
+    <button id="logout" type="button">Sign out</button>
+  </header>
+  <nav id="nav" aria-label="Sections"><ul id="nav-list"></ul></nav>
+  <main id="main" tabindex="-1">
+    <h1 id="view-title"></h1>
+    <p id="view-status" role="status" aria-live="polite"></p>
+    <div id="view"></div>
+  </main>
+</div>
+<noscript>JavaScript is required for the command centre.</noscript>
+</body>
+</html>
