@@ -40,6 +40,10 @@ Requires Python 3.10 or newer. On this Mac `python3` is 3.9.6, so the launcher p
 | `COMMAND_CENTRE_BRIEFING_REPORTS` | `reports/daily` | Only file names are read |
 | `COMMAND_CENTRE_AUDIT_DB` | `data/command_centre.sqlite3` | The app's only writable database (mode 0600) |
 | `COMMAND_CENTRE_INSPECT_CRONTAB` | `1` | Count marked energy cron entries with `crontab -l` |
+| `COMMAND_CENTRE_ALLOWED_HOSTS` | none | Extra Host header values, comma-separated (used when hosted) |
+| `COMMAND_CENTRE_SESSIONS_DB` | none (in-memory sessions) | SQLite session store for multi-process hosting (0600) |
+
+For hosting on iramkhan.com see [deployment](deployment.md).
 
 Only `COMMAND_CENTRE_*` lines are read from `.env`; Octopus credentials are ignored.
 

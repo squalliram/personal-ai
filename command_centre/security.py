@@ -1,17 +1,21 @@
-"""Password hashing, permission levels, rate limiting and in-memory sessions."""
+"""Password hashing, permission levels, rate limiting and sessions."""
 
 from __future__ import annotations
 
 import base64
 import hashlib
 import hmac
+import os
 import secrets
+import sqlite3
 import threading
 import time
 from collections import deque
 from collections.abc import Callable
+from contextlib import closing
 from dataclasses import dataclass
 from enum import IntEnum
+from pathlib import Path
 
 PBKDF2_ITERATIONS = 600_000
 MIN_ITERATIONS = 1_000
@@ -183,6 +187,103 @@ class SessionStore:
         if token:
             with self._lock:
                 self._sessions.pop(_token_hash(token), None)
+
+    def expires_at(self, session: Session) -> float:
+        return min(session.last_seen_at + self.idle, session.created_at + self.absolute)
+
+
+SESSIONS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS sessions (
+  token_hash TEXT PRIMARY KEY,
+  csrf_token TEXT NOT NULL,
+  permission INTEGER NOT NULL,
+  created_at REAL NOT NULL,
+  last_seen_at REAL NOT NULL
+);
+"""
+
+
+class SqliteSessionStore:
+    """File-backed sessions for multi-process hosting such as Passenger.
+
+    Only SHA-256 token hashes are stored, never tokens. The file is created
+    with mode 0600 and symlinks are refused. SQLite serializes writers, so
+    several Passenger processes share sessions safely. A server restart no
+    longer signs the owner out; idle and absolute expiry are unchanged.
+    """
+
+    def __init__(
+        self,
+        path: Path,
+        *,
+        idle_seconds: int,
+        absolute_seconds: int,
+        clock: Callable[[], float] = time.time,
+        max_sessions: int = 20,
+    ) -> None:
+        self.path, self.idle, self.absolute, self.clock, self.max_sessions = (
+            path,
+            idle_seconds,
+            absolute_seconds,
+            clock,
+            max_sessions,
+        )
+        self._lock = threading.Lock()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.is_symlink():
+            raise ValueError("Session database must not be a symlink")
+        os.close(os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600))
+        with closing(sqlite3.connect(path)) as conn, conn:
+            conn.executescript(SESSIONS_SCHEMA)
+
+    def _expired(self, session: Session, now: float) -> bool:
+        return now - session.last_seen_at > self.idle or now - session.created_at > self.absolute
+
+    def create(self, permission: Permission) -> tuple[str, Session]:
+        token = secrets.token_urlsafe(32)
+        now = self.clock()
+        session = Session(_token_hash(token), secrets.token_urlsafe(32), permission, now, now)
+        with self._lock, closing(sqlite3.connect(self.path, timeout=5)) as conn, conn:
+            conn.execute(
+                "DELETE FROM sessions WHERE ? - last_seen_at > ? OR ? - created_at > ?",
+                (now, self.idle, now, self.absolute),
+            )
+            (count,) = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()
+            if count >= self.max_sessions:
+                conn.execute(
+                    "DELETE FROM sessions WHERE token_hash IN "
+                    "(SELECT token_hash FROM sessions ORDER BY last_seen_at LIMIT ?)",
+                    (count - self.max_sessions + 1,),
+                )
+            conn.execute(
+                "INSERT INTO sessions VALUES(?,?,?,?,?)",
+                (session.token_hash, session.csrf_token, int(session.permission), session.created_at, now),
+            )
+        return token, session
+
+    def get(self, token: str | None) -> Session | None:
+        if not token:
+            return None
+        key = _token_hash(token)
+        now = self.clock()
+        with self._lock, closing(sqlite3.connect(self.path, timeout=5)) as conn, conn:
+            row = conn.execute(
+                "SELECT csrf_token, permission, created_at, last_seen_at FROM sessions WHERE token_hash = ?", (key,)
+            ).fetchone()
+            if row is None:
+                return None
+            session = Session(key, row[0], Permission(row[1]), row[2], row[3])
+            if self._expired(session, now):
+                conn.execute("DELETE FROM sessions WHERE token_hash = ?", (key,))
+                return None
+            session.last_seen_at = now
+            conn.execute("UPDATE sessions SET last_seen_at = ? WHERE token_hash = ?", (now, key))
+            return session
+
+    def revoke(self, token: str | None) -> None:
+        if token:
+            with self._lock, closing(sqlite3.connect(self.path, timeout=5)) as conn, conn:
+                conn.execute("DELETE FROM sessions WHERE token_hash = ?", (_token_hash(token),))
 
     def expires_at(self, session: Session) -> float:
         return min(session.last_seen_at + self.idle, session.created_at + self.absolute)

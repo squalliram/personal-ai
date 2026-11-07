@@ -39,6 +39,8 @@ class Settings:
     briefing_reports: Path
     audit_db: Path
     password_hash: str | None
+    allowed_hosts: tuple[str, ...] = ()
+    sessions_db: Path | None = None
     permission_ceiling: Permission = Permission.RECOMMEND
     inspect_crontab: bool = True
     energy_stale_hours: int = 48
@@ -54,6 +56,13 @@ def load_settings(root: Path = ROOT, environ: Mapping[str, str] | None = None) -
         value = Path(values.get(PREFIX + name) or default).expanduser()
         return value if value.is_absolute() else root / value
 
+    def optional_path(name: str) -> Path | None:
+        value = values.get(PREFIX + name)
+        if not value:
+            return None
+        candidate = Path(value).expanduser()
+        return candidate if candidate.is_absolute() else root / candidate
+
     return Settings(
         root=root,
         energy_db=path("ENERGY_DB", "data/octopus_energy.sqlite3"),
@@ -62,6 +71,10 @@ def load_settings(root: Path = ROOT, environ: Mapping[str, str] | None = None) -
         briefing_reports=path("BRIEFING_REPORTS", "reports/daily"),
         audit_db=path("AUDIT_DB", "data/command_centre.sqlite3"),
         password_hash=values.get(PREFIX + "PASSWORD_HASH") or None,
+        allowed_hosts=tuple(
+            host.strip() for host in values.get(PREFIX + "ALLOWED_HOSTS", "").split(",") if host.strip()
+        ),
+        sessions_db=optional_path("SESSIONS_DB"),
         permission_ceiling=Permission.parse(values.get(PREFIX + "PERMISSION", "recommend")),
         inspect_crontab=values.get(PREFIX + "INSPECT_CRONTAB", "1").lower() not in ("0", "false", "no"),
     )

@@ -101,14 +101,14 @@
     const password = $("password").value;
     if (!password) { $("login-status").textContent = "Enter your passphrase."; return; }
     $("login-status").textContent = "Signing in…";
-    const result = await api("/api/v1/session", { method: "POST", body: { password } });
+    const result = await api("api/v1/session", { method: "POST", body: { password } });
     $("password").value = "";
     if (result.ok) showApp(result.data);
     else $("login-status").textContent = LOGIN_ERRORS[result.data && result.data.error] || "Sign-in failed.";
   }
 
   async function logout() {
-    await api("/api/v1/session", { method: "DELETE" });
+    await api("api/v1/session", { method: "DELETE" });
     showLogin("You have signed out.");
   }
 
@@ -190,7 +190,7 @@
   }
 
   async function overview(view) {
-    const data = await load("/api/v1/overview");
+    const data = await load("api/v1/overview");
     if (!data) return;
     const now = new Date(data.generated_at);
     const longDate = new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/London", weekday: "long", day: "numeric", month: "long" }).format(now);
@@ -230,7 +230,7 @@
     ));
   }
   async function energy(view) {
-    const data = await load("/api/v1/energy");
+    const data = await load("api/v1/energy");
     if (!data) return;
     const h = data.health;
     view.append(
@@ -260,7 +260,7 @@
   }
 
   async function integrations(view) {
-    const data = await load("/api/v1/integrations");
+    const data = await load("api/v1/integrations");
     if (!data) return;
     view.append(card("Sources",
       muted("A source is Operational only when its own execution evidence confirms it."),
@@ -269,7 +269,7 @@
   }
 
   async function automationsView(view) {
-    const data = await load("/api/v1/automations");
+    const data = await load("api/v1/automations");
     if (!data) return;
     for (const job of data.automations) {
       const rows = [["Purpose", job.purpose], ["Trigger", job.trigger], ["Next execution", job.next_execution_note]];
@@ -287,7 +287,7 @@
   }
 
   async function settings(view) {
-    const data = await load("/api/v1/audit");
+    const data = await load("api/v1/audit");
     if (!data || !session) return;
     view.append(
       card("Session", keyValues([["Permission", session.permission.toUpperCase()], ["Session expires", when(session.expires_at)],
@@ -301,7 +301,7 @@
   }
 
   async function placeholder(view, id) {
-    const data = await load("/api/v1/modules");
+    const data = await load("api/v1/modules");
     if (!data) return;
     const module = data.modules.find((m) => m.id === id);
     if (!module) return;
@@ -340,7 +340,7 @@
       $("menu-toggle").setAttribute("aria-expanded", String(open));
     });
     window.addEventListener("hashchange", render);
-    const result = await api("/api/v1/session");
+    const result = await api("api/v1/session");
     if (result.ok) showApp(result.data);
     else showLogin(result.status === 0 ? LOGIN_ERRORS.network_error : "");
   }

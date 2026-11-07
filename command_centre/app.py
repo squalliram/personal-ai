@@ -20,7 +20,7 @@ from . import sources
 from .audit import AuditLog
 from .automations import CronReader, list_automations, read_crontab
 from .config import Settings
-from .security import Permission, RateLimiter, Session, SessionStore, verify_password
+from .security import Permission, RateLimiter, Session, SessionStore, SqliteSessionStore, verify_password
 
 LONDON = ZoneInfo("Europe/London")
 STATIC_DIR = Path(__file__).with_name("static")
@@ -79,9 +79,19 @@ class CommandCentreApp:
         self.settings, self.secure, self.clock, self.cron_reader = settings, secure, clock, cron_reader
         self.allowed_hosts = frozenset(allowed_hosts)
         self.cookie_name = "__Host-cc_session" if secure else "cc_session"
-        self.sessions = SessionStore(
-            idle_seconds=settings.session_idle_seconds, absolute_seconds=settings.session_absolute_seconds, clock=clock
-        )
+        if settings.sessions_db:
+            self.sessions: SessionStore | SqliteSessionStore = SqliteSessionStore(
+                settings.sessions_db,
+                idle_seconds=settings.session_idle_seconds,
+                absolute_seconds=settings.session_absolute_seconds,
+                clock=clock,
+            )
+        else:
+            self.sessions = SessionStore(
+                idle_seconds=settings.session_idle_seconds,
+                absolute_seconds=settings.session_absolute_seconds,
+                clock=clock,
+            )
         self.audit = audit or AuditLog(settings.audit_db, clock=clock)
         self.login_per_client = RateLimiter(5, 15 * 60, clock=monotonic)
         self.login_global = RateLimiter(20, 15 * 60, clock=monotonic)
@@ -143,6 +153,17 @@ class CommandCentreApp:
         if host not in self.allowed_hosts:
             return _error(421, "misdirected_request")
         method, path = environ.get("REQUEST_METHOD", "GET"), environ.get("PATH_INFO", "")
+        if (
+            self.secure
+            and environ.get("wsgi.url_scheme") != "https"
+            and environ.get("HTTP_X_FORWARDED_PROTO") != "https"
+        ):
+            # TLS terminates at Apache in hosted deployments; never serve over HTTP there.
+            location = f"https://{host}{environ.get('SCRIPT_NAME', '')}{path}"
+            query = environ.get("QUERY_STRING", "")
+            return 308, {"error": "https_required"}, [("Location", location + (f"?{query}" if query else ""))]
+        if not path:
+            return 308, {"error": "redirect"}, [("Location", environ.get("SCRIPT_NAME", "") + "/")]
         if path in self.static:
             if method != "GET":
                 return _error(405, "method_not_allowed", [("Allow", "GET")])
