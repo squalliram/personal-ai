@@ -38,3 +38,58 @@ jobs:
             -o ConnectTimeout=20 -p "${CPANEL_SSH_PORT:-22}" \
             "$CPANEL_SSH_USERNAME@$CPANEL_SSH_HOST" \
             "python3 - '$CPANEL_APP_PATH'" < deploy/command-centre/probe_host.py
+      - name: Check public access from an independent network
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import re
+          from urllib.error import HTTPError
+          from urllib.request import HTTPRedirectHandler, Request, build_opener
+
+          class NoRedirect(HTTPRedirectHandler):
+              def redirect_request(self, *args):
+                  return None
+
+          base = "https://iramkhan.com/command-centre"
+          cases = [
+              ("health", base + "/api/v1/health", {}, 200, b'{"status":"ok"}'),
+              ("login", base + "/", {}, 200, b"Command Centre"),
+              ("javascript", base + "/static/app.js", {}, 200, b"api/v1/"),
+              ("stylesheet", base + "/static/app.css", {}, 200, b"{"),
+              ("protected_energy", base + "/api/v1/energy", {}, 401, None),
+              ("http", base.replace("https:", "http:") + "/api/v1/health", {}, None, None),
+              ("http_spoof", base.replace("https:", "http:") + "/api/v1/health",
+               {"X-Forwarded-Proto": "https"}, None, None),
+          ]
+          results = []
+          release = None
+          for name, url, headers, expected, needle in cases:
+              try:
+                  try:
+                      response = build_opener(NoRedirect()).open(Request(url, headers=headers), timeout=15)
+                  except HTTPError as error:
+                      response = error
+                  with response:
+                      body = response.read(2 * 1024 * 1024)
+                      sha = response.headers.get("X-Command-Centre-Release", "")
+                      sha = sha if re.fullmatch(r"[a-f0-9]{40}", sha) else None
+                      transport = response.headers.get("X-Command-Centre-Transport", "")
+                      transport = transport if re.fullmatch(r"tls=[01];port=(80|443|other)", transport) else None
+                      if name == "health":
+                          release = sha
+                      if expected is None:
+                          ok = response.status in (301, 302, 307, 308)
+                          ok = ok and response.headers.get("Location") == base + "/api/v1/health"
+                      else:
+                          ok = response.status == expected and bool(release) and sha == release
+                          ok = ok and (needle is None or needle in body)
+                          ok = ok and response.headers.get("X-Content-Type-Options") == "nosniff"
+                          ok = ok and bool(response.headers.get("Strict-Transport-Security"))
+                      results.append({"check": name, "status": response.status, "ok": ok,
+                                      "release": sha, "transport": transport})
+              except Exception as error:
+                  results.append({"check": name, "ok": False, "error": type(error).__name__})
+          print(json.dumps({"public_checks": results, "all_passed": all(r["ok"] for r in results)}))
+          raise SystemExit(0 if all(r["ok"] for r in results) else 1)
+          PY
