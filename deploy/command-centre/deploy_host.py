@@ -12,6 +12,7 @@ import json
 import os
 import re
 import runpy
+import shlex
 import shutil
 import subprocess
 import sys
@@ -37,18 +38,48 @@ def run(args, *, cwd=None):
     return result.stdout
 
 
-def atomic_write(path: Path, data: bytes):
+def atomic_write(path: Path, data: bytes, *, mode=0o600):
     if path.is_symlink():
         raise ReleaseError("Refusing a symlink at a managed file")
     fd, temporary = tempfile.mkstemp(prefix=".release-", dir=path.parent)
     try:
         with os.fdopen(fd, "wb") as output:
+            os.fchmod(output.fileno(), mode)
             output.write(data)
             output.flush()
             os.fsync(output.fileno())
         os.replace(temporary, path)
     finally:
         Path(temporary).unlink(missing_ok=True)
+
+
+def configure_wsgi_mapping(app: Path, home: Path):
+    """Complete only this mount's CloudLinux mapping for LiteSpeed."""
+    mount = home / "public_html" / URI
+    path = mount / ".htaccess"
+    require(not mount.is_symlink() and not path.is_symlink() and path.is_file(), "Scoped app mapping is unavailable")
+    original = path.read_bytes()
+    text = original.decode("utf-8")
+    directives = {}
+    for line in text.splitlines():
+        if re.match(r"\s*Passenger(?:AppRoot|BaseURI|AppType|StartupFile)\b", line, re.IGNORECASE):
+            fields = shlex.split(line, comments=True)
+            require(len(fields) == 2, "Unrecognized scoped Passenger directive")
+            directives[fields[0].lower()] = fields[1]
+    require(directives.get("passengerapproot") == str(app), "Scoped mapping points to another app")
+    require(directives.get("passengerbaseuri") == "/" + URI, "Scoped mapping points to another URL")
+    additions = []
+    for key, value in (("PassengerAppType", "wsgi"), ("PassengerStartupFile", "passenger_wsgi.py")):
+        existing = directives.get(key.lower())
+        require(existing is None or existing == value, "Scoped WSGI mapping conflicts with another configuration")
+        if existing is None:
+            additions.append(f"{key} {value}")
+    if additions:
+        atomic_write(app / "mount.htaccess.previous", original)
+        updated = text.rstrip() + "\n\n# Command Centre WSGI mapping\n" + "\n".join(additions) + "\n"
+        # .htaccess contains no secrets and must be readable by the web server.
+        atomic_write(path, updated.encode(), mode=0o644)
+    return path, original
 
 
 def selector(action, *args):
@@ -114,6 +145,7 @@ def require(condition, message):
 
 def verify(app: Path, sha: str):
     base = f"https://{DOMAIN}/{URI}"
+    status, headers = None, {}
     for attempt in range(8):
         try:
             status, headers, body = fetch(base + "/api/v1/health")
@@ -126,7 +158,10 @@ def verify(app: Path, sha: str):
         except (OSError, ValueError):
             pass
         if attempt == 7:
-            raise ReleaseError("Public HTTPS release identity/health check failed")
+            raise ReleaseError(
+                f"Public HTTPS release identity/health check failed (status={status}, "
+                f"release_matches={headers.get('X-Command-Centre-Release') == sha})"
+            )
         time.sleep(3)
     require(headers.get("X-Content-Type-Options") == "nosniff", "Security headers missing")
     require(bool(headers.get("Content-Security-Policy")), "Content security policy missing")
@@ -252,6 +287,7 @@ def install(checkout: Path, sha: str, password_hash: str, *, home: Path | None =
                 atomic_write(path.with_name(path.name + ".previous"), previous[path])
         created = False
         started = False
+        mapping_path, previous_mapping = None, None
         try:
             wrapper = (release / "deploy/command-centre/passenger_wsgi.py").read_bytes()
             atomic_write(entrypoint, wrapper)
@@ -279,10 +315,13 @@ def install(checkout: Path, sha: str, password_hash: str, *, home: Path | None =
             if registered == "stopped":
                 selector("start", "--app-root", relative)
                 started = True
+            mapping_path, previous_mapping = configure_wsgi_mapping(app, home)
             (app / "tmp/restart.txt").touch(mode=0o600)
             result = verify(app, sha)
             atomic_write(verified_file, sha.encode())
         except Exception:
+            if mapping_path is not None:
+                atomic_write(mapping_path, previous_mapping, mode=0o644)
             for path, content in previous.items():
                 if content is not None:
                     atomic_write(path, content)

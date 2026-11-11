@@ -97,6 +97,12 @@ class ReleaseTests(unittest.TestCase):
         self.locked()
         if action == "get":
             return registry("command-centre-app" if self.registered else None)
+        if action in ("create", "start"):
+            mount = self.home / "public_html/command-centre"
+            mount.mkdir(parents=True, exist_ok=True)
+            (mount / ".htaccess").write_text(
+                f'PassengerAppRoot "{self.app}"\nPassengerBaseURI "/command-centre"\nPassengerPython "/private/python"\n'
+            )
         return {"result": "success"}
 
     def verification(self, app, sha):
@@ -122,6 +128,10 @@ class ReleaseTests(unittest.TestCase):
         self.assertIn(f"COMMAND_CENTRE_CHECKOUT={self.app}/releases/{SHA}", config)
         self.assertFalse(any("merge" in args or "checkout" in args or "reset" in args for args in self.commands))
         self.assertEqual(self.selector.call_args_list[1].args[0], "create")
+        mapping = self.home / "public_html/command-centre/.htaccess"
+        self.assertIn("PassengerAppType wsgi", mapping.read_text())
+        self.assertIn("PassengerStartupFile passenger_wsgi.py", mapping.read_text())
+        self.assertEqual(stat.S_IMODE(mapping.stat().st_mode), 0o644)
         with (self.checkout / ".git/energy-dashboard.deploy.lock").open("r") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
@@ -163,6 +173,17 @@ class ReleaseTests(unittest.TestCase):
         self.commands.clear()
         self.install()
         self.assertFalse(any("archive" in args for args in self.commands))
+        mapping = (self.home / "public_html/command-centre/.htaccess").read_text()
+        self.assertEqual(mapping.count("PassengerAppType"), 1)
+
+    def test_other_app_mapping_is_not_overwritten(self):
+        self.install()
+        mapping = self.home / "public_html/command-centre/.htaccess"
+        mapping.write_text('PassengerAppRoot "/another/app"\nPassengerBaseURI "/command-centre"\n')
+        original = mapping.read_bytes()
+        with self.assertRaises(HOST.ReleaseError):
+            HOST.configure_wsgi_mapping(self.app, self.home)
+        self.assertEqual(mapping.read_bytes(), original)
 
     def test_redeploy_keeps_previous_distinct_verified_release_for_rollback(self):
         self.install()

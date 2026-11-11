@@ -10,8 +10,11 @@ Read-only SSH inspection confirmed:
 
 - CloudLinux Python Selector is enabled for `iramkhan.com`.
 - Python 3.12 is enabled (`/opt/alt/python312/bin/python3`, version 3.12.16).
-- `/command-centre` is not registered and the proposed app directory does not exist.
+- `/command-centre` was initially unregistered. The first deployment registered
+  it, but stopped it after the public health check failed.
 - The live energy database exists.
+- The web server is LiteSpeed. Its generated mapping omitted explicit WSGI type
+  and startup-file directives; the installer completes only this mount's mapping.
 
 These are capability checks, not evidence of deployment. A release is live only
 after the deployment workflow completes its public and authenticated checks.
@@ -23,6 +26,10 @@ startup file `passenger_wsgi.py` and entry point `application`. The private
 application directory is `command-centre-app` beside `CPANEL_APP_PATH`, outside
 `public_html`. CloudLinux manages the app's Passenger mapping and Python
 virtual environment. No packages need installing.
+The installer adds `PassengerAppType wsgi` and
+`PassengerStartupFile passenger_wsgi.py` to `public_html/command-centre/.htaccess`
+only when missing, after verifying the app root and mount URI. Existing content
+is preserved. The domain-root `.htaccess` is not changed.
 
 The installer does **not** check out, merge, reset, or edit the shared energy
 checkout. It does not change energy tables, refresh jobs, cron, the protected
@@ -30,7 +37,7 @@ energy dashboard, or domain-wide HTTPS settings. The existing energy deployment
 workflow still runs independently under its normal triggers.
 
 ```
-Apache TLS → /command-centre/ → Passenger (Python 3.12)
+LiteSpeed TLS → /command-centre/ → CloudLinux WSGI app (Python 3.12)
   command-centre-app/
     passenger_wsgi.py
     command-centre.env          private atomic configuration, mode 0600
