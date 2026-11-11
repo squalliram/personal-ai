@@ -120,7 +120,10 @@ class ReleaseTests(unittest.TestCase):
         result = self.install()
         self.assertEqual(result["status"], "deployed")
         self.assertEqual(self.energy.read_bytes(), b"owner database must remain untouched")
-        self.assertEqual(stat.S_IMODE(self.app.stat().st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(self.app.stat().st_mode), 0o711)
+        self.assertEqual(stat.S_IMODE((self.app / "tmp").stat().st_mode), 0o711)
+        self.assertEqual(stat.S_IMODE((self.app / "data").stat().st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE((self.app / "releases").stat().st_mode), 0o700)
         self.assertTrue((self.app / "releases" / SHA / ".complete").is_file())
         self.assertTrue((self.app / "data/sessions.sqlite3").is_file())
         config = (self.app / "command-centre.env").read_text()
@@ -198,7 +201,7 @@ class ReleaseTests(unittest.TestCase):
         HOST.configure_wsgi_mapping(self.app, self.home)
         self.assertEqual(stat.S_IMODE(mount.stat().st_mode), 0o755)
         self.assertEqual(stat.S_IMODE((mount / ".htaccess").stat().st_mode), 0o644)
-        self.assertEqual(stat.S_IMODE(self.app.stat().st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(self.app.stat().st_mode), 0o711)
         self.assertEqual(stat.S_IMODE((self.app / "command-centre.env").stat().st_mode), 0o600)
 
     def test_redeploy_keeps_previous_distinct_verified_release_for_rollback(self):
