@@ -166,7 +166,7 @@ def require(condition, message):
 def verify(app: Path, sha: str):
     base = f"https://{DOMAIN}/{URI}"
     status, headers = None, {}
-    for attempt in range(8):
+    for attempt in range(24):
         try:
             status, headers, body = fetch(base + "/api/v1/health")
             if (
@@ -177,10 +177,11 @@ def verify(app: Path, sha: str):
                 break
         except (OSError, ValueError):
             pass
-        if attempt == 7:
+        if attempt == 23:
+            served = headers.get("X-Command-Centre-Release", "")
+            served = served if re.fullmatch(r"[a-f0-9]{40}", served) else "unversioned"
             raise ReleaseError(
-                f"Public HTTPS release identity/health check failed (status={status}, "
-                f"release_matches={headers.get('X-Command-Centre-Release') == sha})"
+                f"Public HTTPS release identity/health check failed (status={status}, served_release={served})"
             )
         time.sleep(3)
     require(headers.get("X-Content-Type-Options") == "nosniff", "Security headers missing")
@@ -257,14 +258,17 @@ def install(checkout: Path, sha: str, password_hash: str, *, home: Path | None =
             not app.exists() or not any(app.iterdir()) or (app / ".command-centre-managed").is_file(),
             "Existing unmanaged app directory will not be overwritten",
         )
-        app.mkdir(mode=0o700, exist_ok=True)
-        app.chmod(0o700)
+        # LiteSpeed must stat <app>/tmp/restart.txt as its web-server user.
+        # Execute-only access allows that, without directory listings or secret reads.
+        app.mkdir(mode=0o711, exist_ok=True)
+        app.chmod(0o711)
         atomic_write(app / ".command-centre-managed", b"1\n")
         for directory in ("releases", "data", "tmp"):
             target = app / directory
             require(not target.is_symlink(), "Managed directories must not be symlinks")
-            target.mkdir(mode=0o700, exist_ok=True)
-            target.chmod(0o700)
+            mode = 0o711 if directory == "tmp" else 0o700
+            target.mkdir(mode=mode, exist_ok=True)
+            target.chmod(mode)
         release = app / "releases" / sha
         if not release.exists():
             staging = Path(tempfile.mkdtemp(prefix=".staging-", dir=app / "releases"))

@@ -33,8 +33,10 @@ The installer adds `PassengerAppType wsgi` and
 only when missing, after verifying the app root and mount URI. Existing content
 is preserved. The domain-root `.htaccess` is not changed.
 The credential-free public mount uses mode 0755 and its mapping mode 0644.
-Selector subprocesses use umask 022; private app directories remain mode 0700
-and credentials/databases remain owner-only.
+Selector subprocesses use umask 022. The app root and `tmp` use execute-only
+traversal for non-owners (0711), allowing LiteSpeed to stat its restart marker
+without listing the directories. Data and release directories remain 0700;
+credentials and databases remain owner-only.
 The same mount-only mapping redirects HTTP using the server's `%{HTTPS}` flag
 and the fixed `iramkhan.com` host, before requests reach the WSGI adapter.
 
@@ -60,7 +62,7 @@ LiteSpeed TLS → /command-centre/ → CloudLinux WSGI app (Python 3.12)
 ```
 
 No credentials or source content enter deployment logs. The password hash travels
-over SSH stdin, not in process arguments. App directories are mode 0700. Private
+over SSH stdin, not in process arguments. Data/release directories are mode 0700. Private
 files are owner-only from creation, not chmodded after exposure.
 
 ## Release workflow
