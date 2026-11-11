@@ -16,11 +16,12 @@ from unittest.mock import patch
 
 from command_centre_fixtures import make_app, make_settings
 
-from command_centre.security import hash_password
+from command_centre.security import Permission, hash_password
 
 ROOT = Path(__file__).resolve().parents[1]
 DEPLOY = ROOT / "deploy/command-centre"
 SHA = "a" * 40
+DEPLOYMENT_ID = "d" * 32
 
 
 def load(name):
@@ -105,13 +106,15 @@ class ReleaseTests(unittest.TestCase):
             )
         return {"result": "success"}
 
-    def verification(self, app, sha):
+    def verification(self, app, sha, deployment_id, *, revoke_sessions=False):
         self.locked()
         self.assertEqual(app, self.app)
         self.assertIn(f"COMMAND_CENTRE_RELEASE_SHA={sha}", (app / "command-centre.env").read_text())
+        self.assertRegex(deployment_id, r"^[a-f0-9]{32}$")
+        self.assertIn(f"COMMAND_CENTRE_DEPLOYMENT_ID={deployment_id}", (app / "command-centre.env").read_text())
         self.assertEqual(stat.S_IMODE((app / "command-centre.env").stat().st_mode), 0o600)
         self.assertTrue((app / "tmp/restart.txt").exists())
-        return {"authenticated_read_smoke": True}
+        return {"authenticated_read_smoke": True, "existing_sessions_revoked": revoke_sessions}
 
     def install(self, sha=SHA):
         return HOST.install(self.checkout, sha, self.password_hash, home=self.home)
@@ -183,6 +186,36 @@ class ReleaseTests(unittest.TestCase):
         self.assertIn("RewriteCond %{HTTPS} !=on", mapping)
         self.assertIn("RewriteRule ^ https://iramkhan.com%{REQUEST_URI} [R=308,L,NE]", mapping)
         self.assertNotIn("HTTP:X-Forwarded-Proto", mapping)
+
+    def test_password_reset_on_same_release_changes_identity_and_requests_revocation(self):
+        self.install()
+        first_id = self.verify.call_args.args[2]
+        self.registered = True
+        new_hash = hash_password("a new deployment test passphrase")
+        result = HOST.install(self.checkout, SHA, new_hash, home=self.home)
+        self.assertNotEqual(self.verify.call_args.args[2], first_id)
+        self.assertTrue(self.verify.call_args.kwargs["revoke_sessions"])
+        self.assertTrue(result["existing_sessions_revoked"])
+        self.assertEqual(result["release"], SHA)
+        self.assertEqual(self.energy.read_bytes(), b"owner database must remain untouched")
+
+    def test_same_password_redeployment_keeps_sessions_but_changes_deployment_identity(self):
+        self.install()
+        first_id = self.verify.call_args.args[2]
+        self.registered = True
+        result = self.install()
+        self.assertNotEqual(self.verify.call_args.args[2], first_id)
+        self.assertFalse(self.verify.call_args.kwargs["revoke_sessions"])
+        self.assertFalse(result["existing_sessions_revoked"])
+
+    def test_failed_reset_restores_previous_password_configuration(self):
+        self.install()
+        previous = (self.app / "command-centre.env").read_bytes()
+        self.registered = True
+        self.verify.side_effect = HOST.ReleaseError("synthetic reset verification failure")
+        with self.assertRaises(HOST.ReleaseError):
+            HOST.install(self.checkout, SHA, hash_password("a failed reset test passphrase"), home=self.home)
+        self.assertEqual((self.app / "command-centre.env").read_bytes(), previous)
 
     def test_other_app_mapping_is_not_overwritten(self):
         self.install()
@@ -328,6 +361,7 @@ class SmokeTests(unittest.TestCase):
             app = make_app(make_settings(Path(directory)))
             response_headers = {
                 "X-Command-Centre-Release": SHA,
+                "X-Command-Centre-Deployment": DEPLOYMENT_ID,
                 "X-Content-Type-Options": "nosniff",
                 "Content-Security-Policy": "default-src 'self'",
                 "Strict-Transport-Security": "max-age=31536000",
@@ -345,11 +379,31 @@ class SmokeTests(unittest.TestCase):
                 patch.object(HOST.runpy, "run_path", return_value={"app": app}),
                 self.assertRaises(HOST.ReleaseError),
             ):
-                HOST.verify(Path(directory), SHA)
+                HOST.verify(Path(directory), SHA, DEPLOYMENT_ID)
             self.assertEqual(app.sessions._sessions, {})
 
     def test_public_and_authenticated_paths_use_revoked_read_only_session(self):
         self.smoke({"state": "available", "daily": [{}]})
+
+    def test_reset_revokes_existing_sessions_and_verifies_live_cookie_rejection(self):
+        result = self.smoke({"state": "available", "daily": [{}]}, revoke_sessions=True)
+        self.assertTrue(result["existing_sessions_revoked"])
+
+    def test_same_release_stale_configuration_is_not_accepted(self):
+        self.smoke({"state": "available", "daily": [{}]}, stale_deployment=True)
+
+    def test_missing_deployment_identity_never_passes_health(self):
+        with tempfile.TemporaryDirectory() as directory:
+            headers = {"X-Command-Centre-Release": SHA}
+            with (
+                patch.object(HOST, "fetch", return_value=(200, headers, b'{"status":"ok"}')) as fetch,
+                patch.object(HOST.time, "sleep"),
+                patch.object(HOST.runpy, "run_path") as load,
+                self.assertRaises(HOST.ReleaseError),
+            ):
+                HOST.verify(Path(directory), SHA, DEPLOYMENT_ID, revoke_sessions=True)
+            self.assertEqual(fetch.call_count, 24)
+            load.assert_not_called()
 
     def test_unreadable_or_empty_source_cannot_pass_release_validation(self):
         for state in ("not_configured", "unavailable", "available", "refresh_required"):
@@ -360,21 +414,28 @@ class SmokeTests(unittest.TestCase):
         result = self.smoke({"state": "refresh_required", "daily": [], "sync_history": [{"status": "success"}]})
         self.assertEqual(result["energy_state"], "refresh_required")
 
-    def smoke(self, energy):
+    def smoke(self, energy, *, revoke_sessions=False, stale_deployment=False):
         with tempfile.TemporaryDirectory() as directory:
             app = make_app(make_settings(Path(directory)))
             observed = []
+            existing_token, _ = app.sessions.create(Permission.READ)
+            health_calls = 0
 
             def fetch(url, *, headers=None):
+                nonlocal health_calls
                 headers = headers or {}
                 if url.startswith("http:"):
                     self.assertIn(headers.get("X-Forwarded-Proto"), (None, "https"))
                     return 308, {"Location": url.replace("http:", "https:")}, b""
                 if url.endswith("/health"):
+                    health_calls += 1
                     return (
                         200,
                         {
                             "X-Command-Centre-Release": SHA,
+                            "X-Command-Centre-Deployment": (
+                                "0" * 32 if stale_deployment and health_calls == 1 else DEPLOYMENT_ID
+                            ),
                             "X-Content-Type-Options": "nosniff",
                             "Content-Security-Policy": "default-src 'self'",
                             "Strict-Transport-Security": "max-age=31536000",
@@ -386,6 +447,8 @@ class SmokeTests(unittest.TestCase):
                         return 401, {}, b"{}"
                     token = headers["Cookie"].split("=", 1)[1]
                     session = app.sessions.get(token)
+                    if session is None:
+                        return 401, {}, b"{}"
                     self.assertEqual(session.permission.label, "read")
                     observed.append(token)
                     return 200, {}, json.dumps(energy).encode()
@@ -394,10 +457,15 @@ class SmokeTests(unittest.TestCase):
             with (
                 patch.object(HOST, "fetch", side_effect=fetch),
                 patch.object(HOST.runpy, "run_path", return_value={"app": app}),
+                patch.object(HOST.time, "sleep") as sleep,
             ):
-                result = HOST.verify(Path(directory), SHA)
+                result = HOST.verify(Path(directory), SHA, DEPLOYMENT_ID, revoke_sessions=revoke_sessions)
             self.assertTrue(result["authenticated_read_smoke"])
             self.assertFalse(result["owner_passphrase_sign_in_tested"])
             self.assertEqual(len(observed), 5)
             self.assertIsNone(app.sessions.get(observed[0]))
+            self.assertEqual(app.sessions.get(existing_token) is None, revoke_sessions)
+            self.assertEqual(health_calls, 2 if stale_deployment else 1)
+            if stale_deployment:
+                sleep.assert_called_once_with(3)
             return result

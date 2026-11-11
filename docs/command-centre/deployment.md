@@ -93,21 +93,30 @@ successful push test for that exact SHA.
 6. Save owner-only previous configuration and entrypoint copies. Atomically
    install the new files. Create the domain-scoped app if needed, check that the
    entrypoint imports successfully, and request a Passenger restart.
-7. Require the release SHA header and healthy JSON over HTTPS, security headers,
+7. Require the release SHA and unique deployment ID headers and healthy JSON over HTTPS, security headers,
    page and static assets, anonymous API rejection, and HTTP-to-HTTPS redirect
    even with a spoofed `X-Forwarded-Proto` header.
 8. Create a short-lived READ session for authenticated HTTPS smoke checks of
    session, overview, energy, integrations and automations. Revoke it in all
    cases. Log only source states and row counts, never source payloads or tokens.
+9. If the password hash changed, revoke all Command Centre sessions after these
+   checks pass, then verify the smoke cookie is rejected over HTTPS. Preserve
+   login/API rate counters. Normal deployments with the same password keep sessions.
 
 The temporary READ session does **not** test the owner's passphrase sign-in.
-The owner should confirm sign-in with the same passphrase used locally.
+The owner should confirm sign-in with the currently configured passphrase.
+
+Each deployment has a fresh non-secret ID, even when the code SHA is unchanged.
+This prevents an old worker with the previous credential from satisfying reset
+readiness. Update only the encrypted `COMMAND_CENTRE_PASSWORD_HASH` secret and
+the ignored local configuration through private input, then deploy tested main.
+Neither the passphrase nor its hash belongs in chat, command arguments or logs.
 
 ## Security and honest source status
 
-- The public LiteSpeed mount enforces HTTPS using its server-side TLS flag.
-  This also protects against a WSGI adapter deriving its scheme from a spoofed
-  forwarded header. The app itself never trusts forwarded-protocol headers.
+- The hosted wrapper requires connection TLS protocol/cipher metadata rather
+  than the adapter's header-influenced scheme or port. The public mount also
+  redirects ordinary HTTP. The app never trusts forwarded-protocol headers.
   Both plain HTTP and spoofed-header requests must redirect in live verification.
 - Startup fails on missing/invalid password hashes, missing shared sessions, or
   a permission ceiling above RECOMMEND. Phase 1 has no execute routes.

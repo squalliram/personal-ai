@@ -214,6 +214,10 @@ class SessionStore:
             with self._lock:
                 self._sessions.pop(_token_hash(token), None)
 
+    def revoke_all(self) -> None:
+        with self._lock:
+            self._sessions.clear()
+
     def expires_at(self, session: Session) -> float:
         return min(session.last_seen_at + self.idle, session.created_at + self.absolute)
 
@@ -377,6 +381,10 @@ class SqliteSessionStore:
         if token:
             with self._lock, closing(sqlite3.connect(self.path, timeout=5)) as conn, conn:
                 conn.execute("DELETE FROM sessions WHERE token_hash = ?", (_token_hash(token),))
+
+    def revoke_all(self) -> None:
+        with self._lock, closing(sqlite3.connect(self.path, timeout=5)) as conn, conn:
+            conn.execute("DELETE FROM sessions")
 
     def expires_at(self, session: Session) -> float:
         return min(session.last_seen_at + self.idle, session.created_at + self.absolute)

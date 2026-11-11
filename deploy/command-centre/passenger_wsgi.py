@@ -52,6 +52,9 @@ if settings.permission_ceiling > Permission.RECOMMEND or not settings.sessions_d
 release_sha = values.get("COMMAND_CENTRE_RELEASE_SHA", "")
 if release_sha and not re.fullmatch(r"[a-f0-9]{40}", release_sha):
     raise RuntimeError("Invalid release identity")
+deployment_id = values.get("COMMAND_CENTRE_DEPLOYMENT_ID", "")
+if deployment_id and not re.fullmatch(r"[a-f0-9]{32}", deployment_id):
+    raise RuntimeError("Invalid deployment identity")
 app = CommandCentreApp(settings, allowed_hosts=hosts, secure=True)
 
 
@@ -66,6 +69,8 @@ def application(environ, start_response):
     def start(status, headers, exc_info=None):
         if release_sha:
             headers.append(("X-Command-Centre-Release", release_sha))
+        if deployment_id:
+            headers.append(("X-Command-Centre-Deployment", deployment_id))
         if environ.get("PATH_INFO") == "/api/v1/health":
             port = environ.get("SERVER_PORT")
             port = port if port in ("80", "443") else "other"
