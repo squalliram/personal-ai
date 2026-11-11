@@ -132,6 +132,7 @@ class ReleaseTests(unittest.TestCase):
         self.assertIn("PassengerAppType wsgi", mapping.read_text())
         self.assertIn("PassengerStartupFile passenger_wsgi.py", mapping.read_text())
         self.assertEqual(stat.S_IMODE(mapping.stat().st_mode), 0o644)
+        self.assertEqual(stat.S_IMODE(mapping.parent.stat().st_mode), 0o755)
         with (self.checkout / ".git/energy-dashboard.deploy.lock").open("r") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
@@ -185,6 +186,17 @@ class ReleaseTests(unittest.TestCase):
             HOST.configure_wsgi_mapping(self.app, self.home)
         self.assertEqual(mapping.read_bytes(), original)
 
+    def test_existing_private_public_mount_is_repaired_without_exposing_app(self):
+        self.install()
+        mount = self.home / "public_html/command-centre"
+        mount.chmod(0o700)
+        (mount / ".htaccess").chmod(0o600)
+        HOST.configure_wsgi_mapping(self.app, self.home)
+        self.assertEqual(stat.S_IMODE(mount.stat().st_mode), 0o755)
+        self.assertEqual(stat.S_IMODE((mount / ".htaccess").stat().st_mode), 0o644)
+        self.assertEqual(stat.S_IMODE(self.app.stat().st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE((self.app / "command-centre.env").stat().st_mode), 0o600)
+
     def test_redeploy_keeps_previous_distinct_verified_release_for_rollback(self):
         self.install()
         first_config = (self.app / "command-centre.env").read_bytes()
@@ -233,6 +245,14 @@ class ReleaseTests(unittest.TestCase):
             HOST.install(self.checkout, SHA, "not-a-hash", home=self.home)
         self.assertFalse(self.app.exists())
         self.run.assert_not_called()
+
+
+class SelectorUmaskTests(unittest.TestCase):
+    def test_selector_creates_web_mapping_with_public_read_permissions(self):
+        with patch.object(HOST.shutil, "which", return_value="/bin/selector"), patch.object(HOST, "run") as run:
+            run.return_value = b'{"result":"success"}'
+            HOST.selector("create")
+        self.assertEqual(run.call_args.kwargs["umask"], 0o022)
 
 
 class TransportTests(unittest.TestCase):
