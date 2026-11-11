@@ -1,0 +1,40 @@
+name: Inspect command centre hosting
+
+on:
+  push:
+    branches: [droid/command-centre-live]
+    paths:
+      - .github/workflows/probe-command-centre.yml
+      - deploy/command-centre/probe_host.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inspect hosting without changing it
+        env:
+          CPANEL_SSH_HOST: ${{ secrets.CPANEL_SSH_HOST }}
+          CPANEL_SSH_USERNAME: ${{ secrets.CPANEL_SSH_USERNAME }}
+          CPANEL_SSH_PORT: ${{ secrets.CPANEL_SSH_PORT }}
+          CPANEL_SSH_PRIVATE_KEY: ${{ secrets.CPANEL_SSH_PRIVATE_KEY }}
+          CPANEL_SSH_KNOWN_HOSTS: ${{ secrets.CPANEL_SSH_KNOWN_HOSTS }}
+          CPANEL_APP_PATH: ${{ secrets.CPANEL_APP_PATH }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$CPANEL_APP_PATH" =~ ^/[a-zA-Z0-9_./-]+$ ]] || exit 1
+          [[ "${CPANEL_SSH_PORT:-22}" =~ ^[0-9]+$ ]] || exit 1
+          install -m 700 -d ~/.ssh
+          umask 077
+          printf '%s\n' "$CPANEL_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          printf '%s\n' "$CPANEL_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=20 -p "${CPANEL_SSH_PORT:-22}" \
+            "$CPANEL_SSH_USERNAME@$CPANEL_SSH_HOST" \
+            "python3 - '$CPANEL_APP_PATH'" < deploy/command-centre/probe_host.py
