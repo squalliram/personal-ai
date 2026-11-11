@@ -44,6 +44,10 @@ def main():
         "energy_database_exists": (checkout / "data/octopus_energy.sqlite3").is_file(),
         "passenger_registry": "unavailable",
         "command_centre_registered": None,
+        "selector_registry": "unavailable",
+        "selector_enabled": None,
+        "selector_python312_enabled": None,
+        "selector_command_centre_registered": None,
     }
     uapi = shutil.which("uapi") or (
         "/usr/local/cpanel/bin/uapi" if Path("/usr/local/cpanel/bin/uapi").is_file() else None
@@ -67,6 +71,40 @@ def main():
                 report["passenger_registry"] = "not_accessible_or_feature_disabled"
         except (ValueError, AttributeError):
             report["passenger_registry"] = "unreadable_response"
+    selector = shutil.which("cloudlinux-selector")
+    if selector:
+        result = subprocess.run(
+            [selector, "get", "--json", "--interpreter", "python", "--domain", "iramkhan.com"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            universal_newlines=True,
+            timeout=60,
+        )
+        try:
+            response = json.loads(result.stdout)
+            if response.get("result") == "success":
+                report["selector_registry"] = "accessible"
+                report["selector_enabled"] = response.get("selector_enabled")
+                versions = response.get("available_versions", {})
+                report["selector_python312_enabled"] = any(
+                    version.startswith("3.12") and info.get("status") == "enabled" for version, info in versions.items()
+                )
+
+                def registered(node):
+                    if isinstance(node, dict):
+                        if (
+                            node.get("domain") == "iramkhan.com"
+                            and str(node.get("app_uri", "")).strip("/") == "command-centre"
+                        ):
+                            return True
+                        return any(registered(value) for key, value in node.items() if key != "env_vars")
+                    return isinstance(node, list) and any(registered(value) for value in node)
+
+                report["selector_command_centre_registered"] = registered(response)
+            else:
+                report["selector_registry"] = "not_accessible_or_feature_disabled"
+        except (ValueError, AttributeError):
+            report["selector_registry"] = "unreadable_response"
     print(json.dumps(report, sort_keys=True))
 
 

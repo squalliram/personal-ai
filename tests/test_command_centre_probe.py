@@ -42,3 +42,40 @@ class HostingProbeTests(unittest.TestCase):
         result, run = self.probe({}, uapi=False)
         self.assertIsNone(result["command_centre_registered"])
         run.assert_not_called()
+
+    def test_selector_registry_is_domain_scoped_and_sanitized(self):
+        response = {
+            "result": "success",
+            "selector_enabled": True,
+            "available_versions": {
+                "3.12": {
+                    "status": "enabled",
+                    "users": {
+                        "owner": {
+                            "applications": {
+                                "command-centre-app": {
+                                    "domain": "iramkhan.com",
+                                    "app_uri": "command-centre",
+                                    "env_vars": {"SECRET": "never-emit"},
+                                }
+                            }
+                        }
+                    },
+                }
+            },
+        }
+        output = io.StringIO()
+        with (
+            patch("sys.argv", [str(PROBE), "/nonexistent/personal-ai"]),
+            patch("glob.glob", return_value=[]),
+            patch("shutil.which", side_effect=lambda name: "/bin/selector" if name == "cloudlinux-selector" else None),
+            patch("pathlib.Path.is_file", return_value=False),
+            patch("subprocess.run", return_value=CompletedProcess([], 0, json.dumps(response), "")) as run,
+            contextlib.redirect_stdout(output),
+        ):
+            runpy.run_path(str(PROBE), run_name="__main__")
+        report = json.loads(output.getvalue())
+        self.assertTrue(report["selector_python312_enabled"])
+        self.assertTrue(report["selector_command_centre_registered"])
+        self.assertNotIn("never-emit", output.getvalue())
+        self.assertEqual(run.call_args.args[0][-2:], ["--domain", "iramkhan.com"])
