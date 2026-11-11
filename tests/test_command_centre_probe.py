@@ -31,6 +31,8 @@ class HostingProbeTests(unittest.TestCase):
         self.assertTrue(result["command_centre_registered"])
         self.assertNotIn("do-not-emit", json.dumps(result))
         self.assertEqual(run.call_args.args[0][-2:], ["PassengerApps", "list_applications"])
+        self.assertNotIn("capture_output", run.call_args.kwargs)
+        self.assertNotIn("text", run.call_args.kwargs)
 
     def test_unregistered_app_is_reported(self):
         result, _ = self.probe({"result": {"status": 1, "data": {}}})

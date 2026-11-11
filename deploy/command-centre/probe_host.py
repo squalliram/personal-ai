@@ -1,5 +1,8 @@
 """Read-only hosting inventory. Never print environment values or raw API output."""
 
+# Bootstrap with the host's Python 3.6 before discovering a supported application interpreter.
+# ruff: noqa: UP021, UP022
+
 import glob
 import json
 import shutil
@@ -23,7 +26,13 @@ def main():
     for name in candidates:
         executable = shutil.which(name)
         if executable:
-            result = subprocess.run([executable, "--version"], capture_output=True, text=True, timeout=10)
+            result = subprocess.run(
+                [executable, "--version"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                universal_newlines=True,
+                timeout=10,
+            )
             interpreters[name] = result.stdout.strip() or result.stderr.strip()
     report = {
         "interpreters": interpreters,
@@ -42,8 +51,9 @@ def main():
     if uapi:
         result = subprocess.run(
             [uapi, "--output=json", "PassengerApps", "list_applications"],
-            capture_output=True,
-            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            universal_newlines=True,
             timeout=30,
         )
         try:
