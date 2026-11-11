@@ -37,8 +37,12 @@ Selector subprocesses use umask 022. The app root and `tmp` use execute-only
 traversal for non-owners (0711), allowing LiteSpeed to stat its restart marker
 without listing the directories. Data and release directories remain 0700;
 credentials and databases remain owner-only.
-The same mount-only mapping redirects HTTP using the server's `%{HTTPS}` flag
-and the fixed `iramkhan.com` host, before requests reach the WSGI adapter.
+The mount-only mapping redirects ordinary HTTP to the fixed `iramkhan.com` host.
+LiteSpeed's `%{HTTPS}` flag can include forwarded request headers, so this rule
+is not the security boundary. The hosted wrapper derives the WSGI scheme from
+the server-generated `SERVER_PORT`: only this deployment's direct TLS listener
+on port 443 counts as HTTPS. Missing or other ports fail closed by redirecting.
+This also blocks forged forwarded-protocol/port headers. No proxy trust is added.
 
 The installer does **not** check out, merge, reset, or edit the shared energy
 checkout. It does not change energy tables, refresh jobs, cron, the protected

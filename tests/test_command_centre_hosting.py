@@ -246,9 +246,19 @@ class PassengerEntryPointTests(unittest.TestCase):
                     "def start(s, h): captured.update(status=int(s.split()[0]), headers=h)",
                     "environ = {'REQUEST_METHOD': 'GET', 'PATH_INFO': '/api/v1/health', 'SCRIPT_NAME': '/command-centre',",
                     "           'HTTP_HOST': 'iramkhan.com', 'wsgi.url_scheme': 'https', 'QUERY_STRING': '',",
-                    "           'wsgi.input': io.BytesIO(b'')}",
+                    "           'SERVER_PORT': '443', 'wsgi.input': io.BytesIO(b'')}",
                     "body = b''.join(ns['application'](environ, start))",
                     "print(captured['status'], body.decode())",
+                    "environ['HTTP_X_FORWARDED_PROTO'] = 'https'",
+                    "environ['HTTP_X_FORWARDED_PORT'] = '443'",
+                    "environ['HTTP_FORWARDED'] = 'proto=https'",
+                    "environ['QUERY_STRING'] = 'limit=1'",
+                    "for port, scheme in [('80', 'https'), ('', 'https'), ('8443', 'https'), ('443', 'http')]:",
+                    "    environ['SERVER_PORT'] = port",
+                    "    environ['wsgi.url_scheme'] = scheme",
+                    "    b''.join(ns['application'](environ, start))",
+                    "    print('port:', repr(port), captured['status'], dict(captured['headers']).get('Location'))",
+                    "    assert environ['wsgi.url_scheme'] == scheme",
                     "environ['HTTP_HOST'] = 'evil.example'",
                     "b''.join(ns['application'](environ, start))",
                     "print('evil-host:', captured['status'])",
@@ -258,6 +268,11 @@ class PassengerEntryPointTests(unittest.TestCase):
             result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, cwd=app_dir)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn('200 {"status":"ok"}', result.stdout)
+            for port in ("80", "", "8443"):
+                self.assertIn(
+                    f"port: {port!r} 308 https://iramkhan.com/command-centre/api/v1/health?limit=1", result.stdout
+                )
+            self.assertIn("port: '443' 200 None", result.stdout)
             self.assertIn("evil-host: 421", result.stdout)
             self.assertIn("secret-leak: False", result.stdout)
             self.assertTrue((app_dir / "data" / "audit.sqlite3").exists())
