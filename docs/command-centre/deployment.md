@@ -35,6 +35,8 @@ is preserved. The domain-root `.htaccess` is not changed.
 The credential-free public mount uses mode 0755 and its mapping mode 0644.
 Selector subprocesses use umask 022; private app directories remain mode 0700
 and credentials/databases remain owner-only.
+The same mount-only mapping redirects HTTP using the server's `%{HTTPS}` flag
+and the fixed `iramkhan.com` host, before requests reach the WSGI adapter.
 
 The installer does **not** check out, merge, reset, or edit the shared energy
 checkout. It does not change energy tables, refresh jobs, cron, the protected
@@ -93,9 +95,10 @@ The owner should confirm sign-in with the same passphrase used locally.
 
 ## Security and honest source status
 
-- Apache/Passenger must set `wsgi.url_scheme` correctly. The app never trusts
-  client-supplied forwarded-protocol headers. An incorrect WSGI scheme causes
-  verification to fail rather than bypassing HTTPS enforcement.
+- The public LiteSpeed mount enforces HTTPS using its server-side TLS flag.
+  This also protects against a WSGI adapter deriving its scheme from a spoofed
+  forwarded header. The app itself never trusts forwarded-protocol headers.
+  Both plain HTTP and spoofed-header requests must redirect in live verification.
 - Startup fails on missing/invalid password hashes, missing shared sessions, or
   a permission ceiling above RECOMMEND. Phase 1 has no execute routes.
 - Cookies are Secure, HttpOnly, SameSite=Strict, and use the `__Host-` prefix.

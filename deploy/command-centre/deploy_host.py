@@ -68,6 +68,7 @@ def configure_wsgi_mapping(app: Path, home: Path):
             directives[fields[0].lower()] = fields[1]
     require(directives.get("passengerapproot") == str(app), "Scoped mapping points to another app")
     require(directives.get("passengerbaseuri") == "/" + URI, "Scoped mapping points to another URL")
+    updated = text
     additions = []
     for key, value in (("PassengerAppType", "wsgi"), ("PassengerStartupFile", "passenger_wsgi.py")):
         existing = directives.get(key.lower())
@@ -75,8 +76,20 @@ def configure_wsgi_mapping(app: Path, home: Path):
         if existing is None:
             additions.append(f"{key} {value}")
     if additions:
+        updated = updated.rstrip() + "\n\n# Command Centre WSGI mapping\n" + "\n".join(additions) + "\n"
+    redirect = (
+        "# Command Centre HTTPS BEGIN\n"
+        "RewriteEngine On\n"
+        "RewriteCond %{HTTPS} !=on\n"
+        f"RewriteRule ^ https://{DOMAIN}%{{REQUEST_URI}} [R=308,L,NE]\n"
+        "# Command Centre HTTPS END"
+    )
+    if "# Command Centre HTTPS BEGIN" in updated:
+        require(redirect in updated, "Scoped HTTPS mapping conflicts with the managed redirect")
+    else:
+        updated = updated.rstrip() + "\n\n" + redirect + "\n"
+    if updated != text:
         atomic_write(app / "mount.htaccess.previous", original)
-        updated = text.rstrip() + "\n\n# Command Centre WSGI mapping\n" + "\n".join(additions) + "\n"
         # .htaccess contains no secrets and must be readable by the web server.
         atomic_write(path, updated.encode(), mode=0o644)
     # The selector may have inherited the private installer umask on an earlier
@@ -180,9 +193,10 @@ def verify(app: Path, sha: str):
     for path in paths:
         status, _, _ = fetch(base + path)
         require(status == 401, "Protected API exposed or unavailable")
-    status, headers, _ = fetch(f"http://{DOMAIN}/{URI}/api/v1/health", headers={"X-Forwarded-Proto": "https"})
-    require(status in (301, 302, 307, 308), "Plain HTTP did not redirect")
-    require(headers.get("Location", "").startswith(base + "/"), "HTTPS redirect escaped the Command Centre path")
+    for request_headers in ({}, {"X-Forwarded-Proto": "https"}):
+        status, headers, _ = fetch(f"http://{DOMAIN}/{URI}/api/v1/health", headers=request_headers)
+        require(status in (301, 302, 307, 308), "Plain HTTP did not redirect")
+        require(headers.get("Location", "").startswith(base + "/"), "HTTPS redirect escaped the Command Centre path")
 
     # Short-lived READ session tests real HTTPS API/data paths without knowing,
     # logging, or replacing the owner's passphrase. Always revoke it.

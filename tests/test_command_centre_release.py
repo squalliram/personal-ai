@@ -176,6 +176,10 @@ class ReleaseTests(unittest.TestCase):
         self.assertFalse(any("archive" in args for args in self.commands))
         mapping = (self.home / "public_html/command-centre/.htaccess").read_text()
         self.assertEqual(mapping.count("PassengerAppType"), 1)
+        self.assertEqual(mapping.count("# Command Centre HTTPS BEGIN"), 1)
+        self.assertIn("RewriteCond %{HTTPS} !=on", mapping)
+        self.assertIn("RewriteRule ^ https://iramkhan.com%{REQUEST_URI} [R=308,L,NE]", mapping)
+        self.assertNotIn("HTTP:X-Forwarded-Proto", mapping)
 
     def test_other_app_mapping_is_not_overwritten(self):
         self.install()
@@ -330,6 +334,7 @@ class SmokeTests(unittest.TestCase):
                 *[(200, {}, b"Command Centre api/v1/ {")] * 3,
                 *[(401, {}, b"{}")] * 5,
                 (308, {"Location": "https://iramkhan.com/command-centre/api/v1/health"}, b""),
+                (308, {"Location": "https://iramkhan.com/command-centre/api/v1/health"}, b""),
                 (500, {}, b"{}"),
             ]
             with (
@@ -360,7 +365,7 @@ class SmokeTests(unittest.TestCase):
             def fetch(url, *, headers=None):
                 headers = headers or {}
                 if url.startswith("http:"):
-                    self.assertEqual(headers["X-Forwarded-Proto"], "https")
+                    self.assertIn(headers.get("X-Forwarded-Proto"), (None, "https"))
                     return 308, {"Location": url.replace("http:", "https:")}, b""
                 if url.endswith("/health"):
                     return (
