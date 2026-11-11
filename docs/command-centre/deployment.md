@@ -15,6 +15,8 @@ Read-only SSH inspection confirmed:
 - The live energy database exists.
 - The web server is LiteSpeed. Its generated mapping omitted explicit WSGI type
   and startup-file directives; the installer completes only this mount's mapping.
+- Inspection found the public mount directory had mode 0700 because the selector
+  inherited the private installer umask. LiteSpeed could not traverse it.
 
 These are capability checks, not evidence of deployment. A release is live only
 after the deployment workflow completes its public and authenticated checks.
@@ -30,6 +32,9 @@ The installer adds `PassengerAppType wsgi` and
 `PassengerStartupFile passenger_wsgi.py` to `public_html/command-centre/.htaccess`
 only when missing, after verifying the app root and mount URI. Existing content
 is preserved. The domain-root `.htaccess` is not changed.
+The credential-free public mount uses mode 0755 and its mapping mode 0644.
+Selector subprocesses use umask 022; private app directories remain mode 0700
+and credentials/databases remain owner-only.
 
 The installer does **not** check out, merge, reset, or edit the shared energy
 checkout. It does not change energy tables, refresh jobs, cron, the protected

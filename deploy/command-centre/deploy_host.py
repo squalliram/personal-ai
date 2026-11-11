@@ -31,8 +31,8 @@ class ReleaseError(Exception):
     pass
 
 
-def run(args, *, cwd=None):
-    result = subprocess.run(args, cwd=cwd, capture_output=True, timeout=120)
+def run(args, *, cwd=None, umask=0o077):
+    result = subprocess.run(args, cwd=cwd, capture_output=True, timeout=120, umask=umask)
     if result.returncode:
         raise ReleaseError("Hosting command failed: " + Path(args[0]).name)
     return result.stdout
@@ -79,6 +79,10 @@ def configure_wsgi_mapping(app: Path, home: Path):
         updated = text.rstrip() + "\n\n# Command Centre WSGI mapping\n" + "\n".join(additions) + "\n"
         # .htaccess contains no secrets and must be readable by the web server.
         atomic_write(path, updated.encode(), mode=0o644)
+    # The selector may have inherited the private installer umask on an earlier
+    # release. Only this public mount and its credential-free mapping are public.
+    mount.chmod(0o755)
+    path.chmod(0o644)
     return path, original
 
 
@@ -86,7 +90,10 @@ def selector(action, *args):
     executable = shutil.which("cloudlinux-selector")
     if not executable:
         raise ReleaseError("CloudLinux Python Selector is unavailable")
-    raw = run([executable, action, "--json", "--interpreter", "python", "--domain", DOMAIN, *args])
+    raw = run(
+        [executable, action, "--json", "--interpreter", "python", "--domain", DOMAIN, *args],
+        umask=0o022,
+    )
     try:
         response = json.loads(raw)
     except ValueError:

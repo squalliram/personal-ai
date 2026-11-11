@@ -7,6 +7,7 @@ import glob
 import json
 import re
 import shutil
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -41,8 +42,18 @@ def cpanel_registration(data):
 
 
 def app_diagnostics(app):
-    result = {"mapping": {}, "error_categories": []}
+    result = {"mapping": {}, "error_categories": [], "permissions": {}}
     home = Path.home()
+    for label, path in (
+        ("app", app),
+        ("webroot", home / "public_html"),
+        ("mount", home / "public_html/command-centre"),
+        ("mount_mapping", home / "public_html/command-centre/.htaccess"),
+    ):
+        try:
+            result["permissions"][label] = oct(stat.S_IMODE(path.stat().st_mode))
+        except OSError:
+            pass
     for label, path in (
         ("domain", home / "public_html/.htaccess"),
         ("mount", home / "public_html/command-centre/.htaccess"),
