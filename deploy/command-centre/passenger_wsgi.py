@@ -4,8 +4,8 @@ Deployed by .github/workflows/deploy-command-centre.yml into the app directory,
 which lives outside the git checkout and outside the web root. Settings come
 from command-centre.env beside this file (written by the deploy workflow with
 mode 0600); only COMMAND_CENTRE_* keys are read, matching config.py. The
-versioned release supplies the code; LiteSpeed terminates TLS on port 443,
-so the app redirects any request on another listener to HTTPS.
+versioned release supplies the code; LiteSpeed terminates TLS, so the app
+requires connection TLS metadata and redirects plain-HTTP requests to HTTPS.
 """
 
 import re
@@ -56,15 +56,20 @@ app = CommandCentreApp(settings, allowed_hosts=hosts, secure=True)
 
 
 def application(environ, start_response):
-    # LiteSpeed's HTTPS flag (and WSGI scheme) includes untrusted forwarded
-    # headers. SERVER_PORT comes from its listener, not those request headers.
-    # This deployment terminates TLS directly on the standard HTTPS port.
+    # This host's adapter can derive scheme AND port from forwarded headers.
+    # LiteSpeed supplies SSL_PROTOCOL/SSL_CIPHER from the TLS connection itself.
+    # Client headers have HTTP_ prefixes and cannot provide these reserved keys.
+    tls = bool(environ.get("SSL_PROTOCOL") and environ.get("SSL_CIPHER"))
     environ = environ.copy()
-    environ["wsgi.url_scheme"] = "https" if environ.get("SERVER_PORT") == "443" else "http"
+    environ["wsgi.url_scheme"] = "https" if tls else "http"
 
     def start(status, headers, exc_info=None):
         if release_sha:
             headers.append(("X-Command-Centre-Release", release_sha))
+        if environ.get("PATH_INFO") == "/api/v1/health":
+            port = environ.get("SERVER_PORT")
+            port = port if port in ("80", "443") else "other"
+            headers.append(("X-Command-Centre-Transport", f"tls={int(tls)};port={port}"))
         return start_response(status, headers, exc_info) if exc_info else start_response(status, headers)
 
     return app(environ, start)

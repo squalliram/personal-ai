@@ -180,8 +180,11 @@ def verify(app: Path, sha: str):
         if attempt == 23:
             served = headers.get("X-Command-Centre-Release", "")
             served = served if re.fullmatch(r"[a-f0-9]{40}", served) else "unversioned"
+            transport = headers.get("X-Command-Centre-Transport", "")
+            transport = transport if re.fullmatch(r"tls=[01];port=(80|443|other)", transport) else "unknown"
             raise ReleaseError(
-                f"Public HTTPS release identity/health check failed (status={status}, served_release={served})"
+                f"Public HTTPS release identity/health check failed "
+                f"(status={status}, served_release={served}, transport={transport})"
             )
         time.sleep(3)
     require(headers.get("X-Content-Type-Options") == "nosniff", "Security headers missing")
@@ -196,9 +199,13 @@ def verify(app: Path, sha: str):
         require(status == 401, "Protected API exposed or unavailable")
     for request_headers in ({}, {"X-Forwarded-Proto": "https"}):
         status, headers, _ = fetch(f"http://{DOMAIN}/{URI}/api/v1/health", headers=request_headers)
+        transport = headers.get("X-Command-Centre-Transport", "")
+        transport = transport if re.fullmatch(r"tls=[01];port=(80|443|other)", transport) else "unknown"
         require(
             status in (301, 302, 307, 308),
-            f"Plain HTTP did not redirect (forwarded_header={bool(request_headers)}, status={status})",
+            f"Plain HTTP did not redirect "
+            f"(forwarded_header={bool(request_headers)}, status={status}, transport={transport}, "
+            f"cache_hit={headers.get('X-LiteSpeed-Cache') == 'hit'})",
         )
         require(headers.get("Location", "").startswith(base + "/"), "HTTPS redirect escaped the Command Centre path")
 

@@ -39,10 +39,14 @@ without listing the directories. Data and release directories remain 0700;
 credentials and databases remain owner-only.
 The mount-only mapping redirects ordinary HTTP to the fixed `iramkhan.com` host.
 LiteSpeed's `%{HTTPS}` flag can include forwarded request headers, so this rule
-is not the security boundary. The hosted wrapper derives the WSGI scheme from
-the server-generated `SERVER_PORT`: only this deployment's direct TLS listener
-on port 443 counts as HTTPS. Missing or other ports fail closed by redirecting.
-This also blocks forged forwarded-protocol/port headers. No proxy trust is added.
+is not the security boundary. Live verification also rejected the listener-port
+approach: this host's adapter did not distinguish a forged-header HTTP request.
+The hosted wrapper instead requires both `SSL_PROTOCOL` and `SSL_CIPHER`,
+which LiteSpeed supplies from its TLS connection, not forwarded request headers.
+Missing either fails closed by redirecting. Client headers use the `HTTP_`
+namespace and do not satisfy this check. Health responses expose only a TLS
+presence bit and a bounded port label for safe transport diagnostics.
+No proxy trust is added.
 
 The installer does **not** check out, merge, reset, or edit the shared energy
 checkout. It does not change energy tables, refresh jobs, cron, the protected
