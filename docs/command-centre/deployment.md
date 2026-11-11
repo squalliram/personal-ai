@@ -107,7 +107,10 @@ retained for diagnosis, not deleted. A failed workflow is not a live sign-off.
 For an operator-approved rollback, stop the **Command Centre app only** in cPanel
 Setup Python App. To restore the previous release, restore the owner-only
 `command-centre.env.previous` and `passenger_wsgi.py.previous` files under the
-same deployment lock, then touch `tmp/restart.txt` and rerun the HTTPS checks.
+same deployment lock. Use cPanel's **Start** action for this app (restoring files
+does not start a stopped app), then touch `tmp/restart.txt` and rerun the HTTPS checks.
+Redeploying the same verified release preserves the previous distinct release's
+rollback files.
 Do not reset the energy checkout or delete app databases.
 
 ## Operations

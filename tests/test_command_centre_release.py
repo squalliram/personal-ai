@@ -164,6 +164,16 @@ class ReleaseTests(unittest.TestCase):
         self.install()
         self.assertFalse(any("archive" in args for args in self.commands))
 
+    def test_redeploy_keeps_previous_distinct_verified_release_for_rollback(self):
+        self.install()
+        first_config = (self.app / "command-centre.env").read_bytes()
+        self.registered = True
+        self.current = "b" * 40
+        self.install(self.current)
+        self.install(self.current)
+        self.assertEqual((self.app / "command-centre.env.previous").read_bytes(), first_config)
+        self.assertEqual((self.app / ".verified-release").read_text(), self.current)
+
     def test_retry_starts_an_app_stopped_by_a_failed_first_release(self):
         self.install()
         config = registry("command-centre-app")

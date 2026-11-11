@@ -241,11 +241,14 @@ def install(checkout: Path, sha: str, password_hash: str, *, home: Path | None =
         )
         configuration = "".join(f"COMMAND_CENTRE_{key}={value}\n" for key, value in values.items()).encode()
         env_file, entrypoint = app / "command-centre.env", app / "passenger_wsgi.py"
+        verified_file = app / ".verified-release"
+        require(not verified_file.is_symlink(), "Refusing a symlink at release metadata")
+        repeat_verified = verified_file.exists() and verified_file.read_text() == sha
         previous = {}
         for path in (env_file, entrypoint):
             require(not path.is_symlink(), "Refusing a symlink at an app file")
             previous[path] = path.read_bytes() if path.exists() else None
-            if previous[path] is not None:
+            if previous[path] is not None and not repeat_verified:
                 atomic_write(path.with_name(path.name + ".previous"), previous[path])
         created = False
         started = False
@@ -278,6 +281,7 @@ def install(checkout: Path, sha: str, password_hash: str, *, home: Path | None =
                 started = True
             (app / "tmp/restart.txt").touch(mode=0o600)
             result = verify(app, sha)
+            atomic_write(verified_file, sha.encode())
         except Exception:
             for path, content in previous.items():
                 if content is not None:
