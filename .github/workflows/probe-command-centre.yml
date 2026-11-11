@@ -44,12 +44,9 @@ jobs:
           python3 - <<'PY'
           import json
           import re
-          from urllib.error import HTTPError
-          from urllib.request import HTTPRedirectHandler, Request, build_opener
-
-          class NoRedirect(HTTPRedirectHandler):
-              def redirect_request(self, *args):
-                  return None
+          import subprocess
+          import tempfile
+          from pathlib import Path
 
           base = "https://iramkhan.com/command-centre"
           cases = [
@@ -66,27 +63,42 @@ jobs:
           release = None
           for name, url, headers, expected, needle in cases:
               try:
-                  try:
-                      response = build_opener(NoRedirect()).open(Request(url, headers=headers), timeout=15)
-                  except HTTPError as error:
-                      response = error
-                  with response:
-                      body = response.read(2 * 1024 * 1024)
-                      sha = response.headers.get("X-Command-Centre-Release", "")
+                  with tempfile.TemporaryDirectory() as directory:
+                      header_path = Path(directory) / "headers"
+                      body_path = Path(directory) / "body"
+                      args = ["curl", "--silent", "--show-error", "--max-time", "15",
+                              "--max-filesize", "2097152", "--dump-header", str(header_path),
+                              "--output", str(body_path), "--write-out", "%{http_code}"]
+                      for key, value in headers.items():
+                          args.extend(["--header", key + ": " + value])
+                      response = subprocess.run(args + [url], capture_output=True, text=True, timeout=20)
+                      if response.returncode:
+                          results.append({"check": name, "ok": False, "curl_exit": response.returncode})
+                          continue
+                      status = int(response.stdout)
+                      response_headers = {}
+                      for line in header_path.read_text().splitlines():
+                          if line.startswith("HTTP/"):
+                              response_headers = {}
+                          elif ":" in line:
+                              key, value = line.split(":", 1)
+                              response_headers[key.lower()] = value.strip()
+                      body = body_path.read_bytes()
+                      sha = response_headers.get("x-command-centre-release", "")
                       sha = sha if re.fullmatch(r"[a-f0-9]{40}", sha) else None
-                      transport = response.headers.get("X-Command-Centre-Transport", "")
+                      transport = response_headers.get("x-command-centre-transport", "")
                       transport = transport if re.fullmatch(r"tls=[01];port=(80|443|other)", transport) else None
                       if name == "health":
                           release = sha
                       if expected is None:
-                          ok = response.status in (301, 302, 307, 308)
-                          ok = ok and response.headers.get("Location") == base + "/api/v1/health"
+                          ok = status in (301, 302, 307, 308)
+                          ok = ok and response_headers.get("location") == base + "/api/v1/health"
                       else:
-                          ok = response.status == expected and bool(release) and sha == release
+                          ok = status == expected and bool(release) and sha == release
                           ok = ok and (needle is None or needle in body)
-                          ok = ok and response.headers.get("X-Content-Type-Options") == "nosniff"
-                          ok = ok and bool(response.headers.get("Strict-Transport-Security"))
-                      results.append({"check": name, "status": response.status, "ok": ok,
+                          ok = ok and response_headers.get("x-content-type-options") == "nosniff"
+                          ok = ok and bool(response_headers.get("strict-transport-security"))
+                      results.append({"check": name, "status": status, "ok": ok,
                                       "release": sha, "transport": transport})
               except Exception as error:
                   results.append({"check": name, "ok": False, "error": type(error).__name__})
