@@ -12,6 +12,7 @@ import json
 import os
 import re
 import runpy
+import secrets
 import shlex
 import shutil
 import subprocess
@@ -163,7 +164,7 @@ def require(condition, message):
         raise ReleaseError(message)
 
 
-def verify(app: Path, sha: str):
+def verify(app: Path, sha: str, deployment_id: str, *, revoke_sessions=False):
     base = f"https://{DOMAIN}/{URI}"
     status, headers = None, {}
     for attempt in range(24):
@@ -172,6 +173,7 @@ def verify(app: Path, sha: str):
             if (
                 status == 200
                 and headers.get("X-Command-Centre-Release") == sha
+                and headers.get("X-Command-Centre-Deployment") == deployment_id
                 and json.loads(body) == {"status": "ok"}
             ):
                 break
@@ -229,12 +231,17 @@ def verify(app: Path, sha: str):
             or (energy["state"] == "refresh_required" and bool(energy.get("sync_history"))),
             "Live energy source has no readable data",
         )
+        if revoke_sessions:
+            application.sessions.revoke_all()
+            status, _, _ = fetch(base + "/api/v1/session", headers=cookie)
+            require(status == 401, "Credential reset did not invalidate existing sessions")
         return {
             "energy_state": energy["state"],
             "energy_daily_rows": len(energy["daily"]),
             "briefing_state": application._collect()["briefing"]["state"],
             "authenticated_read_smoke": True,
             "owner_passphrase_sign_in_tested": False,
+            "existing_sessions_revoked": revoke_sessions,
         }
     finally:
         application.sessions.revoke(token)
@@ -292,10 +299,12 @@ def install(checkout: Path, sha: str, password_hash: str, *, home: Path | None =
                 if staging.exists():
                     shutil.rmtree(staging)
         require(not release.is_symlink() and (release / ".complete").read_text() == sha, "Incomplete code release")
+        deployment_id = secrets.token_hex(16)
         values = {
             "PASSWORD_HASH": password_hash,
             "CHECKOUT": str(release),
             "RELEASE_SHA": sha,
+            "DEPLOYMENT_ID": deployment_id,
             "ALLOWED_HOSTS": DOMAIN,
             "AUDIT_DB": str(app / "data/audit.sqlite3"),
             "SESSIONS_DB": str(app / "data/sessions.sqlite3"),
@@ -320,6 +329,15 @@ def install(checkout: Path, sha: str, password_hash: str, *, home: Path | None =
             previous[path] = path.read_bytes() if path.exists() else None
             if previous[path] is not None and not repeat_verified:
                 atomic_write(path.with_name(path.name + ".previous"), previous[path])
+        old_hash = next(
+            (
+                line.partition("=")[2]
+                for line in (previous[env_file] or b"").decode().splitlines()
+                if line.startswith("COMMAND_CENTRE_PASSWORD_HASH=")
+            ),
+            None,
+        )
+        credential_changed = previous[env_file] is not None and old_hash != password_hash
         created = False
         started = False
         mapping_path, previous_mapping = None, None
@@ -352,7 +370,7 @@ def install(checkout: Path, sha: str, password_hash: str, *, home: Path | None =
                 started = True
             mapping_path, previous_mapping = configure_wsgi_mapping(app, home)
             (app / "tmp/restart.txt").touch(mode=0o600)
-            result = verify(app, sha)
+            result = verify(app, sha, deployment_id, revoke_sessions=credential_changed)
             atomic_write(verified_file, sha.encode())
         except Exception:
             if mapping_path is not None:

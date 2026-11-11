@@ -91,6 +91,19 @@ class SqliteSessionStoreTests(unittest.TestCase):
         reopened = SqliteSessionStore(self.path, idle_seconds=30, absolute_seconds=120, clock=self.clock)
         self.assertEqual(reopened.get(token).csrf_token, session.csrf_token)
 
+    def test_revoke_all_is_shared_and_preserves_rate_limits(self):
+        other = SqliteSessionStore(self.path, idle_seconds=30, absolute_seconds=120, clock=self.clock)
+        tokens = [self.store.create(Permission.READ)[0], other.create(Permission.RECOMMEND)[0]]
+        limiter = SqliteRateLimiter(self.path, "login_global", 1, 300, clock=self.clock)
+        self.assertTrue(limiter.hit("all"))
+        self.store.revoke_all()
+        for token in tokens:
+            self.assertIsNone(self.store.get(token))
+            self.assertIsNone(other.get(token))
+        self.assertTrue(limiter.blocked("all"))
+        token, _ = other.create(Permission.READ)
+        self.assertIsNotNone(self.store.get(token))
+
     def test_idle_and_absolute_expiry(self):
         token, _ = self.store.create(Permission.READ)
         self.clock.now += 31
@@ -225,6 +238,7 @@ class PassengerEntryPointTests(unittest.TestCase):
                         f"COMMAND_CENTRE_PASSWORD_HASH='{PASSWORD_HASH}'",
                         f"COMMAND_CENTRE_CHECKOUT={ROOT}",
                         "COMMAND_CENTRE_ALLOWED_HOSTS=iramkhan.com",
+                        "COMMAND_CENTRE_DEPLOYMENT_ID=" + "c" * 32,
                         f"COMMAND_CENTRE_AUDIT_DB={app_dir}/data/audit.sqlite3",
                         f"COMMAND_CENTRE_SESSIONS_DB={app_dir}/data/sessions.sqlite3",
                         f"COMMAND_CENTRE_ENERGY_DB={app_dir}/missing-energy.sqlite3",
@@ -250,6 +264,7 @@ class PassengerEntryPointTests(unittest.TestCase):
                     "           'wsgi.input': io.BytesIO(b'')}",
                     "body = b''.join(ns['application'](environ, start))",
                     "print(captured['status'], body.decode())",
+                    "print('deployment:', dict(captured['headers']).get('X-Command-Centre-Deployment'))",
                     "environ['HTTP_X_FORWARDED_PROTO'] = 'https'",
                     "environ['HTTP_X_FORWARDED_PORT'] = '443'",
                     "environ['HTTP_FORWARDED'] = 'proto=https'",
@@ -277,6 +292,7 @@ class PassengerEntryPointTests(unittest.TestCase):
             result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, cwd=app_dir)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn('200 {"status":"ok"}', result.stdout)
+            self.assertIn("deployment: " + "c" * 32, result.stdout)
             for port in ("80", "443", "", "8443"):
                 self.assertIn(
                     f"tls: False port: {port!r} 308 https://iramkhan.com/command-centre/api/v1/health?limit=1",
