@@ -4,12 +4,13 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from command_centre_fixtures import HOST, PASSWORD_HASH, Client, Clock, make_app, make_settings
 
 from command_centre.config import load_settings
-from command_centre.security import Permission, SqliteSessionStore
+from command_centre.security import Permission, SqliteRateLimiter, SqliteSessionStore, valid_password_hash
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -52,11 +53,10 @@ class HttpsRedirectTests(unittest.TestCase):
         client = Client(self.app)
         self.assertEqual(client.request("GET", "/api/v1/health", scheme="https").status, 200)
 
-    def test_forwarded_proto_https_is_not_redirected(self):
-        # Guard against a redirect loop if the proxy only signals TLS via the header.
+    def test_spoofed_forwarded_proto_cannot_bypass_https(self):
         client = Client(self.app)
         response = client.request("GET", "/api/v1/health", scheme="http", headers={"X-Forwarded-Proto": "https"})
-        self.assertEqual(response.status, 200)
+        self.assertEqual(response.status, 308)
 
     def test_redirect_preserves_script_name_for_mounted_apps(self):
         client = Client(self.app)
@@ -127,6 +127,31 @@ class HostedSessionTests(unittest.TestCase):
             first.request("DELETE", "/api/v1/session", headers={"X-CSRF-Token": first.csrf})
             self.assertEqual(second.request("GET", "/api/v1/session").status, 401)
 
+    def test_login_limits_are_shared_between_workers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            settings = make_settings(Path(directory), sessions_db=Path(directory) / "sessions.sqlite3")
+            first, second = Client(make_app(settings)), Client(make_app(settings))
+            for number in range(5):
+                self.assertEqual((first if number % 2 else second).login("wrong").status, 401)
+            self.assertEqual(first.login().status, 429)
+            self.assertEqual(second.login().status, 429)
+
+    def test_shared_limits_are_atomic_and_expire(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "sessions.sqlite3"
+            clock = Clock(1000)
+            SqliteSessionStore(path, idle_seconds=30, absolute_seconds=120)
+            limiters = [SqliteRateLimiter(path, "test", 5, 10, clock=clock) for _ in range(20)]
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                results = list(pool.map(lambda limiter: limiter.hit("client"), limiters))
+            self.assertEqual(sum(results), 5)
+            self.assertTrue(limiters[0].blocked("client"))
+            clock.now += 11
+            self.assertFalse(limiters[1].blocked("client"))
+            self.assertTrue(limiters[1].hit("client"))
+            limiters[0].reset("client")
+            self.assertFalse(limiters[1].blocked("client"))
+
     def test_default_sessions_stay_in_memory(self):
         with tempfile.TemporaryDirectory() as directory:
             settings = make_settings(Path(directory))
@@ -137,6 +162,31 @@ class HostedSessionTests(unittest.TestCase):
 
 
 class PassengerEntryPointTests(unittest.TestCase):
+    def test_missing_or_invalid_password_hash_fails_at_startup(self):
+        for encoded in ("", "invalid", None):
+            with self.subTest(encoded=encoded), tempfile.TemporaryDirectory() as directory:
+                app_dir = Path(directory)
+                shutil.copy(ROOT / "deploy/command-centre/passenger_wsgi.py", app_dir / "passenger_wsgi.py")
+                lines = [
+                    f"COMMAND_CENTRE_CHECKOUT={ROOT}",
+                    "COMMAND_CENTRE_ALLOWED_HOSTS=iramkhan.com",
+                    f"COMMAND_CENTRE_SESSIONS_DB={app_dir}/sessions.sqlite3",
+                ]
+                if encoded is not None:
+                    lines.append(f"COMMAND_CENTRE_PASSWORD_HASH={encoded}")
+                (app_dir / "command-centre.env").write_text("\n".join(lines))
+                result = subprocess.run(
+                    [sys.executable, str(app_dir / "passenger_wsgi.py")], capture_output=True, text=True
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("valid COMMAND_CENTRE_PASSWORD_HASH is required", result.stderr)
+                self.assertFalse((app_dir / "sessions.sqlite3").exists())
+
+    def test_password_hash_validation(self):
+        self.assertTrue(valid_password_hash(PASSWORD_HASH))
+        for encoded in (None, "", "plain", PASSWORD_HASH + "%", PASSWORD_HASH.replace("1000", "1")):
+            self.assertFalse(valid_password_hash(encoded))
+
     def test_passenger_wsgi_serves_the_app(self):
         with tempfile.TemporaryDirectory() as directory:
             app_dir = Path(directory)

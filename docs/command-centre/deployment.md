@@ -1,75 +1,120 @@
 # Command Centre hosting on iramkhan.com
 
-Status: implemented on branch `droid/command-centre-live`; not yet deployed. This document is the change plan for the production hosting; nothing on the server changes until the one-time steps below are done and the branch merges.
+## Approved production change plan
 
-## What runs where
+Deploy Phase 1 at `https://iramkhan.com/command-centre/`, using the existing
+`CPANEL_*` SSH settings and the approved local passphrase hash in GitHub's
+`COMMAND_CENTRE_PASSWORD_HASH` encrypted secret. Phase 2 remains parked.
+
+Read-only SSH inspection confirmed:
+
+- CloudLinux Python Selector is enabled for `iramkhan.com`.
+- Python 3.12 is enabled (`/opt/alt/python312/bin/python3`, version 3.12.16).
+- `/command-centre` is not registered and the proposed app directory does not exist.
+- The live energy database exists.
+
+These are capability checks, not evidence of deployment. A release is live only
+after the deployment workflow completes its public and authenticated checks.
+
+## Scope
+
+Register only the Python application at `iramkhan.com/command-centre`, with
+startup file `passenger_wsgi.py` and entry point `application`. The private
+application directory is `command-centre-app` beside `CPANEL_APP_PATH`, outside
+`public_html`. CloudLinux manages the app's Passenger mapping and Python
+virtual environment. No packages need installing.
+
+The installer does **not** check out, merge, reset, or edit the shared energy
+checkout. It does not change energy tables, refresh jobs, cron, the protected
+energy dashboard, or domain-wide HTTPS settings. The existing energy deployment
+workflow still runs independently under its normal triggers.
 
 ```
-browser ── HTTPS ──> Apache (iramkhan.com, TLS termination, Force HTTPS Redirect)
-                       └── /command-centre/ ──> Passenger python app (~/command-centre-app)
-                                                  ├── passenger_wsgi.py     (from deploy/command-centre/)
-                                                  ├── command-centre.env    (0600, written by the workflow)
-                                                  ├── data/audit.sqlite3    (0600, audit log)
-                                                  ├── data/sessions.sqlite3 (0600, token hashes only)
-                                                  └── code: imported from the existing personal-ai checkout
-                                                        (reads its energy DB and status.json read-only)
+Apache TLS → /command-centre/ → Passenger (Python 3.12)
+  command-centre-app/
+    passenger_wsgi.py
+    command-centre.env          private atomic configuration, mode 0600
+    releases/<tested SHA>/     separate versioned code
+    data/audit.sqlite3         operational metadata only
+    data/sessions.sqlite3      hashed session tokens + shared rate counters
+    tmp/restart.txt
+
+  Existing checkout:
+    data/octopus_energy.sqlite3          read-only source
+    reports/energy/dashboard/status.json read-only source
+    data/daily_briefing.sqlite3          optional read-only source
 ```
 
-The existing energy dashboard, refresh cron and publisher are untouched. The app reuses the six `CPANEL_*` deployment secrets; the only new secret is `COMMAND_CENTRE_PASSWORD_HASH`.
+No credentials or source content enter deployment logs. The password hash travels
+over SSH stdin, not in process arguments. App directories are mode 0700. Private
+files are owner-only from creation, not chmodded after exposure.
 
-## Prerequisites
+## Release workflow
 
-- cPanel with **Setup Python App** (Passenger) and a Python 3.10+ interpreter. The workflow's `probe` job checks this over SSH before anything is installed and stops with a clear message if the hosting cannot run Python apps.
-- The existing server checkout (`CPANEL_APP_PATH`) clean and on `main`, same rule as the energy deploy.
+`.github/workflows/deploy-command-centre.yml` runs after a successful `Test`
+push on `main`. Manual dispatch is allowed only on `main` and requires a
+successful push test for that exact SHA.
 
-## One-time setup (owner, about 5 minutes)
+1. Check the latest `main` SHA and successful tests using GitHub's API. Stale
+   workflow runs skip all remote work.
+2. Over one SSH connection, hold the existing
+   `.git/energy-dashboard.deploy.lock` across the **entire** release, including
+   installation, app registration, restart, verification, and failure recovery.
+3. Fetch Git objects and recheck `origin/main` under that lock. A stale run
+   returns before any app-directory, configuration, entrypoint or restart write.
+4. Validate the domain-scoped selector registry. Stop on a conflicting app root
+   or URL. Never overwrite an unmanaged app directory.
+5. Extract the tested Git archive into a separate versioned release. Explicit
+   configuration points data reads back at the existing live files.
+6. Save owner-only previous configuration and entrypoint copies. Atomically
+   install the new files. Create the domain-scoped app if needed, check that the
+   entrypoint imports successfully, and request a Passenger restart.
+7. Require the release SHA header and healthy JSON over HTTPS, security headers,
+   page and static assets, anonymous API rejection, and HTTP-to-HTTPS redirect
+   even with a spoofed `X-Forwarded-Proto` header.
+8. Create a short-lived READ session for authenticated HTTPS smoke checks of
+   session, overview, energy, integrations and automations. Revoke it in all
+   cases. Log only source states and row counts, never source payloads or tokens.
 
-1. Add the passphrase hash as a GitHub secret without displaying it. Run in the checkout where you created `.env`:
+The temporary READ session does **not** test the owner's passphrase sign-in.
+The owner should confirm sign-in with the same passphrase used locally.
 
-   ```sh
-   cd ~/personal-ai   # or the worktree where you ran hash-password
-   sed -n "s/^COMMAND_CENTRE_PASSWORD_HASH=['\"]\?//; s/['\"]\$//p" .env \
-     | gh secret set COMMAND_CENTRE_PASSWORD_HASH
-   ```
+## Security and honest source status
 
-   Reusing the same hash means the same passphrase works locally and on the site. The hash (not the passphrase) is stored by GitHub.
+- Apache/Passenger must set `wsgi.url_scheme` correctly. The app never trusts
+  client-supplied forwarded-protocol headers. An incorrect WSGI scheme causes
+  verification to fail rather than bypassing HTTPS enforcement.
+- Startup fails on missing/invalid password hashes, missing shared sessions, or
+  a permission ceiling above RECOMMEND. Phase 1 has no execute routes.
+- Cookies are Secure, HttpOnly, SameSite=Strict, and use the `__Host-` prefix.
+  Idle expiry is 30 minutes; absolute expiry is 12 hours.
+- Hosted sessions and rate counters share the private session database across
+  Passenger workers. Login attempts reserve their rate-limit slot atomically
+  before password verification.
+- The app uses its own passphrase authentication, CSRF checks, host allow-list
+  and security headers. It does not inherit the energy dashboard's Basic Auth.
+- Energy uses existing SQLite `mode=ro` adapters. Legacy or unavailable sources
+  stay visibly degraded; the app does not migrate them. Briefing remains
+  unconfigured if no server-side run history exists.
 
-2. cPanel → **Setup Python App** → **Create application**:
-   - Python version: 3.11 or newer (whatever the selector offers above 3.10)
-   - Application root: `command-centre-app` next to the personal-ai checkout (the probe job prints the exact absolute path)
-   - Application URL: `iramkhan.com/command-centre`
-   - Application startup file: `passenger_wsgi.py`, entry point: `application`
+## Failure recovery and rollback
 
-3. cPanel → Domains → **Force HTTPS Redirect: On** for iramkhan.com. This also fixes the previously documented finding that the energy dashboard answers HTTP with a Basic Auth challenge instead of redirecting.
+If a replacement release fails, the installer restores the previous configuration
+and entrypoint and requests a restart while still holding the lock. If first-time
+registration succeeds but verification fails, it stops that new app. Files are
+retained for diagnosis, not deleted. A failed workflow is not a live sign-off.
 
-4. Merge the `droid/command-centre-live` PR. The deploy workflow runs automatically after tests pass.
-
-## What the workflow does
-
-`.github/workflows/deploy-command-centre.yml`, after a successful tested push to `main` (or manual dispatch):
-
-1. **preflight** — verifies all secrets are configured; otherwise skips without touching the server.
-2. **probe** — read-only SSH check: Python 3.10+, Passenger/selector presence, checkout state, energy databases, cron marker, app dir. Fails safe if the hosting cannot run the app.
-3. **deploy** — with the same flock + clean-checkout + tested-commit guards as the energy deploy: fast-forwards the server checkout to the tested commit, creates `~/command-centre-app` (mode 0700), uploads `passenger_wsgi.py`, writes `command-centre.env` (0600, via a `.new` file and rename), and touches `tmp/restart.txt` so Passenger reloads.
-4. **verify** — requires `https://iramkhan.com/command-centre/api/v1/health` to return `{"status":"ok"}` and the page to load over HTTPS. The deploy is not reported successful without this evidence.
-
-## Security notes
-
-- TLS terminates at Apache. The app builds with `secure=True`: HSTS, `Secure` + `__Host-` cookies, and a 308 redirect for any request that arrives over plain HTTP.
-- Sessions move from process memory to `sessions.sqlite3` because Passenger can run multiple processes. Only SHA-256 token hashes are stored, never tokens; the file is mode 0600. A server restart no longer signs you out; the 30-minute idle and 12-hour absolute expiries are unchanged.
-- Rate limiting remains per process; with several Passenger processes the effective limit is multiplied by the process count. The passphrase hash and login throttling still apply per process. Accepted risk for a single-owner app.
-- The energy dashboard's Basic Auth layer does not extend to `/command-centre/`: the Passenger URL is not a physical directory, so Directory Privacy cannot wrap it. The app's own passphrase, CSRF, host allow-list and rate limiting are the gate.
-- On the server, Briefing shows **Not configured** (the briefing runs locally only) and Energy reads the server's live database read-only. Automations shows the server's real cron entry.
-- If `iramkhan.com` should serve something else, set the `COMMAND_CENTRE_HOSTS` repository variable (comma-separated Host values).
-
-## Rollback
-
-1. cPanel → Setup Python App → stop or remove the application. The URL immediately stops serving; no other site content is affected.
-2. Optionally `rm -rf ~/command-centre-app` over SSH and delete the `COMMAND_CENTRE_PASSWORD_HASH` secret.
-3. Revert the merge commit to remove the workflow. The energy deploy workflow is independent and unaffected.
+For an operator-approved rollback, stop the **Command Centre app only** in cPanel
+Setup Python App. To restore the previous release, restore the owner-only
+`command-centre.env.previous` and `passenger_wsgi.py.previous` files under the
+same deployment lock, then touch `tmp/restart.txt` and rerun the HTTPS checks.
+Do not reset the energy checkout or delete app databases.
 
 ## Operations
 
-- Restart the app: `touch ~/command-centre-app/tmp/restart.txt` (the deploy workflow does this automatically).
-- Audit log: `~/command-centre-app/data/audit.sqlite3` (metadata only, 0600). Include it in the SQLite backup routine from [operations](operations.md#back-up-your-data).
-- Passenger stderr appears in the cPanel Python App interface and the domain's error log.
+- Restart: touch `tmp/restart.txt` inside the private app directory.
+- Include `data/audit.sqlite3` in the SQLite backup routine described in
+  [operations](operations.md#back-up-your-data).
+- cPanel's Python App interface and domain error log expose Passenger failures.
+- `.github/workflows/probe-command-centre.yml` provides a separate read-only
+  hosting inventory. It never prints raw registry environment values.

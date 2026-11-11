@@ -20,7 +20,15 @@ from . import sources
 from .audit import AuditLog
 from .automations import CronReader, list_automations, read_crontab
 from .config import Settings
-from .security import Permission, RateLimiter, Session, SessionStore, SqliteSessionStore, verify_password
+from .security import (
+    Permission,
+    RateLimiter,
+    Session,
+    SessionStore,
+    SqliteRateLimiter,
+    SqliteSessionStore,
+    verify_password,
+)
 
 LONDON = ZoneInfo("Europe/London")
 STATIC_DIR = Path(__file__).with_name("static")
@@ -96,6 +104,10 @@ class CommandCentreApp:
         self.login_per_client = RateLimiter(5, 15 * 60, clock=monotonic)
         self.login_global = RateLimiter(20, 15 * 60, clock=monotonic)
         self.api_limiter = RateLimiter(240, 60, clock=monotonic)
+        if settings.sessions_db:
+            self.login_per_client = SqliteRateLimiter(settings.sessions_db, "login_client", 5, 900, clock=clock)
+            self.login_global = SqliteRateLimiter(settings.sessions_db, "login_global", 20, 900, clock=clock)
+            self.api_limiter = SqliteRateLimiter(settings.sessions_db, "api", 240, 60, clock=clock)
         self.static = {
             path: ((STATIC_DIR / name).read_bytes(), content_type)
             for path, (name, content_type) in STATIC_FILES.items()
@@ -153,12 +165,8 @@ class CommandCentreApp:
         if host not in self.allowed_hosts:
             return _error(421, "misdirected_request")
         method, path = environ.get("REQUEST_METHOD", "GET"), environ.get("PATH_INFO", "")
-        if (
-            self.secure
-            and environ.get("wsgi.url_scheme") != "https"
-            and environ.get("HTTP_X_FORWARDED_PROTO") != "https"
-        ):
-            # TLS terminates at Apache in hosted deployments; never serve over HTTP there.
+        if self.secure and environ.get("wsgi.url_scheme") != "https":
+            # Passenger derives the WSGI scheme from Apache, not client-supplied headers.
             location = f"https://{host}{environ.get('SCRIPT_NAME', '')}{path}"
             query = environ.get("QUERY_STRING", "")
             return 308, {"error": "https_required"}, [("Location", location + (f"?{query}" if query else ""))]
@@ -249,9 +257,11 @@ class CommandCentreApp:
         password = body.get("password") if isinstance(body, dict) else None
         if not isinstance(password, str) or set(body) != {"password"}:
             return _error(400, "invalid_request")
+        # Reserve attempts before expensive verification, including across Passenger workers.
+        if not self.login_global.hit("all") or not self.login_per_client.hit(client):
+            self.audit.record("login", "rate_limited", client=client)
+            return _error(429, "rate_limited", [("Retry-After", "900")])
         if not verify_password(password, self.settings.password_hash):
-            self.login_per_client.record(client)
-            self.login_global.record("all")
             self.audit.record("login", "failure", client=client)
             return _error(401, "invalid_credentials")
         self.login_per_client.reset(client)

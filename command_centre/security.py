@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import json
 import os
 import secrets
 import sqlite3
@@ -75,6 +76,22 @@ def verify_password(password: str, encoded: str | None) -> bool:
         return False
     actual = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, iterations)
     return hmac.compare_digest(actual, expected)
+
+
+def valid_password_hash(encoded: str | None) -> bool:
+    """Validate configuration without needing or disclosing the passphrase."""
+    try:
+        prefix, iterations, salt, digest = (encoded or "").split("$")
+        return (
+            prefix == _PREFIX
+            and MIN_ITERATIONS <= int(iterations) <= MAX_ITERATIONS
+            and len(_unb64(salt)) >= 16
+            and len(_unb64(digest)) == 32
+            and _b64(_unb64(salt)) == salt
+            and _b64(_unb64(digest)) == digest
+        )
+    except (ValueError, TypeError):
+        return False
 
 
 class RateLimiter:
@@ -200,7 +217,56 @@ CREATE TABLE IF NOT EXISTS sessions (
   created_at REAL NOT NULL,
   last_seen_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS rate_limits (
+  bucket TEXT NOT NULL,
+  key_hash TEXT NOT NULL,
+  events TEXT NOT NULL,
+  last_at REAL NOT NULL,
+  PRIMARY KEY(bucket, key_hash)
+);
 """
+
+
+class SqliteRateLimiter:
+    """Shared, atomic sliding windows in the private session database."""
+
+    def __init__(
+        self, path: Path, bucket: str, limit: int, window_seconds: float, *, clock: Callable[[], float] = time.time
+    ) -> None:
+        self.path, self.bucket, self.limit, self.window, self.clock = path, bucket, limit, window_seconds, clock
+
+    def _check(self, key: str, record: bool) -> bool:
+        now, key_hash = self.clock(), _token_hash(key)
+        with closing(sqlite3.connect(self.path, timeout=5)) as conn, conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("DELETE FROM rate_limits WHERE bucket=? AND last_at<=?", (self.bucket, now - self.window))
+            row = conn.execute(
+                "SELECT events FROM rate_limits WHERE bucket=? AND key_hash=?", (self.bucket, key_hash)
+            ).fetchone()
+            events = [at for at in json.loads(row[0]) if at > now - self.window] if row else []
+            if len(events) >= self.limit:
+                return False
+            if record:
+                # Refuse rather than evict active counters when at capacity.
+                count = conn.execute("SELECT COUNT(*) FROM rate_limits WHERE bucket=?", (self.bucket,)).fetchone()[0]
+                if row is None and count >= 10_000:
+                    return False
+                events.append(now)
+                conn.execute(
+                    "INSERT OR REPLACE INTO rate_limits VALUES(?,?,?,?)",
+                    (self.bucket, key_hash, json.dumps(events), now),
+                )
+            return True
+
+    def hit(self, key: str) -> bool:
+        return self._check(key, True)
+
+    def blocked(self, key: str) -> bool:
+        return not self._check(key, False)
+
+    def reset(self, key: str) -> None:
+        with closing(sqlite3.connect(self.path, timeout=5)) as conn, conn:
+            conn.execute("DELETE FROM rate_limits WHERE bucket=? AND key_hash=?", (self.bucket, _token_hash(key)))
 
 
 class SqliteSessionStore:
