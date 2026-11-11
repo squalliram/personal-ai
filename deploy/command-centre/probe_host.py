@@ -5,6 +5,7 @@
 
 import glob
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -39,6 +40,47 @@ def cpanel_registration(data):
     return False if recognized else None
 
 
+def app_diagnostics(app):
+    result = {"mapping": {}, "error_categories": []}
+    home = Path.home()
+    for label, path in (
+        ("domain", home / "public_html/.htaccess"),
+        ("mount", home / "public_html/command-centre/.htaccess"),
+    ):
+        try:
+            body = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        result["mapping"][label] = {
+            "app_root_matches": str(app) in body,
+            "directives": sorted(set(re.findall(r"(?m)^\s*(Passenger\w+|AuthType|Require)\b", body))),
+            "passenger_disabled": bool(re.search(r"(?im)^\s*PassengerEnabled\s+off\b", body)),
+        }
+    categories = set()
+    for path in (app / "stderr.log", app / "passenger.log", home / "public_html/error_log"):
+        try:
+            with path.open("rb") as source:
+                source.seek(max(0, path.stat().st_size - 64 * 1024))
+                body = source.read().decode("utf-8", "replace")
+        except OSError:
+            continue
+        for category in (
+            "ModuleNotFoundError",
+            "ImportError",
+            "PermissionError",
+            "RuntimeError",
+            "SyntaxError",
+            "Permission denied",
+            "cannot load such file",
+            "Could not spawn",
+            "No such file or directory",
+        ):
+            if category in body:
+                categories.add(category)
+    result["error_categories"] = sorted(categories)
+    return result
+
+
 def main():
     checkout = Path(sys.argv[1])
     app = checkout.parent / "command-centre-app"
@@ -70,6 +112,7 @@ def main():
         "selector_enabled": None,
         "selector_python312_enabled": None,
         "selector_command_centre_registered": None,
+        "app_diagnostics": app_diagnostics(app),
     }
     uapi = shutil.which("uapi") or (
         "/usr/local/cpanel/bin/uapi" if Path("/usr/local/cpanel/bin/uapi").is_file() else None
@@ -106,6 +149,12 @@ def main():
                             node.get("domain") == "iramkhan.com"
                             and str(node.get("app_uri", "")).strip("/") == "command-centre"
                         ):
+                            report["selector_app_status"] = (
+                                node.get("app_status")
+                                if node.get("app_status") in ("started", "stopped")
+                                else "unknown"
+                            )
+                            report["selector_startup_matches"] = node.get("startup_file") == "passenger_wsgi.py"
                             return True
                         return any(registered(value) for key, value in node.items() if key != "env_vars")
                     return isinstance(node, list) and any(registered(value) for value in node)
