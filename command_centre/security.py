@@ -128,13 +128,22 @@ class RateLimiter:
 
     def hit(self, key: str) -> bool:
         """Record one event and report whether it is within the limit."""
+        return self.reserve(key) is not None
+
+    def reserve(self, key: str) -> float | None:
         with self._lock:
             now = self.clock()
             events = self._prune(key, now)
             if len(events) >= self.limit:
-                return False
+                return None
             events.append(now)
-            return True
+            return now
+
+    def release(self, key: str, reservation: float) -> None:
+        with self._lock:
+            events = self._prune(key, self.clock())
+            if reservation in events:
+                events.remove(reservation)
 
     def reset(self, key: str) -> None:
         with self._lock:
@@ -235,7 +244,7 @@ class SqliteRateLimiter:
     ) -> None:
         self.path, self.bucket, self.limit, self.window, self.clock = path, bucket, limit, window_seconds, clock
 
-    def _check(self, key: str, record: bool) -> bool:
+    def _check(self, key: str, record: bool) -> float | None:
         now, key_hash = self.clock(), _token_hash(key)
         with closing(sqlite3.connect(self.path, timeout=5)) as conn, conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -245,24 +254,42 @@ class SqliteRateLimiter:
             ).fetchone()
             events = [at for at in json.loads(row[0]) if at > now - self.window] if row else []
             if len(events) >= self.limit:
-                return False
+                return None
             if record:
                 # Refuse rather than evict active counters when at capacity.
                 count = conn.execute("SELECT COUNT(*) FROM rate_limits WHERE bucket=?", (self.bucket,)).fetchone()[0]
                 if row is None and count >= 10_000:
-                    return False
+                    return None
                 events.append(now)
                 conn.execute(
                     "INSERT OR REPLACE INTO rate_limits VALUES(?,?,?,?)",
                     (self.bucket, key_hash, json.dumps(events), now),
                 )
-            return True
+            return now
 
     def hit(self, key: str) -> bool:
+        return self.reserve(key) is not None
+
+    def reserve(self, key: str) -> float | None:
         return self._check(key, True)
 
     def blocked(self, key: str) -> bool:
-        return not self._check(key, False)
+        return self._check(key, False) is None
+
+    def release(self, key: str, reservation: float) -> None:
+        with closing(sqlite3.connect(self.path, timeout=5)) as conn, conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT events FROM rate_limits WHERE bucket=? AND key_hash=?", (self.bucket, _token_hash(key))
+            ).fetchone()
+            if row:
+                events = json.loads(row[0])
+                if reservation in events:
+                    events.remove(reservation)
+                    conn.execute(
+                        "UPDATE rate_limits SET events=? WHERE bucket=? AND key_hash=?",
+                        (json.dumps(events), self.bucket, _token_hash(key)),
+                    )
 
     def reset(self, key: str) -> None:
         with closing(sqlite3.connect(self.path, timeout=5)) as conn, conn:

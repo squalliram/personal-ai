@@ -290,6 +290,18 @@ class SmokeTests(unittest.TestCase):
             self.assertEqual(app.sessions._sessions, {})
 
     def test_public_and_authenticated_paths_use_revoked_read_only_session(self):
+        self.smoke({"state": "available", "daily": [{}]})
+
+    def test_unreadable_or_empty_source_cannot_pass_release_validation(self):
+        for state in ("not_configured", "unavailable", "available", "refresh_required"):
+            with self.subTest(state=state), self.assertRaises(HOST.ReleaseError):
+                self.smoke({"state": state, "daily": []})
+
+    def test_readable_legacy_source_is_reported_without_migration(self):
+        result = self.smoke({"state": "refresh_required", "daily": [], "sync_history": [{"status": "success"}]})
+        self.assertEqual(result["energy_state"], "refresh_required")
+
+    def smoke(self, energy):
         with tempfile.TemporaryDirectory() as directory:
             app = make_app(make_settings(Path(directory)))
             observed = []
@@ -317,7 +329,7 @@ class SmokeTests(unittest.TestCase):
                     session = app.sessions.get(token)
                     self.assertEqual(session.permission.label, "read")
                     observed.append(token)
-                    return 200, {}, b'{"state":"available","daily":[{}]}'
+                    return 200, {}, json.dumps(energy).encode()
                 return 200, {}, b"Command Centre api/v1/ {"
 
             with (
@@ -329,3 +341,4 @@ class SmokeTests(unittest.TestCase):
             self.assertFalse(result["owner_passphrase_sign_in_tested"])
             self.assertEqual(len(observed), 5)
             self.assertIsNone(app.sessions.get(observed[0]))
+            return result

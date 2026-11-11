@@ -258,12 +258,16 @@ class CommandCentreApp:
         if not isinstance(password, str) or set(body) != {"password"}:
             return _error(400, "invalid_request")
         # Reserve attempts before expensive verification, including across Passenger workers.
-        if not self.login_global.hit("all") or not self.login_per_client.hit(client):
+        reservation = self.login_global.reserve("all")
+        if reservation is None or not self.login_per_client.hit(client):
+            if reservation is not None:
+                self.login_global.release("all", reservation)
             self.audit.record("login", "rate_limited", client=client)
             return _error(429, "rate_limited", [("Retry-After", "900")])
         if not verify_password(password, self.settings.password_hash):
             self.audit.record("login", "failure", client=client)
             return _error(401, "invalid_credentials")
+        self.login_global.release("all", reservation)
         self.login_per_client.reset(client)
         self.sessions.revoke(request.token)
         token, session = self.sessions.create(self.settings.permission_ceiling)

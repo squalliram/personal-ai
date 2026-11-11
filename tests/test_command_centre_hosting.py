@@ -10,7 +10,7 @@ from pathlib import Path
 from command_centre_fixtures import HOST, PASSWORD_HASH, Client, Clock, make_app, make_settings
 
 from command_centre.config import load_settings
-from command_centre.security import Permission, SqliteRateLimiter, SqliteSessionStore, valid_password_hash
+from command_centre.security import Permission, RateLimiter, SqliteRateLimiter, SqliteSessionStore, valid_password_hash
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -116,6 +116,35 @@ class SqliteSessionStoreTests(unittest.TestCase):
 
 
 class HostedSessionTests(unittest.TestCase):
+    def test_successful_sign_ins_do_not_consume_global_failure_quota(self):
+        for shared in (False, True):
+            with self.subTest(shared=shared), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                settings = make_settings(root, sessions_db=root / "sessions.sqlite3" if shared else None)
+                client = Client(make_app(settings))
+                for _ in range(25):
+                    self.assertEqual(client.login().status, 200)
+                self.assertFalse(client.app.login_global.blocked("all"))
+
+    def test_releasing_success_preserves_concurrent_failures_and_handles_expiry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "sessions.sqlite3"
+            SqliteSessionStore(path, idle_seconds=30, absolute_seconds=120)
+            clock = Clock(0)
+            for limiter in (RateLimiter(3, 10, clock=clock), SqliteRateLimiter(path, "test", 3, 10, clock=clock)):
+                successful = limiter.reserve("all")
+                self.assertEqual(successful, 0)
+                self.assertTrue(limiter.hit("all"))
+                self.assertTrue(limiter.hit("all"))
+                self.assertTrue(limiter.blocked("all"))
+                limiter.release("all", successful)
+                self.assertTrue(limiter.hit("all"))
+                self.assertTrue(limiter.blocked("all"))
+                clock.now += 11
+                limiter.release("all", successful)
+                self.assertFalse(limiter.blocked("all"))
+                clock.now = 0
+
     def test_session_is_shared_across_app_instances(self):
         # Passenger can run several processes; each request may hit a different one.
         with tempfile.TemporaryDirectory() as directory:

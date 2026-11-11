@@ -157,7 +157,11 @@ def verify(app: Path, sha: str):
             require(status == 200, "Authenticated read-only API check failed")
             results[path] = json.loads(body)
         energy = results["/api/v1/energy"]
-        require(energy["state"] != "not_configured", "Live energy database is not connected")
+        require(
+            (energy["state"] == "available" and bool(energy.get("daily") or energy.get("totals")))
+            or (energy["state"] == "refresh_required" and bool(energy.get("sync_history"))),
+            "Live energy source has no readable data",
+        )
         return {
             "energy_state": energy["state"],
             "energy_daily_rows": len(energy["daily"]),
