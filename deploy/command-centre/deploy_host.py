@@ -196,7 +196,10 @@ def verify(app: Path, sha: str):
         require(status == 401, "Protected API exposed or unavailable")
     for request_headers in ({}, {"X-Forwarded-Proto": "https"}):
         status, headers, _ = fetch(f"http://{DOMAIN}/{URI}/api/v1/health", headers=request_headers)
-        require(status in (301, 302, 307, 308), "Plain HTTP did not redirect")
+        require(
+            status in (301, 302, 307, 308),
+            f"Plain HTTP did not redirect (forwarded_header={bool(request_headers)}, status={status})",
+        )
         require(headers.get("Location", "").startswith(base + "/"), "HTTPS redirect escaped the Command Centre path")
 
     # Short-lived READ session tests real HTTPS API/data paths without knowing,
