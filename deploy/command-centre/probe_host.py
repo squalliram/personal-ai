@@ -11,6 +11,34 @@ import sys
 from pathlib import Path
 
 
+def inspect_command(args, timeout):
+    try:
+        return subprocess.run(
+            args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=timeout
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return subprocess.CompletedProcess(args, 1, "", "")
+
+
+def cpanel_registration(data):
+    if isinstance(data, dict):
+        records = list(data.values())
+    elif isinstance(data, list):
+        records = data
+    else:
+        return None
+    if not records:
+        return False
+    recognized = False
+    for record in records:
+        if not isinstance(record, dict) or not isinstance(record.get("base_uri"), str):
+            continue
+        recognized = True
+        if record["base_uri"].strip("/") == "command-centre" and record.get("domain", "iramkhan.com") == "iramkhan.com":
+            return True
+    return False if recognized else None
+
+
 def main():
     checkout = Path(sys.argv[1])
     app = checkout.parent / "command-centre-app"
@@ -26,14 +54,8 @@ def main():
     for name in candidates:
         executable = shutil.which(name)
         if executable:
-            result = subprocess.run(
-                [executable, "--version"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                universal_newlines=True,
-                timeout=10,
-            )
-            interpreters[name] = result.stdout.strip() or result.stderr.strip()
+            result = inspect_command([executable, "--version"], 10)
+            interpreters[name] = result.stdout.strip() if result.returncode == 0 else "unavailable"
     report = {
         "interpreters": interpreters,
         "passenger_config": bool(shutil.which("passenger-config")),
@@ -53,33 +75,21 @@ def main():
         "/usr/local/cpanel/bin/uapi" if Path("/usr/local/cpanel/bin/uapi").is_file() else None
     )
     if uapi:
-        result = subprocess.run(
-            [uapi, "--output=json", "PassengerApps", "list_applications"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            universal_newlines=True,
-            timeout=30,
-        )
+        result = inspect_command([uapi, "--output=json", "PassengerApps", "list_applications"], 30)
         try:
             response = json.loads(result.stdout).get("result", {})
             if response.get("status") == 1:
                 data = response.get("data", {})
                 # Emit a boolean only: the registry can contain protected environment values.
                 report["passenger_registry"] = "accessible"
-                report["command_centre_registered"] = "/command-centre" in json.dumps(data)
+                report["command_centre_registered"] = cpanel_registration(data)
             else:
                 report["passenger_registry"] = "not_accessible_or_feature_disabled"
         except (ValueError, AttributeError):
             report["passenger_registry"] = "unreadable_response"
     selector = shutil.which("cloudlinux-selector")
     if selector:
-        result = subprocess.run(
-            [selector, "get", "--json", "--interpreter", "python", "--domain", "iramkhan.com"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            universal_newlines=True,
-            timeout=60,
-        )
+        result = inspect_command([selector, "get", "--json", "--interpreter", "python", "--domain", "iramkhan.com"], 60)
         try:
             response = json.loads(result.stdout)
             if response.get("result") == "success":

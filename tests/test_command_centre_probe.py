@@ -4,7 +4,7 @@ import json
 import runpy
 import unittest
 from pathlib import Path
-from subprocess import CompletedProcess
+from subprocess import CompletedProcess, TimeoutExpired
 from unittest.mock import patch
 
 PROBE = Path(__file__).resolve().parents[1] / "deploy/command-centre/probe_host.py"
@@ -37,6 +37,39 @@ class HostingProbeTests(unittest.TestCase):
     def test_unregistered_app_is_reported(self):
         result, _ = self.probe({"result": {"status": 1, "data": {}}})
         self.assertFalse(result["command_centre_registered"])
+
+    def test_prefix_matches_and_unrelated_registry_fields_are_not_registration(self):
+        result, _ = self.probe(
+            {
+                "result": {
+                    "status": 1,
+                    "data": {
+                        "app": {
+                            "base_uri": "/command-centre-old",
+                            "secret": "/command-centre",
+                        }
+                    },
+                }
+            }
+        )
+        self.assertFalse(result["command_centre_registered"])
+        result, _ = self.probe({"result": {"status": 1, "data": {"unrecognized": {"secret": "/command-centre"}}}})
+        self.assertIsNone(result["command_centre_registered"])
+
+    def test_command_timeout_does_not_discard_inventory(self):
+        output = io.StringIO()
+        with (
+            patch("sys.argv", [str(PROBE), "/nonexistent/personal-ai"]),
+            patch("glob.glob", return_value=[]),
+            patch("shutil.which", side_effect=lambda name: "/bin/" + name if name in ("python3", "uapi") else None),
+            patch("pathlib.Path.is_file", return_value=False),
+            patch("subprocess.run", side_effect=TimeoutExpired("test", 1)),
+            contextlib.redirect_stdout(output),
+        ):
+            runpy.run_path(str(PROBE), run_name="__main__")
+        report = json.loads(output.getvalue())
+        self.assertEqual(report["interpreters"]["python3"], "unavailable")
+        self.assertIsNone(report["command_centre_registered"])
 
     def test_missing_api_means_unknown_not_unregistered(self):
         result, run = self.probe({}, uapi=False)
