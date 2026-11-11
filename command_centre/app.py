@@ -20,7 +20,15 @@ from . import sources
 from .audit import AuditLog
 from .automations import CronReader, list_automations, read_crontab
 from .config import Settings
-from .security import Permission, RateLimiter, Session, SessionStore, verify_password
+from .security import (
+    Permission,
+    RateLimiter,
+    Session,
+    SessionStore,
+    SqliteRateLimiter,
+    SqliteSessionStore,
+    verify_password,
+)
 
 LONDON = ZoneInfo("Europe/London")
 STATIC_DIR = Path(__file__).with_name("static")
@@ -79,13 +87,27 @@ class CommandCentreApp:
         self.settings, self.secure, self.clock, self.cron_reader = settings, secure, clock, cron_reader
         self.allowed_hosts = frozenset(allowed_hosts)
         self.cookie_name = "__Host-cc_session" if secure else "cc_session"
-        self.sessions = SessionStore(
-            idle_seconds=settings.session_idle_seconds, absolute_seconds=settings.session_absolute_seconds, clock=clock
-        )
+        if settings.sessions_db:
+            self.sessions: SessionStore | SqliteSessionStore = SqliteSessionStore(
+                settings.sessions_db,
+                idle_seconds=settings.session_idle_seconds,
+                absolute_seconds=settings.session_absolute_seconds,
+                clock=clock,
+            )
+        else:
+            self.sessions = SessionStore(
+                idle_seconds=settings.session_idle_seconds,
+                absolute_seconds=settings.session_absolute_seconds,
+                clock=clock,
+            )
         self.audit = audit or AuditLog(settings.audit_db, clock=clock)
         self.login_per_client = RateLimiter(5, 15 * 60, clock=monotonic)
         self.login_global = RateLimiter(20, 15 * 60, clock=monotonic)
         self.api_limiter = RateLimiter(240, 60, clock=monotonic)
+        if settings.sessions_db:
+            self.login_per_client = SqliteRateLimiter(settings.sessions_db, "login_client", 5, 900, clock=clock)
+            self.login_global = SqliteRateLimiter(settings.sessions_db, "login_global", 20, 900, clock=clock)
+            self.api_limiter = SqliteRateLimiter(settings.sessions_db, "api", 240, 60, clock=clock)
         self.static = {
             path: ((STATIC_DIR / name).read_bytes(), content_type)
             for path, (name, content_type) in STATIC_FILES.items()
@@ -143,6 +165,13 @@ class CommandCentreApp:
         if host not in self.allowed_hosts:
             return _error(421, "misdirected_request")
         method, path = environ.get("REQUEST_METHOD", "GET"), environ.get("PATH_INFO", "")
+        if self.secure and environ.get("wsgi.url_scheme") != "https":
+            # Passenger derives the WSGI scheme from Apache, not client-supplied headers.
+            location = f"https://{host}{environ.get('SCRIPT_NAME', '')}{path}"
+            query = environ.get("QUERY_STRING", "")
+            return 308, {"error": "https_required"}, [("Location", location + (f"?{query}" if query else ""))]
+        if not path:
+            return 308, {"error": "redirect"}, [("Location", environ.get("SCRIPT_NAME", "") + "/")]
         if path in self.static:
             if method != "GET":
                 return _error(405, "method_not_allowed", [("Allow", "GET")])
@@ -228,11 +257,17 @@ class CommandCentreApp:
         password = body.get("password") if isinstance(body, dict) else None
         if not isinstance(password, str) or set(body) != {"password"}:
             return _error(400, "invalid_request")
+        # Reserve attempts before expensive verification, including across Passenger workers.
+        reservation = self.login_global.reserve("all")
+        if reservation is None or not self.login_per_client.hit(client):
+            if reservation is not None:
+                self.login_global.release("all", reservation)
+            self.audit.record("login", "rate_limited", client=client)
+            return _error(429, "rate_limited", [("Retry-After", "900")])
         if not verify_password(password, self.settings.password_hash):
-            self.login_per_client.record(client)
-            self.login_global.record("all")
             self.audit.record("login", "failure", client=client)
             return _error(401, "invalid_credentials")
+        self.login_global.release("all", reservation)
         self.login_per_client.reset(client)
         self.sessions.revoke(request.token)
         token, session = self.sessions.create(self.settings.permission_ceiling)

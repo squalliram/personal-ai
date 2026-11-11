@@ -94,7 +94,8 @@ class ServerSmokeTests(unittest.TestCase):
         result = self.run_cli("serve", "--host", "0.0.0.0", "--port", "0")
         self.assertEqual(result.returncode, 2)
         self.assertIn("non-loopback", result.stderr)
-        env = {k: v for k, v in self.env.items() if k != "COMMAND_CENTRE_PASSWORD_HASH"}
+        # An empty value, not a deleted key: a developer's own .env must not make the CLI "configured".
+        env = {**self.env, "COMMAND_CENTRE_PASSWORD_HASH": ""}
         result = self.run_cli("serve", "--port", "0", env=env)
         self.assertEqual(result.returncode, 2)
         self.assertIn("COMMAND_CENTRE_PASSWORD_HASH", result.stderr)

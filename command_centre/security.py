@@ -1,17 +1,22 @@
-"""Password hashing, permission levels, rate limiting and in-memory sessions."""
+"""Password hashing, permission levels, rate limiting and sessions."""
 
 from __future__ import annotations
 
 import base64
 import hashlib
 import hmac
+import json
+import os
 import secrets
+import sqlite3
 import threading
 import time
 from collections import deque
 from collections.abc import Callable
+from contextlib import closing
 from dataclasses import dataclass
 from enum import IntEnum
+from pathlib import Path
 
 PBKDF2_ITERATIONS = 600_000
 MIN_ITERATIONS = 1_000
@@ -73,6 +78,22 @@ def verify_password(password: str, encoded: str | None) -> bool:
     return hmac.compare_digest(actual, expected)
 
 
+def valid_password_hash(encoded: str | None) -> bool:
+    """Validate configuration without needing or disclosing the passphrase."""
+    try:
+        prefix, iterations, salt, digest = (encoded or "").split("$")
+        return (
+            prefix == _PREFIX
+            and MIN_ITERATIONS <= int(iterations) <= MAX_ITERATIONS
+            and len(_unb64(salt)) >= 16
+            and len(_unb64(digest)) == 32
+            and _b64(_unb64(salt)) == salt
+            and _b64(_unb64(digest)) == digest
+        )
+    except (ValueError, TypeError):
+        return False
+
+
 class RateLimiter:
     """Sliding-window counter. Keys are bounded so a flood of clients cannot exhaust memory."""
 
@@ -107,13 +128,22 @@ class RateLimiter:
 
     def hit(self, key: str) -> bool:
         """Record one event and report whether it is within the limit."""
+        return self.reserve(key) is not None
+
+    def reserve(self, key: str) -> float | None:
         with self._lock:
             now = self.clock()
             events = self._prune(key, now)
             if len(events) >= self.limit:
-                return False
+                return None
             events.append(now)
-            return True
+            return now
+
+    def release(self, key: str, reservation: float) -> None:
+        with self._lock:
+            events = self._prune(key, self.clock())
+            if reservation in events:
+                events.remove(reservation)
 
     def reset(self, key: str) -> None:
         with self._lock:
@@ -183,6 +213,170 @@ class SessionStore:
         if token:
             with self._lock:
                 self._sessions.pop(_token_hash(token), None)
+
+    def expires_at(self, session: Session) -> float:
+        return min(session.last_seen_at + self.idle, session.created_at + self.absolute)
+
+
+SESSIONS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS sessions (
+  token_hash TEXT PRIMARY KEY,
+  csrf_token TEXT NOT NULL,
+  permission INTEGER NOT NULL,
+  created_at REAL NOT NULL,
+  last_seen_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS rate_limits (
+  bucket TEXT NOT NULL,
+  key_hash TEXT NOT NULL,
+  events TEXT NOT NULL,
+  last_at REAL NOT NULL,
+  PRIMARY KEY(bucket, key_hash)
+);
+"""
+
+
+class SqliteRateLimiter:
+    """Shared, atomic sliding windows in the private session database."""
+
+    def __init__(
+        self, path: Path, bucket: str, limit: int, window_seconds: float, *, clock: Callable[[], float] = time.time
+    ) -> None:
+        self.path, self.bucket, self.limit, self.window, self.clock = path, bucket, limit, window_seconds, clock
+
+    def _check(self, key: str, record: bool) -> float | None:
+        now, key_hash = self.clock(), _token_hash(key)
+        with closing(sqlite3.connect(self.path, timeout=5)) as conn, conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("DELETE FROM rate_limits WHERE bucket=? AND last_at<=?", (self.bucket, now - self.window))
+            row = conn.execute(
+                "SELECT events FROM rate_limits WHERE bucket=? AND key_hash=?", (self.bucket, key_hash)
+            ).fetchone()
+            events = [at for at in json.loads(row[0]) if at > now - self.window] if row else []
+            if len(events) >= self.limit:
+                return None
+            if record:
+                # Refuse rather than evict active counters when at capacity.
+                count = conn.execute("SELECT COUNT(*) FROM rate_limits WHERE bucket=?", (self.bucket,)).fetchone()[0]
+                if row is None and count >= 10_000:
+                    return None
+                events.append(now)
+                conn.execute(
+                    "INSERT OR REPLACE INTO rate_limits VALUES(?,?,?,?)",
+                    (self.bucket, key_hash, json.dumps(events), now),
+                )
+            return now
+
+    def hit(self, key: str) -> bool:
+        return self.reserve(key) is not None
+
+    def reserve(self, key: str) -> float | None:
+        return self._check(key, True)
+
+    def blocked(self, key: str) -> bool:
+        return self._check(key, False) is None
+
+    def release(self, key: str, reservation: float) -> None:
+        with closing(sqlite3.connect(self.path, timeout=5)) as conn, conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT events FROM rate_limits WHERE bucket=? AND key_hash=?", (self.bucket, _token_hash(key))
+            ).fetchone()
+            if row:
+                events = json.loads(row[0])
+                if reservation in events:
+                    events.remove(reservation)
+                    conn.execute(
+                        "UPDATE rate_limits SET events=? WHERE bucket=? AND key_hash=?",
+                        (json.dumps(events), self.bucket, _token_hash(key)),
+                    )
+
+    def reset(self, key: str) -> None:
+        with closing(sqlite3.connect(self.path, timeout=5)) as conn, conn:
+            conn.execute("DELETE FROM rate_limits WHERE bucket=? AND key_hash=?", (self.bucket, _token_hash(key)))
+
+
+class SqliteSessionStore:
+    """File-backed sessions for multi-process hosting such as Passenger.
+
+    Only SHA-256 token hashes are stored, never tokens. The file is created
+    with mode 0600 and symlinks are refused. SQLite serializes writers, so
+    several Passenger processes share sessions safely. A server restart no
+    longer signs the owner out; idle and absolute expiry are unchanged.
+    """
+
+    def __init__(
+        self,
+        path: Path,
+        *,
+        idle_seconds: int,
+        absolute_seconds: int,
+        clock: Callable[[], float] = time.time,
+        max_sessions: int = 20,
+    ) -> None:
+        self.path, self.idle, self.absolute, self.clock, self.max_sessions = (
+            path,
+            idle_seconds,
+            absolute_seconds,
+            clock,
+            max_sessions,
+        )
+        self._lock = threading.Lock()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.is_symlink():
+            raise ValueError("Session database must not be a symlink")
+        os.close(os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600))
+        with closing(sqlite3.connect(path)) as conn, conn:
+            conn.executescript(SESSIONS_SCHEMA)
+
+    def _expired(self, session: Session, now: float) -> bool:
+        return now - session.last_seen_at > self.idle or now - session.created_at > self.absolute
+
+    def create(self, permission: Permission) -> tuple[str, Session]:
+        token = secrets.token_urlsafe(32)
+        now = self.clock()
+        session = Session(_token_hash(token), secrets.token_urlsafe(32), permission, now, now)
+        with self._lock, closing(sqlite3.connect(self.path, timeout=5)) as conn, conn:
+            conn.execute(
+                "DELETE FROM sessions WHERE ? - last_seen_at > ? OR ? - created_at > ?",
+                (now, self.idle, now, self.absolute),
+            )
+            (count,) = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()
+            if count >= self.max_sessions:
+                conn.execute(
+                    "DELETE FROM sessions WHERE token_hash IN "
+                    "(SELECT token_hash FROM sessions ORDER BY last_seen_at LIMIT ?)",
+                    (count - self.max_sessions + 1,),
+                )
+            conn.execute(
+                "INSERT INTO sessions VALUES(?,?,?,?,?)",
+                (session.token_hash, session.csrf_token, int(session.permission), session.created_at, now),
+            )
+        return token, session
+
+    def get(self, token: str | None) -> Session | None:
+        if not token:
+            return None
+        key = _token_hash(token)
+        now = self.clock()
+        with self._lock, closing(sqlite3.connect(self.path, timeout=5)) as conn, conn:
+            row = conn.execute(
+                "SELECT csrf_token, permission, created_at, last_seen_at FROM sessions WHERE token_hash = ?", (key,)
+            ).fetchone()
+            if row is None:
+                return None
+            session = Session(key, row[0], Permission(row[1]), row[2], row[3])
+            if self._expired(session, now):
+                conn.execute("DELETE FROM sessions WHERE token_hash = ?", (key,))
+                return None
+            session.last_seen_at = now
+            conn.execute("UPDATE sessions SET last_seen_at = ? WHERE token_hash = ?", (now, key))
+            return session
+
+    def revoke(self, token: str | None) -> None:
+        if token:
+            with self._lock, closing(sqlite3.connect(self.path, timeout=5)) as conn, conn:
+                conn.execute("DELETE FROM sessions WHERE token_hash = ?", (_token_hash(token),))
 
     def expires_at(self, session: Session) -> float:
         return min(session.last_seen_at + self.idle, session.created_at + self.absolute)

@@ -1,0 +1,76 @@
+name: Deploy command centre
+
+on:
+  workflow_run:
+    workflows: [Test]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: deploy-command-centre
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+      (github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.DEPLOY_SHA }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Require the latest main commit and successful push tests
+        id: tested
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$DEPLOY_SHA" =~ ^[a-f0-9]{40}$ ]] || exit 1
+          current=$(gh api "repos/$GITHUB_REPOSITORY/branches/main" --jq .commit.sha)
+          if [ "$current" != "$DEPLOY_SHA" ]; then
+            echo "Stale release skipped before connecting."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          successes=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/test.yml/runs?branch=main&event=push&head_sha=$DEPLOY_SHA&status=success" --jq '.workflow_runs | length')
+          test "$successes" -gt 0 || { echo "Successful main push tests required."; exit 1; }
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+      - name: Install and verify the isolated Passenger release
+        if: steps.tested.outputs.ready == 'true'
+        env:
+          CPANEL_SSH_HOST: ${{ secrets.CPANEL_SSH_HOST }}
+          CPANEL_SSH_USERNAME: ${{ secrets.CPANEL_SSH_USERNAME }}
+          CPANEL_SSH_PORT: ${{ secrets.CPANEL_SSH_PORT }}
+          CPANEL_SSH_PRIVATE_KEY: ${{ secrets.CPANEL_SSH_PRIVATE_KEY }}
+          CPANEL_SSH_KNOWN_HOSTS: ${{ secrets.CPANEL_SSH_KNOWN_HOSTS }}
+          CPANEL_APP_PATH: ${{ secrets.CPANEL_APP_PATH }}
+          COMMAND_CENTRE_PASSWORD_HASH: ${{ secrets.COMMAND_CENTRE_PASSWORD_HASH }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in CPANEL_SSH_HOST CPANEL_SSH_USERNAME CPANEL_SSH_PRIVATE_KEY CPANEL_SSH_KNOWN_HOSTS CPANEL_APP_PATH COMMAND_CENTRE_PASSWORD_HASH; do
+            test -n "${!name}" || { echo "Missing secret: $name"; exit 1; }
+          done
+          umask 077
+          install -m 700 -d ~/.ssh
+          trap 'rm -f ~/.ssh/id_ed25519' EXIT
+          printf '%s\n' "$CPANEL_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          printf '%s\n' "$CPANEL_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          python deploy/command-centre/run_deploy.py

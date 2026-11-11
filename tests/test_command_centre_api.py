@@ -79,7 +79,7 @@ class PublicSurfaceTests(ApiTestCase):
     def test_shell_and_assets_are_served_from_a_fixed_allow_list(self):
         page = self.client.request("GET", "/")
         self.assertEqual(page.status, 200)
-        self.assertIn(b"/static/app.js", page.body)
+        self.assertIn(b'src="static/app.js"', page.body)  # relative URL: the app may be mounted on a subpath
         self.assertNotIn(b"<script>", page.body)  # no inline script, so the CSP needs no 'unsafe-inline'
         self.assertEqual(
             self.client.request("GET", "/static/app.js").header("Content-Type"), "text/javascript; charset=utf-8"

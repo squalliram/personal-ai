@@ -76,7 +76,7 @@ def build(
     server = make_server(host, port, application, server_class=ThreadingWSGIServer, handler_class=Handler)
     bound = server.server_address[1]
     names = {"127.0.0.1", "localhost", "[::1]"} if is_loopback(host) else {host}
-    allowed = {f"{name}:{bound}" for name in names} | set(extra_hosts)
+    allowed = {f"{name}:{bound}" for name in names} | set(extra_hosts) | set(settings.allowed_hosts)
     holder["app"] = CommandCentreApp(settings, allowed_hosts=allowed, secure=secure)
     if secure:
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)

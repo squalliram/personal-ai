@@ -71,15 +71,30 @@ class Client:
     cookies: dict[str, str] = field(default_factory=dict)
     csrf: str | None = None
 
-    def request(self, method, path, *, body=None, raw=None, headers=None, query="", origin=True, content_type=None):
+    def request(
+        self,
+        method,
+        path,
+        *,
+        body=None,
+        raw=None,
+        headers=None,
+        query="",
+        origin=True,
+        content_type=None,
+        scheme=None,
+        script_name="",
+    ):
         data = raw if raw is not None else (b"" if body is None else json.dumps(body).encode())
         environ = {
             "REQUEST_METHOD": method,
             "PATH_INFO": path,
+            "SCRIPT_NAME": script_name,
             "QUERY_STRING": query,
             "REMOTE_ADDR": "127.0.0.1",
             "CONTENT_LENGTH": str(len(data)),
             "CONTENT_TYPE": content_type or ("application/json" if data else ""),
+            "wsgi.url_scheme": scheme or ("https" if getattr(self.app, "secure", False) else "http"),
             "wsgi.input": io.BytesIO(data),
         }
         if self.host is not None:
