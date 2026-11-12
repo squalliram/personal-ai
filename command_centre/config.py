@@ -46,6 +46,8 @@ class Settings:
     energy_stale_hours: int = 48
     session_idle_seconds: int = 30 * 60
     session_absolute_seconds: int = 12 * 60 * 60
+    instagram_db: Path | None = None
+    instagram_media: Path | None = None
 
 
 def load_settings(root: Path = ROOT, environ: Mapping[str, str] | None = None) -> Settings:
@@ -77,4 +79,6 @@ def load_settings(root: Path = ROOT, environ: Mapping[str, str] | None = None) -
         sessions_db=optional_path("SESSIONS_DB"),
         permission_ceiling=Permission.parse(values.get(PREFIX + "PERMISSION", "recommend")),
         inspect_crontab=values.get(PREFIX + "INSPECT_CRONTAB", "1").lower() not in ("0", "false", "no"),
+        instagram_db=path("INSTAGRAM_DB", "data/instagram.sqlite3"),
+        instagram_media=path("INSTAGRAM_MEDIA", "data/instagram/drafts"),
     )

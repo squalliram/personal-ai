@@ -344,3 +344,45 @@ def modules(found: list[dict]) -> list[dict]:
         }
         for module_id, name, state, phase, sources, summary in MODULES
     ]
+
+
+# Instagram --------------------------------------------------------------------------------------
+
+DRAFT_ID = re.compile(r"[0-9a-f]{16}")
+DRAFT_COLUMNS = (
+    "draft_id,created_on,created_at,status,category,topic,angle,slides,caption,hashtags,"
+    "review_score,review_notes,scheduled_for,decided_at"
+)
+
+
+def instagram_drafts(settings: Settings, limit: int = 30) -> dict:
+    """Daily drafts awaiting review and recent decisions. Scores and publish times are suggestions."""
+    result = {"source": "instagram", "state": "not_configured", "basis": "inferred", "drafts": [], "runs": []}
+    path = settings.instagram_db
+    if path is None or path.is_symlink() or not path.is_file():
+        return result
+    try:
+        with closing(connect_read_only(path)) as conn:
+            rows = conn.execute(f"SELECT {DRAFT_COLUMNS} FROM drafts ORDER BY created_at DESC LIMIT ?", (limit,))
+            rows = rows.fetchall()
+            runs = conn.execute(
+                "SELECT run_on,started_at,outcome,drafts,error FROM daily_runs ORDER BY id DESC LIMIT 10"
+            ).fetchall()
+    except (OSError, sqlite3.Error):
+        result["state"] = "unavailable"
+        return result
+    for row in rows:
+        try:
+            slides = json.loads(row["slides"])
+        except (TypeError, ValueError):
+            slides = []
+        result["drafts"].append(
+            {
+                **dict(row),
+                "slides": [{"text": str(s.get("text", ""))} for s in slides if isinstance(s, dict)],
+                "hashtags": (row["hashtags"] or "").split(),
+            }
+        )
+    result["runs"] = [dict(run) for run in runs]
+    result["state"] = "available"
+    return result

@@ -312,6 +312,8 @@ def install(checkout: Path, sha: str, password_hash: str, *, home: Path | None =
             "ENERGY_STATUS": str(checkout / "reports/energy/dashboard/status.json"),
             "BRIEFING_DB": str(checkout / "data/daily_briefing.sqlite3"),
             "BRIEFING_REPORTS": str(checkout / "reports/daily"),
+            "INSTAGRAM_DB": str(checkout / "data/instagram.sqlite3"),
+            "INSTAGRAM_MEDIA": str(checkout / "data/instagram/drafts"),
             "PERMISSION": "recommend",
             "INSPECT_CRONTAB": "1",
         }
