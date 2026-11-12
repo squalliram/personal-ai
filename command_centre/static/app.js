@@ -391,6 +391,7 @@
 
   const VIEWS = { overview, energy, agents: agentsView, integrations, automations: automationsView, settings };
 
+  let renderCount = 0;
   async function render() {
     if (!session) return;
     const id = (location.hash || "#overview").slice(1);
@@ -401,9 +402,12 @@
     }
     $("view-title").textContent = section[1];
     $("view-status").textContent = "Loading…";
-    const view = $("view");
-    view.replaceChildren();
+    const current = ++renderCount;
+    $("view").replaceChildren();
+    const view = document.createDocumentFragment();
     await (VIEWS[section[0]] ? VIEWS[section[0]](view) : placeholder(view, section[0]));
+    if (current !== renderCount) return;
+    $("view").replaceChildren(view);
     if ($("view-status").textContent === "Loading…") $("view-status").textContent = "";
     if (section[0] !== "overview" && $("view-title").textContent !== section[1]) $("view-title").textContent = section[1];
     $("nav").classList.remove("open");
