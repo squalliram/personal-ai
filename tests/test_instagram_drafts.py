@@ -92,7 +92,10 @@ class DraftTests(unittest.TestCase):
         evening = datetime(2026, 11, 12, 20, 30, tzinfo=timezone.utc)
         self.assertEqual(drafts.publish_slots(self.conn, evening, 1), ["2026-11-13T19:00+00:00"])
         self.conn.execute("DELETE FROM audience_hours")
-        self.assertEqual(drafts.publish_slots(self.conn, MORNING, 1), ["2026-11-12T18:00+00:00"])
+        self.assertEqual(
+            drafts.publish_slots(self.conn, MORNING, 3),
+            ["2026-11-12T18:00+00:00", "2026-11-12T12:00+00:00", "2026-11-12T20:00+00:00"],
+        )
 
     def test_images_are_private_and_a_failed_draft_is_dropped(self):
         media = self.root / "drafts"

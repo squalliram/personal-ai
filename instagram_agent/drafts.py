@@ -197,7 +197,7 @@ def publish_slots(conn, now: datetime, count: int) -> list[str]:
     slots = []
     for hour in hours:
         slot = datetime.combine(earliest.date(), time(hour), LONDON)
-        if slot <= earliest:
+        if slot < earliest:
             slot += timedelta(days=1)
         slots.append(slot)
     while len(slots) < count:
