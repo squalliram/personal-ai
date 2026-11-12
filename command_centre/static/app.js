@@ -212,7 +212,7 @@
 
   const HEALTH = {
     nominal: { label: "Nominal", detail: "No source health check needs attention." },
-    degraded: { label: "Degraded", detail: "One or more sources are degraded or stale." },
+    degraded: { label: "Degraded", detail: "One or more sources or automations need attention." },
     fault: { label: "Fault", detail: "One or more sources or automations have failed." },
   };
   const DEGRADED_STATUSES = ["degraded", "stale", "refresh_required"];
