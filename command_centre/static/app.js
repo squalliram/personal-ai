@@ -89,24 +89,28 @@
     render();
   }
 
-  const BOOT_SWEEP_LIMIT_MS = 1500;
-  function bootSweep() {
-    const overlay = $("boot-sweep");
+  const VAULT_UNLOCK_LIMIT_MS = 1500;
+  function vaultUnlock() {
+    const overlay = $("vault-unlock");
+    const shell = $("app-view");
     if (!overlay || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
     let timer = 0;
     const finish = () => {
       clearTimeout(timer);
       overlay.removeEventListener("animationend", onEnd);
       overlay.classList.remove("run");
+      shell.classList.remove("vault-arrive");
       overlay.hidden = true;
     };
-    const onEnd = (event) => { if (event.animationName === "boot-reveal") finish(); };
+    const onEnd = (event) => { if (event.animationName === "vault-out") finish(); };
     overlay.hidden = false;
     overlay.classList.remove("run");
+    shell.classList.remove("vault-arrive");
     void overlay.offsetWidth;
     overlay.addEventListener("animationend", onEnd);
     overlay.classList.add("run");
-    timer = setTimeout(finish, BOOT_SWEEP_LIMIT_MS);
+    shell.classList.add("vault-arrive");
+    timer = setTimeout(finish, VAULT_UNLOCK_LIMIT_MS);
   }
 
   const LOGIN_ERRORS = {
@@ -123,7 +127,7 @@
     $("login-status").textContent = "Signing in…";
     const result = await api("api/v1/session", { method: "POST", body: { password } });
     $("password").value = "";
-    if (result.ok) { bootSweep(); showApp(result.data); }
+    if (result.ok) { vaultUnlock(); showApp(result.data); }
     else $("login-status").textContent = LOGIN_ERRORS[result.data && result.data.error] || "Sign-in failed.";
   }
 
