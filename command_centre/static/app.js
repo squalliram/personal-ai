@@ -62,7 +62,7 @@
     try {
       response = await fetch(path, {
         method: opts.method || "GET", headers, credentials: "same-origin", cache: "no-store",
-        body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
+        body: opts.body === undefined ? undefined : JSON.stringify(opts.body), signal: opts.signal,
       });
     } catch {
       return { ok: false, status: 0, data: { error: "network_error" } };
@@ -190,11 +190,14 @@
     if (button.disabled) return;
     button.disabled = true;
     speak(VAULT.lock.caption);
-    const deadline = new Promise((resolve) => setTimeout(() => resolve(null), LOGOUT_DEADLINE_MS));
+    const controller = new AbortController();
+    const deadline = setTimeout(() => controller.abort(), LOGOUT_DEADLINE_MS);
+    const revoke = api("api/v1/session", { method: "DELETE", signal: controller.signal })
+      .finally(() => clearTimeout(deadline));
     try {
-      const result = await playVault("lock", Promise.race([api("api/v1/session", { method: "DELETE" }), deadline]));
-      if (result) showLogin("You have signed out.");
-      else $("view-status").textContent = "Sign-out did not complete. Try again.";
+      await playVault("lock", revoke);
+      if (controller.signal.aborted) $("view-status").textContent = "Sign-out did not complete. Try again.";
+      else showLogin("You have signed out.");
     } finally {
       button.disabled = false;
     }
