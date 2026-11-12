@@ -91,6 +91,7 @@
 
   const VAULT_LIMIT_MS = 1500;
   const VAULT_SEALED_MS = 1100;
+  const VAULT_RELEASE_MS = 500;
   const VAULT_GRANTED_MS = 650;
   const VAULT = {
     unlock: { shell: "vault-arrive", caption: "Access granted" },
@@ -98,15 +99,16 @@
   };
   const reducedMotion = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-  // Resolves once the dial has visibly sealed (lock) or immediately (unlock); the overlay clears itself.
-  function playVault(mode) {
+  // Unlock resolves immediately. Lock holds the sealed dial until `ready` settles, then fades out
+  // and resolves with `ready`'s value so the caller can reveal the login screen underneath.
+  function playVault(mode, ready = Promise.resolve()) {
     const overlay = $("vault");
     const shell = $("app-view");
-    if (!overlay || reducedMotion()) return Promise.resolve();
+    if (!overlay || reducedMotion()) return ready;
     const { shell: shellClass, caption } = VAULT[mode];
     let timer = 0;
     const reset = () => {
-      overlay.classList.remove("run", "unlock", "lock");
+      overlay.classList.remove("run", "unlock", "lock", "release");
       shell.classList.remove("vault-arrive", "vault-depart");
     };
     const finish = () => {
@@ -123,8 +125,16 @@
     overlay.addEventListener("animationend", onEnd);
     overlay.classList.add("run", mode);
     shell.classList.add(shellClass);
-    timer = setTimeout(finish, VAULT_LIMIT_MS);
-    return mode === "lock" ? new Promise((resolve) => setTimeout(resolve, VAULT_SEALED_MS)) : Promise.resolve();
+    if (mode === "unlock") {
+      timer = setTimeout(finish, VAULT_LIMIT_MS);
+      return ready;
+    }
+    const sealed = new Promise((resolve) => setTimeout(resolve, VAULT_SEALED_MS));
+    return Promise.all([ready.catch(() => null), sealed]).then(() => {
+      overlay.classList.add("release");
+      timer = setTimeout(finish, VAULT_RELEASE_MS);
+      return ready;
+    });
   }
 
   const FEMALE_VOICE = /female|woman|samantha|victoria|karen|moira|tessa|serena|fiona|kate|zira|hazel|susan|libby|sonia|aria|jenny|natasha|catherine/i;
@@ -173,11 +183,9 @@
     if (button.disabled) return;
     button.disabled = true;
     speak(VAULT.lock.caption);
-    const revoke = api("api/v1/session", { method: "DELETE" });
     try {
-      await playVault("lock");
+      await playVault("lock", api("api/v1/session", { method: "DELETE" }));
       showLogin("You have signed out.");
-      await revoke;
     } finally {
       button.disabled = false;
     }

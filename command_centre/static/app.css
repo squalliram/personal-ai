@@ -163,7 +163,7 @@ tbody tr:hover td{background:rgba(0,229,255,.04)}
 .reactor .hud-bar{max-width:180px}
 
 /* Vault overlay (~1.5s). Unlock: rings align, bolts retract, view zooms through the dial.
-   Lock: dashboard recedes, dial zooms back in, bolts slam home, rings scramble, login is revealed. */
+   Lock: dashboard recedes, dial zooms back in, bolts slam home, rings scramble; JS adds .release to reveal login. */
 .vault{position:fixed;inset:0;z-index:20;pointer-events:none;overflow:hidden;display:grid;place-content:center;justify-items:center;gap:1.4rem;
   background:radial-gradient(circle at 50% 50%,#062330 0%,#01060c 68%)}
 .vault-dial{width:min(62vmin,420px);height:auto;overflow:visible;color:var(--interface);
@@ -196,7 +196,8 @@ tbody tr:hover td{background:rgba(0,229,255,.04)}
 .vault.unlock .vault-granted{animation:vault-show .15s .72s forwards}
 .vault.unlock .vault-bolt{animation:vault-bolt .2s .8s cubic-bezier(.5,0,.2,1) forwards}
 .vault.unlock .vault-caption{opacity:0;color:var(--green);animation:vault-show .15s .72s forwards,vault-hide .2s .95s forwards}
-.vault.lock{animation:vault-in .3s ease-out backwards,vault-out .35s 1.1s ease-in forwards}
+.vault.lock{animation:vault-in .3s ease-out backwards}
+.vault.lock.release{animation:vault-out .35s ease-in forwards}
 .vault.lock .vault-dial{color:var(--green);animation:vault-zoom-in .5s cubic-bezier(.15,.65,.35,1) backwards,vault-relock .15s .6s forwards}
 .vault.lock .vault-bolt{animation:vault-bolt-in .16s .45s cubic-bezier(.6,0,.9,.4) backwards}
 .vault.lock .vault-align{animation:vault-flash .25s .5s}
