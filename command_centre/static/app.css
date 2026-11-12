@@ -22,7 +22,7 @@ button:hover{border-color:var(--accent);color:var(--accent);box-shadow:0 0 14px 
 button.primary{background:var(--interface);color:#01060c;border:0;font-weight:700;box-shadow:0 0 22px rgba(0,229,255,.45)}
 button.primary:hover{color:#01060c;box-shadow:0 0 32px rgba(0,229,255,.75)}
 button:focus-visible,a:focus-visible,input:focus-visible{outline:2px solid var(--interface);outline-offset:3px;box-shadow:0 0 0 5px rgba(0,229,255,.18)}
-.skip{position:absolute;left:-999px}.skip:focus{left:8px;top:8px;background:var(--bg);color:var(--link);border:1px solid var(--interface);padding:8px;z-index:30}
+.skip{position:absolute;left:-999px;display:inline-flex;align-items:center;min-height:44px}.skip:focus{left:8px;top:8px;background:var(--bg);color:var(--link);border:1px solid var(--interface);padding:8px 12px;z-index:30}
 [hidden]{display:none!important}
 .eyebrow{color:var(--accent);font-family:var(--mono);letter-spacing:.3em;font-size:.72rem;font-weight:600;margin:0;text-shadow:0 0 14px rgba(0,229,255,.55)}
 .muted{color:var(--muted)}
@@ -85,6 +85,7 @@ main>h1{margin:0;font-size:1.65rem;font-weight:600;text-transform:uppercase;lett
 .widget-head h2{margin:0}
 .widget-head p{margin:.15rem 0 0;font-size:.8rem}
 .widget p{margin:0}
+.widget>a,.card>a{align-self:flex-start;display:inline-flex;align-items:center;min-height:44px}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:1rem}
 .grid .card{margin:0}
 .grid+.card{margin-top:1rem}
