@@ -174,6 +174,7 @@
     const password = $("password").value;
     if (!password) { $("login-status").textContent = "Enter your passphrase."; return; }
     $("login-status").textContent = "Signing in…";
+    await pendingLogout;
     const result = await api("api/v1/session", { method: "POST", body: { password } });
     $("password").value = "";
     if (result.ok) {
@@ -185,6 +186,7 @@
   }
 
   const LOGOUT_DEADLINE_MS = 10000;
+  let pendingLogout = Promise.resolve();
   async function logout() {
     const button = $("logout");
     if (button.disabled) return;
@@ -194,12 +196,15 @@
     const deadline = setTimeout(() => controller.abort(), LOGOUT_DEADLINE_MS);
     const revoke = api("api/v1/session", { method: "DELETE", signal: controller.signal })
       .finally(() => clearTimeout(deadline));
+    let settled;
+    pendingLogout = new Promise((resolve) => { settled = resolve; });
     try {
       const result = await playVault("lock", revoke);
       if (result.ok || result.status === 401) showLogin("You have signed out.");
       else $("view-status").textContent = "Sign-out did not complete. Try again.";
     } finally {
       button.disabled = false;
+      settled();
     }
   }
 
