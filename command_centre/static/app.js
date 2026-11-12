@@ -195,9 +195,9 @@
     const revoke = api("api/v1/session", { method: "DELETE", signal: controller.signal })
       .finally(() => clearTimeout(deadline));
     try {
-      await playVault("lock", revoke);
-      if (controller.signal.aborted) $("view-status").textContent = "Sign-out did not complete. Try again.";
-      else showLogin("You have signed out.");
+      const result = await playVault("lock", revoke);
+      if (result.ok || result.status === 401) showLogin("You have signed out.");
+      else $("view-status").textContent = "Sign-out did not complete. Try again.";
     } finally {
       button.disabled = false;
     }
