@@ -356,14 +356,20 @@ DRAFT_COLUMNS = (
 
 
 def instagram_drafts(settings: Settings, limit: int = 30) -> dict:
-    """Daily drafts awaiting review and recent decisions. Scores and publish times are suggestions."""
+    """Every draft awaiting review and the latest `limit` decisions. Scores and publish times are suggestions."""
     result = {"source": "instagram", "state": "not_configured", "basis": "inferred", "drafts": [], "runs": []}
     path = settings.instagram_db
     if path is None or path.is_symlink() or not path.is_file():
         return result
     try:
         with closing(connect_read_only(path)) as conn:
-            rows = conn.execute(f"SELECT {DRAFT_COLUMNS} FROM drafts ORDER BY created_at DESC LIMIT ?", (limit,))
+            # Every pending draft stays reviewable; only decided ones are capped.
+            rows = conn.execute(
+                f"SELECT {DRAFT_COLUMNS} FROM drafts WHERE status='pending' OR draft_id IN "
+                "(SELECT draft_id FROM drafts WHERE status!='pending' ORDER BY created_at DESC LIMIT ?) "
+                "ORDER BY created_at DESC",
+                (limit,),
+            )
             rows = rows.fetchall()
             runs = conn.execute(
                 "SELECT run_on,started_at,outcome,drafts,error FROM daily_runs ORDER BY id DESC LIMIT 10"

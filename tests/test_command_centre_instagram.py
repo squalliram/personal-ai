@@ -67,6 +67,25 @@ class InstagramQueueTests(unittest.TestCase):
         self.assertEqual([s["text"] for s in draft["slides"]], ["Slide one", "Slide two", "Slide three"])
         self.assertEqual((draft["status"], data["runs"][0]["outcome"]), ("pending", "ok"))
 
+    def test_old_pending_drafts_stay_listed_past_the_decision_cap(self):
+        conn = storage.connect(self.db)
+        with conn:
+            for n in range(35):
+                draft = {
+                    "draft_id": f"{n:016x}",
+                    "category": "food",
+                    "topic": f"t{n}",
+                    "slides": [],
+                    "caption": "c",
+                    "hashtags": [],
+                }
+                storage.insert_draft(conn, draft, "2026-11-13", f"2026-11-13T10:{n:02d}:00+00:00")
+                storage.decide_draft(conn, draft["draft_id"], "rejected", "t")
+        conn.close()
+        data = self.client().request("GET", "/api/v1/instagram/drafts").json()
+        self.assertEqual(len(data["drafts"]), 31)
+        self.assertIn(DRAFT, [d["draft_id"] for d in data["drafts"]])
+
     def test_not_configured_without_a_database(self):
         self.db.unlink()
         data = self.client().request("GET", "/api/v1/instagram/drafts").json()
