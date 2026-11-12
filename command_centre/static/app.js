@@ -98,6 +98,8 @@
     lock: { shell: "vault-depart", caption: "Logging out of the command centre" },
   };
   const reducedMotion = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  let vaultRun = 0;
+  let cancelVault = () => {};
 
   // Unlock resolves immediately. Lock holds the sealed dial until `ready` settles, then fades out
   // and resolves with `ready`'s value so the caller can reveal the login screen underneath.
@@ -106,6 +108,8 @@
     const shell = $("app-view");
     if (!overlay || reducedMotion()) return ready;
     const { shell: shellClass, caption } = VAULT[mode];
+    cancelVault();
+    const run = ++vaultRun;
     let timer = 0;
     const reset = () => {
       overlay.classList.remove("run", "unlock", "lock", "release");
@@ -118,6 +122,7 @@
       overlay.hidden = true;
     };
     const onEnd = (event) => { if (event.animationName === "vault-out") finish(); };
+    cancelVault = () => { clearTimeout(timer); overlay.removeEventListener("animationend", onEnd); };
     $("vault-caption").textContent = caption;
     overlay.hidden = false;
     reset();
@@ -131,6 +136,7 @@
     }
     const sealed = new Promise((resolve) => setTimeout(resolve, VAULT_SEALED_MS));
     return Promise.all([ready.catch(() => null), sealed]).then(() => {
+      if (run !== vaultRun) return ready;
       overlay.classList.add("release");
       timer = setTimeout(finish, VAULT_RELEASE_MS);
       return ready;
@@ -178,14 +184,17 @@
     else $("login-status").textContent = LOGIN_ERRORS[result.data && result.data.error] || "Sign-in failed.";
   }
 
+  const LOGOUT_DEADLINE_MS = 10000;
   async function logout() {
     const button = $("logout");
     if (button.disabled) return;
     button.disabled = true;
     speak(VAULT.lock.caption);
+    const deadline = new Promise((resolve) => setTimeout(() => resolve(null), LOGOUT_DEADLINE_MS));
     try {
-      await playVault("lock", api("api/v1/session", { method: "DELETE" }));
-      showLogin("You have signed out.");
+      const result = await playVault("lock", Promise.race([api("api/v1/session", { method: "DELETE" }), deadline]));
+      if (result) showLogin("You have signed out.");
+      else $("view-status").textContent = "Sign-out did not complete. Try again.";
     } finally {
       button.disabled = false;
     }
