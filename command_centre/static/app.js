@@ -89,6 +89,26 @@
     render();
   }
 
+  const BOOT_SWEEP_LIMIT_MS = 1500;
+  function bootSweep() {
+    const overlay = $("boot-sweep");
+    if (!overlay || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    let timer = 0;
+    const finish = () => {
+      clearTimeout(timer);
+      overlay.removeEventListener("animationend", onEnd);
+      overlay.classList.remove("run");
+      overlay.hidden = true;
+    };
+    const onEnd = (event) => { if (event.animationName === "boot-reveal") finish(); };
+    overlay.hidden = false;
+    overlay.classList.remove("run");
+    void overlay.offsetWidth;
+    overlay.addEventListener("animationend", onEnd);
+    overlay.classList.add("run");
+    timer = setTimeout(finish, BOOT_SWEEP_LIMIT_MS);
+  }
+
   const LOGIN_ERRORS = {
     invalid_credentials: "That passphrase was not accepted.",
     rate_limited: "Too many attempts. Wait 15 minutes and try again.",
@@ -103,7 +123,7 @@
     $("login-status").textContent = "Signing in…";
     const result = await api("api/v1/session", { method: "POST", body: { password } });
     $("password").value = "";
-    if (result.ok) showApp(result.data);
+    if (result.ok) { bootSweep(); showApp(result.data); }
     else $("login-status").textContent = LOGIN_ERRORS[result.data && result.data.error] || "Sign-in failed.";
   }
 
@@ -125,7 +145,8 @@
   // Views -----------------------------------------------------------------------------------
 
   function widget(title, subtitle, options, ...children) {
-    return el("section", { class: `widget ${options.span ? `span-${options.span}` : ""}`.trim(), "aria-label": title },
+    const classes = ["widget", options.span ? `span-${options.span}` : "", options.className || ""].filter(Boolean).join(" ");
+    return el("section", { class: classes, "aria-label": title },
       el("header", { class: "widget-head" }, el("h2", {}, title), subtitle ? el("p", { class: "muted" }, subtitle) : null),
       ...children);
   }
@@ -189,6 +210,52 @@
     return svg;
   }
 
+  const HEALTH = {
+    nominal: { label: "Nominal", detail: "No source health check needs attention." },
+    degraded: { label: "Degraded", detail: "One or more sources or automations need attention." },
+    fault: { label: "Fault", detail: "One or more sources or automations have failed." },
+  };
+  const DEGRADED_STATUSES = ["degraded", "stale", "refresh_required"];
+
+  function aggregateHealth(data) {
+    const severities = new Set(data.attention.map((a) => a.severity));
+    const counts = data.integration_counts || {};
+    if (severities.has("critical") || counts.failed) return "fault";
+    if (severities.has("warning") || DEGRADED_STATUSES.some((s) => counts[s])) return "degraded";
+    return "nominal";
+  }
+
+  function svg(tag, attrs) {
+    const node = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, String(value));
+    return node;
+  }
+
+  function reactor(data) {
+    const state = aggregateHealth(data);
+    const counts = data.integration_counts || {};
+    const tracked = Object.entries(counts).filter(([s]) => s !== "not_implemented").reduce((sum, [, n]) => sum + n, 0);
+    const operational = counts.operational || 0;
+    const ring = svg("svg", { viewBox: "0 0 120 120", "aria-hidden": "true", focusable: "false" });
+    ring.append(
+      svg("circle", { class: "r-outer", cx: 60, cy: 60, r: 56 }),
+      svg("circle", { class: "r-ticks", cx: 60, cy: 60, r: 50 }),
+      svg("circle", { class: "r-dash", cx: 60, cy: 60, r: 42 }),
+      svg("circle", { class: "r-inner", cx: 60, cy: 60, r: 30 }),
+      svg("circle", { class: "r-core", cx: 60, cy: 60, r: 18 }),
+      svg("circle", { class: "r-heart", cx: 60, cy: 60, r: 8 }));
+    const ratio = tracked ? `${operational} of ${tracked} tracked sources operational` : "No tracked sources yet";
+    let bar = null;
+    if (tracked) {
+      bar = el("div", { class: "hud-bar", "aria-hidden": "true" });
+      bar.style.setProperty("--v", String(operational / tracked));
+    }
+    return widget("System status", "Aggregate source health", { className: `reactor-widget health-${state}` },
+      el("div", { class: "reactor", role: "img", "aria-label": `System status: ${HEALTH[state].label}. ${ratio}.` },
+        ring, el("p", { class: "reactor-state", "aria-hidden": "true" }, HEALTH[state].label), bar),
+      el("p", { class: "reactor-detail" }, `${HEALTH[state].detail} ${ratio}.`));
+  }
+
   async function overview(view) {
     const data = await load("api/v1/overview");
     if (!data) return;
@@ -199,6 +266,7 @@
     const energyState = data.energy.state === "available" ? "operational" : data.energy.state;
     const latestRun = data.briefing.latest_run;
     view.append(el("div", { class: "widgets" },
+      reactor(data),
       widget("Needs attention", "Facts from source health checks", { span: 2 },
         data.attention.length === 0 ? muted("Nothing needs attention.") :
           el("ul", { class: "alerts" }, data.attention.slice(0, 6).map((a) => el("li", { class: `alert alert-${a.severity}` },
