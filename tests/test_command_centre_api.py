@@ -23,6 +23,7 @@ READ_ROUTES = (
     "/api/v1/session",
     "/api/v1/overview",
     "/api/v1/modules",
+    "/api/v1/agents",
     "/api/v1/integrations",
     "/api/v1/automations",
     "/api/v1/energy",

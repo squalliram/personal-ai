@@ -323,12 +323,78 @@ MODULES = (
     ("family", "Family", "not_implemented", 3, ("family",), "No family source exists yet."),
     ("health", "Health", "not_implemented", 3, ("health_fitness",), "No health or fitness source exists yet."),
     ("agents", "AI Agents", "partial", 5, ("daily_briefing", "octopus_energy"),
-     "Agent definitions live in agents/. Execution evidence appears under Automations."),
+     "Registry of the agents defined in agents/. Execution evidence appears under Automations. Agents cannot be started from here yet."),
     ("automations", "Automations", "available", 1, ("octopus_energy", "daily_briefing"),
      "Read-only registry with execution evidence. Enable, disable and run-now controls arrive in Phase 5."),
     ("integrations", "Integrations", "available", 1, (), "Evidence-based health for every known source."),
     ("settings", "Settings", "available", 1, (), "Session, permission level and audit log."),
 )  # fmt: skip
+
+
+INSTAGRAM_COMMANDS = (
+    ("/ig-reel", "One idea into a Reel: three scored hooks, the script, on-screen text and a timed beat sheet."),
+    (
+        "/ig-viral",
+        "Ranks what is working in the niche by multiple over each account's median and writes the swipe file.",
+    ),
+    ("/ig-caption", "The caption, linted, with the 125 characters the feed shows before the tap."),
+    ("/ig-carousel", "Swipe posts: the cover, slide copy and the 1080x1350 files."),
+    ("/ig-story", "The daily story sequence, sticker choices and the DM funnel."),
+    ("/ig-profile", "Scores the profile out of 100 against a 12-part rubric, then rewrites in fix-first order."),
+    ("/ig-plan", "The week: what to post, which format, when, and the accounts to engage with."),
+    ("/ig-human", "The humanizer: strips AI tells and invisible characters, then scores the draft."),
+    ("/ig-comment", "Comments on other people's posts, picked by what the post actually is."),
+    ("/ig-reply", "Sorts the thread under a post and drafts replies in priority order."),
+    ("/ig-dm", "Keyword delivery, first message, collab pitch and two follow-ups."),
+    ("/ig-repurpose", "One video, podcast or newsletter into a week of standalone reels and carousels."),
+    ("/ig-audit", "Post-mortem on published posts, ranked by outlier multiple and sends per reach."),
+)
+
+AGENTS = (
+    {
+        "id": "daily-briefing",
+        "name": "Daily Intelligence Briefing",
+        "status": "available",
+        "summary": "Builds the daily Markdown briefing from read-only Calendar and Notion snapshots.",
+        "definition": "agents/daily-briefing.md",
+        "runs_in": "scripts/start.sh with a connector snapshot",
+        "guardrail": "Read-only. Never writes to Calendar or Notion.",
+        "commands": (),
+    },
+    {
+        "id": "energy-analyst",
+        "name": "Energy Analyst",
+        "status": "available",
+        "summary": "Writes evidence-based energy summaries from the read-only Octopus database.",
+        "definition": "agents/energy-analyst.md",
+        "runs_in": "The read-only Octopus Energy MCP tools",
+        "guardrail": "Read-only. Never switches tariffs or controls appliances.",
+        "commands": (),
+    },
+    {
+        "id": "instagram",
+        "name": "Instagram",
+        "status": "available",
+        "summary": (
+            "Manages Instagram content — reel scripts with scored hooks, captions, carousels, stories, DM replies,"
+            " weekly planning and post audits. Drafts only; nothing is posted automatically."
+        ),
+        "definition": "agents/instagram.md",
+        "runs_in": "Jarvis bridge (squalliram/jarvis) or Claude Code, via the instagram-agent-skill pack",
+        "guardrail": "Drafts only. Never posts, comments, follows or sends DMs on Instagram.",
+        "commands": INSTAGRAM_COMMANDS,
+    },
+)
+
+
+def agents() -> list[dict]:
+    return [
+        {
+            **{key: value for key, value in agent.items() if key != "commands"},
+            "commands": [{"command": command, "purpose": purpose} for command, purpose in agent["commands"]],
+        }
+        for agent in AGENTS
+    ]
 
 
 def modules(found: list[dict]) -> list[dict]:

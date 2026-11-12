@@ -377,7 +377,19 @@
       table([["Source", (r) => r.id.replace(/_/g, " ")], ["Status", (r) => status(r.status)]], module.sources, "No data sources.")));
   }
 
-  const VIEWS = { overview, energy, integrations, automations: automationsView, settings };
+  async function agentsView(view) {
+    await placeholder(view, "agents");
+    const data = await load("api/v1/agents");
+    if (!data) return;
+    for (const agent of data.agents) {
+      view.append(card(agent.name, el("p", {}, status(agent.status), " ", agent.summary),
+        keyValues([["Runs in", agent.runs_in], ["Definition", agent.definition], ["Guardrail", agent.guardrail]]),
+        agent.commands.length ? [el("h3", {}, "Commands"),
+          table([["Command", (r) => el("code", {}, r.command)], ["What it does", (r) => r.purpose]], agent.commands)] : null));
+    }
+  }
+
+  const VIEWS = { overview, energy, agents: agentsView, integrations, automations: automationsView, settings };
 
   async function render() {
     if (!session) return;

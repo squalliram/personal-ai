@@ -119,6 +119,7 @@ class CommandCentreApp:
             ("DELETE", "/api/v1/session"): Route(self.logout, Permission.READ, csrf=True),
             ("GET", "/api/v1/overview"): Route(self.overview, Permission.READ),
             ("GET", "/api/v1/modules"): Route(self.modules, Permission.READ),
+            ("GET", "/api/v1/agents"): Route(self.agents, Permission.READ),
             ("GET", "/api/v1/integrations"): Route(self.integrations, Permission.READ),
             ("GET", "/api/v1/automations"): Route(self.automations, Permission.READ),
             ("GET", "/api/v1/energy"): Route(self.energy, Permission.READ),
@@ -368,6 +369,9 @@ class CommandCentreApp:
     def modules(self, request: Request) -> Result:
         data = self._collect()
         return 200, {"modules": sources.modules(data["integrations"])}, []
+
+    def agents(self, request: Request) -> Result:
+        return 200, {"agents": sources.agents()}, []
 
     def integrations(self, request: Request) -> Result:
         data = self._collect()
