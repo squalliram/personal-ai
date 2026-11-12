@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
@@ -120,3 +121,59 @@ def record_decision(
 
 def link_published(conn: sqlite3.Connection, draft_id: str, media_id: str) -> None:
     conn.execute("UPDATE examples SET media_id=? WHERE draft_id=? AND decision='approved'", (media_id, draft_id))
+
+
+def insert_draft(conn: sqlite3.Connection, draft: dict, created_on: str, created_at: str) -> None:
+    conn.execute(
+        "INSERT INTO drafts(draft_id,created_on,created_at,category,topic,angle,slides,caption,hashtags,"
+        "review_score,review_notes,scheduled_for) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            draft["draft_id"],
+            created_on,
+            created_at,
+            draft["category"],
+            draft["topic"],
+            draft.get("angle"),
+            json.dumps([{"text": s["text"]} for s in draft["slides"]], ensure_ascii=False),
+            draft["caption"],
+            " ".join(draft["hashtags"]),
+            draft.get("review_score"),
+            draft.get("review_notes"),
+            draft.get("scheduled_for"),
+        ),
+    )
+
+
+def drafts_on(conn: sqlite3.Connection, day: str) -> int:
+    return conn.execute("SELECT COUNT(*) FROM drafts WHERE created_on=?", (day,)).fetchone()[0]
+
+
+def record_run(
+    conn: sqlite3.Connection, run_on: str, started_at: str, outcome: str, drafts: int = 0, error=None
+) -> None:
+    conn.execute(
+        "INSERT INTO daily_runs(run_on,started_at,outcome,drafts,error) VALUES(?,?,?,?,?)",
+        (run_on, started_at, outcome, drafts, error),
+    )
+
+
+def runs_on(conn: sqlite3.Connection, day: str) -> int:
+    return conn.execute("SELECT COUNT(*) FROM daily_runs WHERE run_on=? AND outcome!='skipped'", (day,)).fetchone()[0]
+
+
+def decide_draft(conn: sqlite3.Connection, draft_id: str, decision: str, decided_at: str) -> bool:
+    """Move a pending draft to approved/rejected and remember it. False if it was not pending."""
+    if decision not in ("approved", "rejected"):
+        raise ValueError("decision must be approved or rejected")
+    with conn:
+        changed = conn.execute(
+            "UPDATE drafts SET status=?, decided_at=? WHERE draft_id=? AND status='pending'",
+            (decision, decided_at, draft_id),
+        ).rowcount
+        if not changed:
+            return False
+        row = conn.execute("SELECT topic, caption, hashtags FROM drafts WHERE draft_id=?", (draft_id,)).fetchone()
+        record_decision(
+            conn, draft_id, decision, decided_at, topic=row[0], caption=row[1], hashtags=(row[2] or "").split()
+        )
+    return True
