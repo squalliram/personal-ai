@@ -172,13 +172,41 @@ class SyncAndAnalysisTests(unittest.TestCase):
 
     def test_sync_stores_posts_metrics_audience_and_benchmarks(self):
         counts = cli.sync(self.conn, self.graph(), now=NOW)
-        self.assertEqual(counts, {"posts": 3, "metrics": 1, "metric_errors": 1, "benchmarks": 3, "benchmark_errors": 1})
+        self.assertEqual(
+            counts,
+            {
+                "posts": 3,
+                "metrics": 1,
+                "metric_errors": 1,
+                "audience_errors": 0,
+                "benchmarks": 2,
+                "benchmark_errors": 1,
+            },
+        )
         metric = self.conn.execute("SELECT * FROM post_metrics WHERE media_id='101'").fetchone()
         self.assertEqual(
             (metric["captured_on"], metric["reach"], metric["saved"], metric["likes"]), ("2026-11-12", 1000, 30, 120)
         )
         statuses = dict(self.conn.execute("SELECT username, status FROM benchmark_accounts"))
         self.assertEqual(statuses, {"bluebottle": "ok", "dishoom": "ok", "privatefoodie": "unavailable"})
+
+    def test_audience_failure_keeps_posts_and_benchmarks(self):
+        graph = self.graph()
+        graph.responses[f"{USER}/insights"] = GraphAPIError("Graph API request failed (HTTP 400)")
+        counts = cli.sync(self.conn, graph, now=NOW)
+        self.assertEqual((counts["audience_errors"], counts["posts"], counts["benchmarks"]), (1, 3, 2))
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM post_metrics").fetchone()[0], 1)
+
+    def test_failed_refresh_keeps_a_healthy_benchmark(self):
+        cli.sync(self.conn, self.graph(), now=NOW)
+        graph = self.graph()
+        graph.responses[f"{USER}?business_discovery.username(dishoom)"] = GraphAPIError(
+            "Graph API request failed (HTTP 503)"
+        )
+        cli.sync(self.conn, graph, now=NOW)
+        statuses = dict(self.conn.execute("SELECT username, status FROM benchmark_accounts"))
+        self.assertEqual(statuses["dishoom"], "ok")
+        self.assertIn("dishoom", [a["username"] for a in analysis.benchmark_rankings(self.conn)])
 
     def test_rankings_outliers_and_hashtags(self):
         cli.sync(self.conn, self.graph(), now=NOW)

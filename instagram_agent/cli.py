@@ -26,7 +26,14 @@ def sync(conn, client: GraphClient, *, benchmarks: int = 50, now: datetime | Non
     now = now or _now()
     stamp = now.isoformat().replace("+00:00", "Z")
     today = now.astimezone(LONDON).date().isoformat()
-    counts = {"posts": 0, "metrics": 0, "metric_errors": 0, "benchmarks": 0, "benchmark_errors": 0}
+    counts = {
+        "posts": 0,
+        "metrics": 0,
+        "metric_errors": 0,
+        "audience_errors": 0,
+        "benchmarks": 0,
+        "benchmark_errors": 0,
+    }
     with conn:
         for media in client.own_media():
             storage.upsert_post(conn, media, stamp)
@@ -39,7 +46,11 @@ def sync(conn, client: GraphClient, *, benchmarks: int = 50, now: datetime | Non
                     continue
                 storage.upsert_metrics(conn, media["id"], today, values)
                 counts["metrics"] += 1
-        storage.replace_audience_hours(conn, client.online_followers(), stamp)
+        try:
+            storage.replace_audience_hours(conn, client.online_followers(), stamp)
+        except GraphAPIError:
+            # Accounts under 100 followers have no audience insights; keep the rest of the run.
+            counts["audience_errors"] += 1
     due = conn.execute(
         "SELECT username FROM benchmark_accounts ORDER BY synced_at IS NOT NULL, synced_at LIMIT ?", (benchmarks,)
     ).fetchall()
@@ -47,9 +58,11 @@ def sync(conn, client: GraphClient, *, benchmarks: int = 50, now: datetime | Non
         try:
             found = client.business_discovery(username)
         except (GraphAPIError, ValueError):
-            # Personal and age-gated accounts are not discoverable; keep going with the rest.
-            found = {}
+            # A failed refresh keeps the last good data; only a never-synced account becomes unavailable.
             counts["benchmark_errors"] += 1
+            with conn:
+                storage.mark_benchmark_failed(conn, username, stamp)
+            continue
         with conn:
             storage.update_benchmark(conn, username, found, stamp)
         counts["benchmarks"] += 1

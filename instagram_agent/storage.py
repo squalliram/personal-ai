@@ -93,6 +93,14 @@ def update_benchmark(conn: sqlite3.Connection, username: str, found: dict, synce
         )
 
 
+def mark_benchmark_failed(conn: sqlite3.Connection, username: str, synced_at: str) -> None:
+    conn.execute(
+        "UPDATE benchmark_accounts SET synced_at=?, "
+        "status=CASE WHEN status='ok' THEN 'ok' ELSE 'unavailable' END WHERE username=?",
+        (synced_at, username),
+    )
+
+
 def record_decision(
     conn: sqlite3.Connection,
     draft_id: str,
