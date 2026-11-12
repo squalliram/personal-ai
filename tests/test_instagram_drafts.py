@@ -89,6 +89,13 @@ class DraftTests(unittest.TestCase):
             drafts.publish_slots(self.conn, MORNING, 3),
             ["2026-11-12T19:00+00:00", "2026-11-13T08:00+00:00", "2026-11-12T13:00+00:00"],
         )
+        self.conn.execute("DELETE FROM audience_hours")
+        storage.replace_audience_hours(self.conn, {19: 500}, "now")
+        self.assertEqual(
+            drafts.publish_slots(self.conn, MORNING, 3),
+            ["2026-11-12T19:00+00:00", "2026-11-13T19:00+00:00", "2026-11-14T19:00+00:00"],
+        )
+        storage.replace_audience_hours(self.conn, {19: 500, 8: 400, 13: 300}, "now")
         evening = datetime(2026, 11, 12, 20, 30, tzinfo=timezone.utc)
         self.assertEqual(drafts.publish_slots(self.conn, evening, 1), ["2026-11-13T19:00+00:00"])
         self.conn.execute("DELETE FROM audience_hours")

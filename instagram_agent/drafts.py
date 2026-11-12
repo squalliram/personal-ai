@@ -201,7 +201,7 @@ def publish_slots(conn, now: datetime, count: int) -> list[str]:
             slot += timedelta(days=1)
         slots.append(slot)
     while len(slots) < count:
-        slots.append(slots[len(slots) % len(hours)] + timedelta(days=1))
+        slots.append(slots[-len(hours)] + timedelta(days=1))
     return [s.isoformat(timespec="minutes") for s in slots[:count]]
 
 
