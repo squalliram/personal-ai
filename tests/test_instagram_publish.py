@@ -176,6 +176,27 @@ class PublishTests(unittest.TestCase):
         self.assertEqual(self.status()["status"], "rejected")
         self.assertFalse(any(p[0].endswith("media_publish") for p in graph.posts))
 
+    def test_a_reject_on_the_last_attempt_stays_rejected(self):
+        draft_id = self.add()
+        with self.conn:
+            for _ in range(publish.MAX_ATTEMPTS - 1):
+                self.conn.execute(
+                    "INSERT INTO publish_runs(draft_id, started_at, outcome, error) VALUES(?, ?, 'failed', 'x')",
+                    (draft_id, "2026-11-12T18:00:00+00:00"),
+                )
+        other = storage.connect(self.root / "instagram.sqlite3")
+        self.addCleanup(other.close)
+
+        def reject_while_checking(url, size):
+            if not self.checked:
+                storage.decide_draft(other, draft_id, "rejected", "2026-11-12T18:04:00+00:00")
+            self.checked.append(url)
+
+        publish.tick(
+            self.conn, self.env, self.media, DUE, FakeGraph(), check=reject_while_checking, sleep=lambda s: None
+        )
+        self.assertEqual(self.status()["status"], "rejected")
+
     def test_no_decision_once_publishing_has_started(self):
         draft_id = self.add()
         with self.conn:
