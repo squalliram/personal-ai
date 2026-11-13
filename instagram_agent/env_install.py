@@ -9,6 +9,7 @@ import argparse
 import os
 import re
 import sys
+import tempfile
 from pathlib import Path
 
 ALLOWED = ("CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN")
@@ -46,12 +47,15 @@ def upsert(path: Path, values: dict[str, str]) -> bool:
     if path.exists() and path.read_text(encoding="utf-8") == content:
         os.chmod(path, 0o600)
         return False
-    tmp = path.with_name(path.name + ".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        handle.write(content)
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, path)
+    fd, tmp = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
     return True
 
 
