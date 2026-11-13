@@ -107,7 +107,8 @@ jobs:
           printf 'CLOUDFLARE_ACCOUNT_ID=%s\nCLOUDFLARE_API_TOKEN=%s\n' "$CLOUDFLARE_ACCOUNT_ID" "$CLOUDFLARE_API_TOKEN" | \
           ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes -o StrictHostKeyChecking=yes -p "${CPANEL_SSH_PORT:-22}" \
             "$CPANEL_SSH_USERNAME@$CPANEL_SSH_HOST" \
-            "cd '$CPANEL_APP_PATH' && \
+            "cd '$CPANEL_APP_PATH' && command -v flock >/dev/null && test -d .git && \
+            exec 9>.git/energy-dashboard.deploy.lock && flock -x 9 && \
             if [ \"\$(git rev-parse HEAD)\" != '$DEPLOY_SHA' ]; then \
             echo 'Checkout is not the tested commit; skipping Instagram setup.'; exit 0; fi && \
             . ./scripts/find-python.sh && \"\$PYTHON\" -m instagram_agent.env_install --env-file .env && \
