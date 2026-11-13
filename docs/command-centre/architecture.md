@@ -48,7 +48,7 @@ Devin's assessment argued against a live web app and for extending the static `d
 - **Interactive use is a live local app.** Static JSON cannot provide passphrase sessions, live health states, an audit trail or per-request permission checks. The app's added attack surface is bounded: loopback-only by default, TLS required otherwise, Host allow-list, CSRF and Origin checks, rate limits, no framework, no external requests (no fonts or CDN), `textContent`-only rendering.
 - **Anything published stays static.** The energy dashboard remains a static artifact behind Basic Auth, and any future published command-centre artifact must go through `octopus_energy.publisher`. Nothing is published without explicit owner approval.
 - **Separate app database** (`data/command_centre.sqlite3`) for the audit log only. Existing databases are never opened for writing.
-- **Sessions in memory.** No session token is written to disk; a restart signs the owner out.
+- **Session storage.** Only a SHA-256 digest of each session token is stored: in memory for a local app, where a restart signs the owner out, or in the shared `COMMAND_CENTRE_SESSIONS_DB` (`data/sessions.sqlite3`) on the hosted deployment, where sessions survive a restart.
 
 ### Health states
 
@@ -59,7 +59,7 @@ Devin's assessment argued against a live web app and for extending the static `d
 | Control | Implementation |
 | --- | --- |
 | Authentication | Single owner passphrase, PBKDF2-SHA256 600,000 iterations, stored as `COMMAND_CENTRE_PASSWORD_HASH`. Missing hash means the server refuses to start. |
-| Sessions | 256-bit random token, only its SHA-256 kept in memory. `HttpOnly; SameSite=Strict; Path=/`, plus `Secure` and the `__Host-` prefix under TLS. 30-minute idle and 12-hour absolute expiry. |
+| Sessions | 256-bit random token; only its SHA-256 is stored, in memory locally or in `data/sessions.sqlite3` when hosted. `HttpOnly; SameSite=Strict; Path=/`, plus `Secure` and the `__Host-` prefix under TLS. 30-minute idle and 12-hour absolute expiry, or a fixed 30 days from sign-in when "Remember this device" is ticked. |
 | CSRF | Every non-GET needs an exact `Origin` match and no cross-site `Sec-Fetch-Site`. Session routes also need `X-CSRF-Token`. Login needs `application/json`. |
 | DNS rebinding | `Host` must be in an allow-list (`127.0.0.1:PORT`, `localhost:PORT`). Otherwise 421. |
 | HTTPS | Loopback by default. Any other bind address requires `--tls-cert` and `--tls-key`, and HSTS is sent. |

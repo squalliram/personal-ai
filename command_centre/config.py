@@ -46,6 +46,7 @@ class Settings:
     energy_stale_hours: int = 48
     session_idle_seconds: int = 30 * 60
     session_absolute_seconds: int = 12 * 60 * 60
+    session_remember_seconds: int = 30 * 24 * 60 * 60
     instagram_db: Path | None = None
     instagram_media: Path | None = None
 

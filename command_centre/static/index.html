@@ -15,8 +15,10 @@
   <form id="login-form" class="card login-card" novalidate>
     <p class="eyebrow">PERSONAL AI</p>
     <h1>Command Centre</h1>
+    <input id="username" name="username" type="text" autocomplete="username" value="jarvis" hidden>
     <label for="password">Passphrase</label>
     <input id="password" name="password" type="password" autocomplete="current-password" required maxlength="1024">
+    <label class="remember" for="remember"><input id="remember" name="remember" type="checkbox"> Remember this device for 30 days</label>
     <button type="submit" class="primary">Sign in</button>
     <p id="login-status" role="status" aria-live="polite"></p>
   </form>

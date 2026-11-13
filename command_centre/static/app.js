@@ -175,7 +175,7 @@
     if (!password) { $("login-status").textContent = "Enter your passphrase."; return; }
     $("login-status").textContent = "Signing in…";
     await pendingLogout;
-    const result = await api("api/v1/session", { method: "POST", body: { password } });
+    const result = await api("api/v1/session", { method: "POST", body: { password, remember: $("remember").checked } });
     $("password").value = "";
     if (result.ok) {
       playVault("unlock");
@@ -435,7 +435,8 @@
     if (!data || !session) return;
     view.append(
       card("Session", keyValues([["Permission", session.permission.toUpperCase()], ["Session expires", when(session.expires_at)],
-        ["Idle timeout", `${Math.round(session.idle_timeout_seconds / 60)} minutes`]]),
+        session.remembered ? ["Remembered device", "Yes, until the session expires or you sign out"]
+          : ["Idle timeout", `${Math.round(session.idle_timeout_seconds / 60)} minutes`]]),
       el("ul", {}, el("li", {}, "READ: retrieve and analyse data."),
         el("li", {}, "RECOMMEND: suggest changes and prepare drafts."),
         el("li", {}, "EXECUTE: perform explicitly approved operations. No execute operations exist yet."))),
