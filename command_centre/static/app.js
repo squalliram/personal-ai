@@ -469,10 +469,28 @@
     render();
   }
 
+  const slideUrl = (draft, n) => `api/v1/instagram/slide?draft=${encodeURIComponent(draft.draft_id)}&n=${n}`;
+
+  function postKit(draft) {
+    const copy = el("button", { type: "button", class: "primary" }, "Copy caption + hashtags");
+    copy.addEventListener("click", async () => {
+      const text = draft.hashtags.length ? `${draft.caption}\n\n${draft.hashtags.join(" ")}` : draft.caption;
+      try {
+        await navigator.clipboard.writeText(text);
+        $("view-status").textContent = "Caption and hashtags copied.";
+      } catch {
+        $("view-status").textContent = "Couldn't copy automatically; select the caption above and copy it.";
+      }
+    });
+    const downloads = draft.slides.map((slide, i) =>
+      el("a", { href: slideUrl(draft, i + 1), download: `instafoodielove-${draft.created_on}-${i + 1}.png` }, `Slide ${i + 1}`));
+    return el("div", { class: "ig-actions" }, copy, el("span", { class: "ig-downloads" }, "Download: ", downloads));
+  }
+
   function draftCard(draft, canDecide) {
     const slides = el("div", { class: "ig-slides" }, draft.slides.map((slide, i) => el("figure", {},
       el("img", {
-        src: `api/v1/instagram/slide?draft=${encodeURIComponent(draft.draft_id)}&n=${i + 1}`,
+        src: slideUrl(draft, i + 1),
         alt: slide.text, width: "200", height: "250", loading: "lazy",
       }),
       el("figcaption", {}, `${i + 1}. ${slide.text}`))));
@@ -497,7 +515,8 @@
     } else if (draft.status === "pending") {
       children.push(muted("Approving or rejecting needs RECOMMEND permission."));
     } else if (draft.status === "approved") {
-      children.push(muted("Saved as an approved example. Publishing isn't switched on yet, so nothing has been posted."));
+      children.push(muted("Approved and saved as an example. Post it yourself: download the slides in order and copy the caption."));
+      children.push(postKit(draft));
     }
     return card(`${draft.created_on} · ${draft.topic}`, ...children);
   }
@@ -508,7 +527,7 @@
     const canDecide = Boolean(session) && ["recommend", "execute"].includes(session.permission);
     const last = data.runs[0];
     view.append(card("Daily drafts",
-      muted("Three carousel drafts for @instafoodielove are ready by 12:00 London time. Nothing is posted to Instagram from here."),
+      muted("Three carousel drafts for @instafoodielove are ready by 12:00 London time. Nothing is posted to Instagram from here: approve the ones you like, then post them yourself."),
       last ? keyValues([["Last run", when(last.started_at)], ["Result", last.outcome], ["Drafts made", last.drafts],
         ...(last.error ? [["Error", last.error]] : [])])
         : muted(data.state === "not_configured" ? "Not connected: there is no Instagram database on this server yet." : "No daily run recorded yet.")));

@@ -71,7 +71,7 @@ The briefing is written to `reports/daily/YYYY-MM-DD.md`. A small run log goes t
 
 ### 4. Instagram pipeline: "What should @instafoodielove post today?"
 
-Collects my Instagram analytics and benchmarks the food and coffee accounts I follow: their best recent posts, the hashtags doing best and the hours my followers are online. It also remembers which drafts I approved and how they then performed. Every day it writes three AI-generated carousel drafts, ready by 12:00, and puts them on the Command Centre's Instagram page with Approve and Reject buttons. Nothing is posted yet: publishing approved drafts comes next. See the [Instagram pipeline guide](docs/instagram-pipeline.md).
+Collects my Instagram analytics and benchmarks the food and coffee accounts I follow: their best recent posts, the hashtags doing best and the hours my followers are online. It also remembers which drafts I approved and how they then performed. Every day it writes three AI-generated carousel drafts, ready by 12:00, and puts them on the Command Centre's Instagram page with Approve and Reject buttons. Nothing is posted automatically: I download the approved slides, copy the caption and post them myself. See the [Instagram pipeline guide](docs/instagram-pipeline.md).
 
 ## What's in the repo
 

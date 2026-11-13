@@ -10,12 +10,12 @@ A daily pipeline on the hosting server that drafts food, coffee and restaurant c
 | 4 | **Tags**: up to 20 per post, mostly from `trending_hashtags` | Done |
 | 5 | **Review**: scores each draft against `top_benchmark_posts`; under 70 goes back to Create with notes, up to 3 rounds | Done |
 | 6 | **Queue**: Instagram page in the Command Centre with **Approve** and **Reject**; decisions feed the memory | Done |
-| 7 | **Publish**: approved posts go out at the slot from `best_hours` | Next, needs an EXECUTE route |
+| 7 | **Publish**: for now I post approved drafts myself (download slides, copy caption). Automatic publishing at the `best_hours` slot needs a Meta developer app, which needs a Facebook account to create | Manual for now |
 | 8 | **DMs**: drafted replies, sent when I press send | Later, needs Meta app review |
 
-Nothing here writes to Instagram yet. It only calls `GET` endpoints of the Instagram API with Facebook Login. Approving a draft records the decision; publishing arrives in the next step.
+Nothing here writes to Instagram. Steps 1-2 only call `GET` endpoints of the Instagram API, and are skipped while there's no Meta token. The drafts then use the voice profile, past decisions and general food/coffee/restaurant knowledge. Approving a draft records the decision; I post it myself.
 
-## Requirements
+## Requirements (optional, for steps 1-2)
 
 - @instafoodielove is a Business or Creator account linked to a Facebook Page.
 - A Meta app with the permissions that Meta's Business Discovery and Insights docs list (including `instagram_basic` and `instagram_manage_insights`), and a long-lived user access token.
@@ -66,7 +66,7 @@ Each day makes 3-9 text calls and one image per slide, about 15 images for 3 fiv
 
 The **Instagram** page shows each draft's slides, caption, hashtags, review score and suggested publish time.
 
-- **Approve** saves the draft as an approved example. When the post is published, its performance sets how much it counts for in future drafts.
+- **Approve** saves the draft as an approved example and shows **Copy caption + hashtags** and a download link per slide, for posting by hand. Once Meta access exists, the published post's performance sets how much it counts for in future drafts.
 - **Reject** saves the topic as one to avoid.
 
 Both need a RECOMMEND session, CSRF and same-origin, and both are written to the audit log. A draft can only be decided once.
