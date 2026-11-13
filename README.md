@@ -75,7 +75,7 @@ The briefing is written to `reports/daily/YYYY-MM-DD.md`. A small run log goes t
 
 ### 4. Instagram pipeline: "What should @instafoodielove post today?"
 
-Collects my Instagram analytics and benchmarks the food and coffee accounts I follow: their best recent posts, the hashtags doing best and the hours my followers are online. It also remembers which drafts I approved and how they then performed. This first part only reads from Instagram. Daily drafts, the approve/reject queue and publishing come next. See the [Instagram pipeline guide](docs/instagram-pipeline.md).
+Collects my Instagram analytics and benchmarks the food and coffee accounts I follow: their best recent posts, the hashtags doing best and the hours my followers are online. It also remembers which drafts I approved and how they then performed. Every day it writes three AI-generated carousel drafts, ready by 12:00, and puts them on the Command Centre's Instagram page with Approve and Reject buttons. Nothing is posted automatically: I download the approved slides, copy the caption and post them myself. See the [Instagram pipeline guide](docs/instagram-pipeline.md).
 
 ## What's in the repo
 
@@ -83,9 +83,9 @@ Collects my Instagram analytics and benchmarks the food and coffee accounts I fo
 | --- | --- |
 | `daily_briefing/` | Builds the daily briefing from a snapshot |
 | `octopus_energy/` | Octopus Energy sync, cost analysis, dashboard and MCP server ([README](octopus_energy/README.md)) |
-| `command_centre/` | Read-only Command Centre web app and API ([architecture](docs/command-centre/architecture.md)) |
+| `command_centre/` | Command Centre web app and API; its only write is recording Instagram Approve/Reject decisions locally ([architecture](docs/command-centre/architecture.md)) |
 | `agents/` | Instructions for the AI agents that run each workflow ([daily briefing](agents/daily-briefing.md), [energy analyst](agents/energy-analyst.md), [Instagram](agents/instagram.md)). The Command Centre's AI Agents section lists them |
-| `instagram_agent/` | Instagram analytics, benchmarks and approved-post memory ([guide](docs/instagram-pipeline.md)) |
+| `instagram_agent/` | Instagram analytics, benchmarks, daily drafts and approved-post memory ([guide](docs/instagram-pipeline.md)) |
 | `scripts/` | Start, stop and dashboard-publish scripts |
 | `docs/` | Operating guides, e.g. [energy dashboard deployment](docs/energy-dashboard.md) |
 | `reports/`, `data/` | Generated output and local SQLite databases (not committed) |
@@ -94,6 +94,7 @@ Collects my Instagram analytics and benchmarks the food and coffee accounts I fo
 ## Privacy and safety
 
 - **No writes to outside services.** Calendar, Notion, Octopus and Instagram are only read. Adding any write capability would need my explicit approval.
+- **What goes to the model provider.** The daily Instagram drafts send Cloudflare Workers AI (or OpenAI) the voice profile, my approved examples, the topics of recent and rejected drafts, and public benchmark captions and stats. Nothing else from this repo is sent.
 - **Content is data, never instructions.** Text inside events and tasks is never followed as a command.
 - **Secrets stay local.** Credentials live in `.env`, which is ignored by Git. Run logs record only counts, timings and connector error messages. They never contain tokens, account numbers or meter identifiers, or the contents of events and tasks.
 - **Generated data isn't committed.** Reports, dashboards and databases are all ignored by Git.

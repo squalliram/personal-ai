@@ -1,8 +1,9 @@
-"""Collect @instafoodielove analytics and benchmark data. Reads from Instagram only; never posts."""
+"""Collect @instafoodielove analytics and benchmarks, and write the daily drafts. Never posts to Instagram."""
 
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import sys
@@ -11,9 +12,16 @@ from pathlib import Path
 
 from octopus_energy.cli import load_env
 
-from . import analysis, following, storage
+from . import analysis, cloudflare_client, drafts, following, storage
 from .analysis import LONDON
+from .cloudflare_client import CloudflareAI
 from .graph import GRAPH_VERSION, GraphAPIError, GraphClient
+from .openai_client import IMAGE_MODEL, IMAGE_SIZE, TEXT_MODEL, AIError, OpenAIClient
+
+DEFAULT_MEDIA = Path("data/instagram/drafts")
+DAILY_FROM_HOUR = 9
+DAILY_ATTEMPTS = 3
+DAILY_DRAFTS = 3
 
 INSIGHT_WINDOW = timedelta(days=30)
 
@@ -80,6 +88,80 @@ def report(conn) -> dict:
     }
 
 
+def _read(path: str | None) -> str:
+    if not path:
+        return ""
+    file = Path(path).expanduser()
+    return file.read_text(encoding="utf-8") if file.is_file() and not file.is_symlink() else ""
+
+
+def model_client(env: dict):
+    """Cloudflare Workers AI (free daily allocation) or OpenAI, per INSTAGRAM_AI_PROVIDER or whichever is set."""
+    cloudflare = bool(env.get("CLOUDFLARE_ACCOUNT_ID") and env.get("CLOUDFLARE_API_TOKEN"))
+    provider = env.get("INSTAGRAM_AI_PROVIDER") or ("cloudflare" if cloudflare else "openai")
+    if provider == "cloudflare" and env.get("CLOUDFLARE_ACCOUNT_ID") and env.get("CLOUDFLARE_API_TOKEN"):
+        return CloudflareAI(
+            env["CLOUDFLARE_ACCOUNT_ID"],
+            env["CLOUDFLARE_API_TOKEN"],
+            text_model=env.get("CLOUDFLARE_TEXT_MODEL") or cloudflare_client.TEXT_MODEL,
+            image_model=env.get("CLOUDFLARE_IMAGE_MODEL") or cloudflare_client.IMAGE_MODEL,
+            image_size=env.get("CLOUDFLARE_IMAGE_SIZE") or cloudflare_client.IMAGE_SIZE,
+        )
+    if provider == "openai" and env.get("OPENAI_API_KEY"):
+        return OpenAIClient(
+            env["OPENAI_API_KEY"],
+            text_model=env.get("OPENAI_TEXT_MODEL") or TEXT_MODEL,
+            image_model=env.get("OPENAI_IMAGE_MODEL") or IMAGE_MODEL,
+            image_size=env.get("OPENAI_IMAGE_SIZE") or IMAGE_SIZE,
+        )
+    return None
+
+
+def daily(conn, env: dict, media_dir: Path, now: datetime | None = None) -> str:
+    """One cron tick: from 09:00 London, make today's drafts once, with at most DAILY_ATTEMPTS tries."""
+    now = now or _now()
+    local = now.astimezone(LONDON)
+    today, stamp = local.date().isoformat(), now.isoformat(timespec="seconds")
+    if local.hour < DAILY_FROM_HOUR or storage.drafts_on(conn, today):
+        return "skipped"
+    if storage.runs_on(conn, today) >= DAILY_ATTEMPTS:
+        return "gave_up"
+    ai = model_client(env)
+    if ai is None:
+        with conn:
+            storage.record_run(conn, today, stamp, "not_configured")
+        return "not_configured"
+    if env.get("INSTAGRAM_ACCESS_TOKEN") and env.get("INSTAGRAM_USER_ID"):
+        graph = GraphClient(
+            env["INSTAGRAM_ACCESS_TOKEN"],
+            env["INSTAGRAM_USER_ID"],
+            version=env.get("META_GRAPH_VERSION", GRAPH_VERSION),
+        )
+        try:
+            sync(conn, graph, benchmarks=int(env.get("INSTAGRAM_BENCHMARKS_PER_RUN", "50")), now=now)
+        except GraphAPIError:
+            pass  # Draft from yesterday's data rather than miss noon.
+    skills = env.get("INSTAGRAM_SKILLS_DIR")
+    try:
+        found = drafts.generate(
+            conn,
+            ai,
+            now,
+            count=DAILY_DRAFTS,
+            rules=drafts.load_rules(Path(skills).expanduser() if skills else None),
+            voice=_read(env.get("INSTAGRAM_VOICE_FILE", "agents/instagram-voice.md")),
+        )
+        stored = drafts.render_and_store(conn, ai, found, media_dir, now)
+    except (AIError, OSError) as exc:
+        error = str(exc) if isinstance(exc, AIError) else type(exc).__name__
+        with conn:
+            storage.record_run(conn, today, stamp, "failed", error=error)
+        return "failed"
+    with conn:
+        storage.record_run(conn, today, stamp, "ok" if stored else "failed", stored, None if stored else "no drafts")
+    return "ok" if stored else "failed"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--env-file", default=".env")
@@ -90,6 +172,8 @@ def main(argv: list[str] | None = None) -> int:
     imported = commands.add_parser("import-following", help="Add accounts from Instagram's following.json export")
     imported.add_argument("path", type=Path)
     commands.add_parser("report", help="Print rankings, hashtags, best hours and learned examples as JSON")
+    tick = commands.add_parser("daily", help="Cron tick: make today's drafts once, from 09:00 London")
+    tick.add_argument("--media", type=Path, default=DEFAULT_MEDIA)
     args = parser.parse_args(argv)
 
     conn = storage.connect(args.database)
@@ -104,6 +188,16 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(report(conn), indent=2, ensure_ascii=False))
             return 0
         env = {**load_env(Path(args.env_file)), **os.environ}
+        if args.command == "daily":
+            args.media.mkdir(mode=0o700, parents=True, exist_ok=True)
+            with open(args.media / ".daily.lock", "w") as lock:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    return 0  # The previous tick is still drafting.
+                outcome = daily(conn, env, args.media)
+            print(outcome)
+            return 0 if outcome in ("ok", "skipped", "gave_up") else 1
         token, user_id = env.get("INSTAGRAM_ACCESS_TOKEN", ""), env.get("INSTAGRAM_USER_ID", "")
         if not token or not user_id:
             print("Set INSTAGRAM_ACCESS_TOKEN and INSTAGRAM_USER_ID.", file=sys.stderr)

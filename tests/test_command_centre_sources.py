@@ -326,7 +326,7 @@ class AgentTests(SourceTestCase):
             )
             self.assertTrue((ROOT / agent["definition"]).is_file(), agent["definition"])
         self.assertEqual(
-            sorted(path.name for path in (ROOT / "agents").glob("*.md")),
+            sorted(path.name for path in (ROOT / "agents").glob("*.md") if not path.name.endswith("-voice.md")),
             sorted(Path(a["definition"]).name for a in agents),
         )
 

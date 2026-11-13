@@ -54,3 +54,30 @@ CREATE TABLE IF NOT EXISTS examples (
     hashtags TEXT,
     media_id TEXT REFERENCES posts(media_id)
 );
+CREATE TABLE IF NOT EXISTS drafts (
+    draft_id TEXT PRIMARY KEY,
+    created_on TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'approved', 'rejected', 'published', 'failed')),
+    category TEXT NOT NULL,
+    topic TEXT NOT NULL,
+    angle TEXT,
+    slides TEXT NOT NULL,
+    caption TEXT NOT NULL,
+    hashtags TEXT NOT NULL,
+    review_score INTEGER,
+    review_notes TEXT,
+    scheduled_for TEXT,
+    decided_at TEXT,
+    media_id TEXT
+);
+CREATE INDEX IF NOT EXISTS drafts_created_on ON drafts(created_on);
+CREATE TABLE IF NOT EXISTS daily_runs (
+    id INTEGER PRIMARY KEY,
+    run_on TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    drafts INTEGER NOT NULL DEFAULT 0,
+    error TEXT
+);

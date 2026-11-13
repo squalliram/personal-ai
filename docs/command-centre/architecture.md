@@ -85,6 +85,9 @@ Devin's assessment argued against a live web app and for extending the static `d
 | `GET /api/v1/energy` | READ | Totals, 14-day daily, monthly estimates, tariffs, anomalies, sync history, labelled `measured` / `estimated` / `inferred` |
 | `GET /api/v1/briefing/runs?limit=1..100` | READ | Run metadata without error text |
 | `GET /api/v1/audit` | READ | Last 50 audit entries |
+| `GET /api/v1/instagram/drafts` | READ | Daily Instagram drafts, review scores and suggested publish times (suggestions), last daily runs |
+| `GET /api/v1/instagram/slide?draft=<16 hex>&n=1..10` | READ | One generated slide image (PNG), looked up by ID only |
+| `POST /api/v1/instagram/decision` | RECOMMEND + CSRF | `{"draft_id", "decision": "approve" \| "reject"}` on a pending draft; records the decision and the approved-example memory, audited. Never posts to Instagram |
 
 Errors are always `{"error": "<category>"}`.
 
