@@ -297,7 +297,7 @@ tbody tr:hover td{background:rgba(0,229,255,.04)}
 .assistant-log .turn-jarvis{border-left-color:var(--interface)}.assistant-log .turn-jarvis .from{color:var(--interface)}
 .assistant-log .turn-error{border-left-color:var(--red)}
 .assistant-form{display:flex;gap:.5rem}
-.assistant-form input{flex:1;min-width:0;padding:10px 12px;border-radius:2px;border:1px solid var(--line);background:rgba(0,229,255,.04);color:var(--ink);min-height:44px}
+.assistant-form input{flex:1;min-width:0;font-size:16px;padding:10px 12px;border-radius:2px;border:1px solid var(--line);background:rgba(0,229,255,.04);color:var(--ink);min-height:44px}
 .assistant-form .mic.listening{border-color:var(--interface);color:var(--interface);box-shadow:0 0 0 3px rgba(0,229,255,.35)}
 .assistant-note{margin:0;font-size:.74rem}
 @media (max-width:760px){.assistant{right:.5rem;left:.5rem;width:auto;bottom:5rem}.assistant-fab{right:.75rem;bottom:.75rem}}

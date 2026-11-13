@@ -478,8 +478,9 @@
   }
 
   async function askJarvis(question) {
-    question = question.trim();
+    question = question.trim().replace(/\s+/g, " ");
     if (!question || asking) return;
+    if (question.length > 500) { orb("error", "That question is too long. Keep it under 500 characters."); return; }
     stopQuestionListening();
     asking = true;
     const generation = assistantGeneration;
