@@ -369,7 +369,7 @@ class SmokeTests(unittest.TestCase):
             }
             responses = [
                 (200, response_headers, b'{"status":"ok"}'),
-                *[(200, {}, b"Command Centre api/v1/ {")] * 3,
+                *[(200, {}, b"<title>Jarvis api/v1/ {")] * 3,
                 *[(401, {}, b"{}")] * 5,
                 (308, {"Location": "https://iramkhan.com/command-centre/api/v1/health"}, b""),
                 (308, {"Location": "https://iramkhan.com/command-centre/api/v1/health"}, b""),
@@ -453,7 +453,7 @@ class SmokeTests(unittest.TestCase):
                     self.assertEqual(session.permission.label, "read")
                     observed.append(token)
                     return 200, {}, json.dumps(energy).encode()
-                return 200, {}, b"Command Centre api/v1/ {"
+                return 200, {}, b"<title>Jarvis api/v1/ {"
 
             with (
                 patch.object(HOST, "fetch", side_effect=fetch),

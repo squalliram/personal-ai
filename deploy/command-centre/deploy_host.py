@@ -250,7 +250,7 @@ def verify(app: Path, sha: str, deployment_id: str, *, revoke_sessions=False):
     require(headers.get("X-Content-Type-Options") == "nosniff", "Security headers missing")
     require(bool(headers.get("Content-Security-Policy")), "Content security policy missing")
     require(bool(headers.get("Strict-Transport-Security")), "HSTS missing")
-    for path, needle in (("/", b"Command Centre"), ("/static/app.js", b"api/v1/"), ("/static/app.css", b"{")):
+    for path, needle in (("/", b"<title>Jarvis"), ("/static/app.js", b"api/v1/"), ("/static/app.css", b"{")):
         status, _, body = fetch(base + path)
         require(status == 200 and needle in body, "Page or static asset check failed")
     paths = ("/api/v1/overview", "/api/v1/energy", "/api/v1/integrations", "/api/v1/automations", "/api/v1/session")
