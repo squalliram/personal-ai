@@ -499,7 +499,15 @@
     return el("div", { class: "ig-actions" }, copy, el("span", { class: "ig-downloads" }, "Download: ", downloads));
   }
 
-  function draftCard(draft, canDecide) {
+  function publishNote(draft, auto) {
+    if (draft.publish_error) return muted(`Last publish attempt failed: ${draft.publish_error}`);
+    if (!auto) return null;
+    if (draft.will_post && draft.posts_at) return muted(`Posts to Instagram automatically at ${when(draft.posts_at)} unless you reject it before then.`);
+    if (draft.status === "pending") return muted("Scored under 70, so it only posts if you approve it.");
+    return null;
+  }
+
+  function draftCard(draft, canDecide, auto) {
     const slides = el("div", { class: "ig-slides" }, draft.slides.map((slide, i) => el("figure", {},
       el("img", {
         src: slideUrl(draft, i + 1),
@@ -515,9 +523,11 @@
         ["Category", draft.category],
         ["Review score (suggestion)", draft.review_score === null ? "Not scored" : `${draft.review_score}/100`],
         ["Reviewer notes", draft.review_notes || "None"],
-        ["Suggested publish time", when(draft.scheduled_for)],
+        [auto ? "Publish time" : "Suggested publish time", when(auto ? draft.posts_at : draft.scheduled_for)],
       ]),
     ];
+    const note = publishNote(draft, auto);
+    if (note) children.push(note);
     if (draft.status === "pending" && canDecide) {
       const approve = el("button", { type: "button", class: "primary" }, "Approve");
       const reject = el("button", { type: "button" }, "Reject");
@@ -526,9 +536,11 @@
       children.push(el("div", { class: "ig-actions" }, approve, reject));
     } else if (draft.status === "pending") {
       children.push(muted("Approving or rejecting needs RECOMMEND permission."));
-    } else if (draft.status === "approved") {
+    } else if (draft.status === "approved" && !auto) {
       children.push(muted("Approved and saved as an example. Post it yourself: download the slides in order and copy the caption."));
       children.push(postKit(draft));
+    } else if (draft.status === "published" && draft.media_id) {
+      children.push(muted(`Posted to Instagram (media ${draft.media_id}).`));
     }
     return card(`${draft.created_on} · ${draft.topic}`, ...children);
   }
@@ -539,11 +551,13 @@
     const canDecide = Boolean(session) && ["recommend", "execute"].includes(session.permission);
     const last = data.runs[0];
     view.append(card("Daily drafts",
-      muted("Three carousel drafts for @instafoodielove are ready by 12:00 London time. Nothing is posted to Instagram from here: approve the ones you like, then post them yourself."),
+      muted(data.auto_publish
+        ? "Three carousel drafts for @instafoodielove are ready by 12:00 London time. Drafts that pass review post automatically at their publish time, at least an hour after they're made. Reject one before then to stop it; approve a weaker one to post it."
+        : "Three carousel drafts for @instafoodielove are ready by 12:00 London time. Automatic posting is off, so nothing is posted from here: approve the ones you like, then post them yourself."),
       last ? keyValues([["Last run", when(last.started_at)], ["Result", last.outcome], ["Drafts made", last.drafts],
         ...(last.error ? [["Error", last.error]] : [])])
         : muted(data.state === "not_configured" ? "Not connected: there is no Instagram database on this server yet." : "No daily run recorded yet.")));
-    for (const draft of data.drafts) view.append(draftCard(draft, canDecide));
+    for (const draft of data.drafts) view.append(draftCard(draft, canDecide, data.auto_publish));
   }
 
 

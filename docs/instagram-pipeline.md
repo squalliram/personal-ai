@@ -1,6 +1,6 @@
 # Instagram pipeline for @instafoodielove
 
-A daily pipeline on the hosting server that drafts food, coffee and restaurant carousels, waits for my approval in the Command Centre, publishes approved posts at the best time and learns from how they perform.
+A daily pipeline on the hosting server that drafts food, coffee and restaurant carousels, shows them in the Command Centre where I can reject them, publishes the rest at the best time and learns from how they perform.
 
 | Step | Agent | Status |
 | --- | --- | --- |
@@ -10,10 +10,10 @@ A daily pipeline on the hosting server that drafts food, coffee and restaurant c
 | 4 | **Tags**: up to 20 per post, mostly from `trending_hashtags` | Done |
 | 5 | **Review**: scores each draft against `top_benchmark_posts`; under 70 goes back to Create with notes, up to 3 rounds | Done |
 | 6 | **Queue**: Instagram page in the Command Centre with **Approve** and **Reject**; decisions feed the memory | Done |
-| 7 | **Publish**: for now I post approved drafts myself (download slides, copy caption). Automatic publishing at the `best_hours` slot needs a Meta developer app, which needs a Facebook account to create | Manual for now |
+| 7 | **Publish**: drafts that passed review (or that I approved) post at their slot unless I reject them first. Off until the Meta token is set | Built, waiting for the token |
 | 8 | **DMs**: drafted replies, sent when I press send | Later, needs Meta app review |
 
-Nothing here writes to Instagram. Steps 1-2 only call `GET` endpoints of the Instagram API, and are skipped while there's no Meta token. The drafts then use the voice profile, past decisions and general food/coffee/restaurant knowledge. Approving a draft records the decision; I post it myself.
+Step 7 is the only Instagram write. Steps 1-2 only call `GET` endpoints, and all three are skipped while there's no Meta token. The drafts then use the voice profile, past decisions and general food/coffee/restaurant knowledge.
 
 ## Requirements (optional, for steps 1-2)
 
@@ -73,10 +73,20 @@ Models can be changed with `CLOUDFLARE_TEXT_MODEL` / `CLOUDFLARE_IMAGE_MODEL` or
 
 The **Instagram** page shows each draft's slides, caption, hashtags, review score and suggested publish time.
 
-- **Approve** saves the draft as an approved example and shows **Copy caption + hashtags** and a download link per slide, for posting by hand. Once Meta access exists, the published post's performance sets how much it counts for in future drafts.
-- **Reject** saves the topic as one to avoid.
+- **Reject** stops the draft from posting and saves the topic as one to avoid.
+- **Approve** saves the draft as an approved example and posts it at its slot even if it scored under 70. While automatic posting is off, it shows **Copy caption + hashtags** and a download link per slide for posting by hand. The published post's performance sets how much it counts for in future drafts.
 
 Both need a RECOMMEND session, CSRF and same-origin, and both are written to the audit log. A draft can only be decided once.
+
+## Automatic publishing
+
+`python3 -m instagram_agent daily` runs `publish.tick` after drafting, under the same lock. It is off (`publish_off`) unless `INSTAGRAM_AUTO_PUBLISH=1`, `INSTAGRAM_ACCESS_TOKEN`, `INSTAGRAM_USER_ID`, `INSTAGRAM_PUBLIC_DIR` and an `https://` `INSTAGRAM_PUBLIC_URL` are all set. The deploy writes these from the `INSTAGRAM_ACCESS_TOKEN` and `INSTAGRAM_USER_ID` secrets, with the public folder at `public_html/ig-media`; set the repository variable `INSTAGRAM_AUTO_PUBLISH` to `0` to stop posting.
+
+- **What posts:** approved drafts, and pending drafts scoring 70 or more. Rejected and weaker pending drafts never post.
+- **When:** at `max(scheduled_for, created_at + 1 hour)`, so there is always at least an hour to reject a draft. A draft more than 3 hours past its time is skipped rather than posted late.
+- **How:** Meta's [content publishing API](https://developers.facebook.com/docs/instagram-platform/content-publishing): a container per JPEG slide (`is_carousel_item=true`), a `CAROUSEL` container with the caption and hashtags, a `status_code` check, then `media_publish`. Instagram Login tokens (`IG...`) use `graph.instagram.com`, Facebook Login tokens `graph.facebook.com`.
+- **Public slides:** Meta fetches each image from a URL, so the slides are copied to a random 32-character folder under `INSTAGRAM_PUBLIC_DIR`, checked to be reachable, and deleted when the call finishes.
+- **Failures:** recorded in `publish_runs` and shown on the draft. A failure before `media_publish` is retried on the next tick, up to 3 times. `media_publish` itself is never retried, and a crash after it started marks the draft failed with "check Instagram", so a post can't go out twice.
 
 ## How the numbers are worked out
 

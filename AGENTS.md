@@ -10,6 +10,7 @@
 - Record operational metadata only. Never log tokens, credentials, event descriptions, or task descriptions.
 - Preserve source URLs when supplied. Clearly label generated priorities as suggestions.
 - Any future write capability requires explicit user approval.
+- Approved write: `instagram_agent/publish.py` publishes the daily carousels through Meta's official content publishing API, only for drafts not rejected, never retrying a `media_publish` call. No other Instagram writes (comments, follows, DMs).
 
 ## Verification
 

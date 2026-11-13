@@ -81,3 +81,16 @@ CREATE TABLE IF NOT EXISTS daily_runs (
     drafts INTEGER NOT NULL DEFAULT 0,
     error TEXT
 );
+CREATE TABLE IF NOT EXISTS publish_runs (
+    id INTEGER PRIMARY KEY,
+    draft_id TEXT NOT NULL REFERENCES drafts(draft_id),
+    started_at TEXT NOT NULL,
+    outcome TEXT NOT NULL CHECK (outcome IN ('started', 'published', 'failed')),
+    media_id TEXT,
+    error TEXT
+);
+CREATE TABLE IF NOT EXISTS publisher_state (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
