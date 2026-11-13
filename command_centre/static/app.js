@@ -514,13 +514,19 @@
     pending: "Awaiting review", approved: "Approved", rejected: "Rejected", published: "Published", failed: "Failed",
   };
 
-  async function decide(draft, decision, buttons) {
+  const DECISION_ERRORS = {
+    publishing: "It's being posted to Instagram now, so it can no longer be approved or rejected.",
+    already_decided: "It was already approved or rejected. Refresh to see its status.",
+  };
+
+  async function decide(draft, decision, buttons, status) {
     for (const button of buttons) button.disabled = true;
     const result = await api("api/v1/instagram/decision", { method: "POST", body: { draft_id: draft.draft_id, decision } });
     if (result.status === 401) { showLogin("Your session has ended. Sign in again."); return; }
     if (!result.ok) {
-      $("view-status").textContent = `Could not save the decision (${(result.data && result.data.error) || result.status}).`;
-      for (const button of buttons) button.disabled = false;
+      const code = (result.data && result.data.error) || result.status;
+      status.textContent = `Could not save the decision. ${DECISION_ERRORS[code] || `(${code})`}`;
+      if (code !== "publishing" && code !== "already_decided") for (const button of buttons) button.disabled = false;
       return;
     }
     render();
@@ -545,6 +551,7 @@
   }
 
   function publishNote(draft, auto) {
+    if (draft.publishing) return muted("Posting to Instagram now. It can no longer be approved or rejected.");
     if (draft.publish_error) return muted(`Last publish attempt failed: ${draft.publish_error}`);
     if (!auto) return null;
     if (draft.will_post && draft.posts_at) return muted(`Posts to Instagram automatically at ${when(draft.posts_at)} unless you reject it before then.`);
@@ -564,7 +571,7 @@
       el("p", { class: "ig-caption" }, draft.caption),
       el("p", { class: "muted" }, draft.hashtags.length ? `${draft.hashtags.length} hashtags: ${draft.hashtags.join(" ")}` : "No hashtags"),
       keyValues([
-        ["Status", DRAFT_STATUS[draft.status] || draft.status],
+        ["Status", draft.publishing ? "Posting now" : DRAFT_STATUS[draft.status] || draft.status],
         ["Category", draft.category],
         ["Review score (suggestion)", draft.review_score === null ? "Not scored" : `${draft.review_score}/100`],
         ["Reviewer notes", draft.review_notes || "None"],
@@ -573,12 +580,15 @@
     ];
     const note = publishNote(draft, auto);
     if (note) children.push(note);
-    if (draft.status === "pending" && canDecide) {
+    if (draft.status === "pending" && draft.publishing) {
+      // The publisher is mid-post; a decision would be refused.
+    } else if (draft.status === "pending" && canDecide) {
       const approve = el("button", { type: "button", class: "primary" }, "Approve");
       const reject = el("button", { type: "button" }, "Reject");
-      approve.addEventListener("click", () => decide(draft, "approve", [approve, reject]));
-      reject.addEventListener("click", () => decide(draft, "reject", [approve, reject]));
-      children.push(el("div", { class: "ig-actions" }, approve, reject));
+      const status = el("p", { class: "muted", role: "status" });
+      approve.addEventListener("click", () => decide(draft, "approve", [approve, reject], status));
+      reject.addEventListener("click", () => decide(draft, "reject", [approve, reject], status));
+      children.push(el("div", { class: "ig-actions" }, approve, reject), status);
     } else if (draft.status === "pending") {
       children.push(muted("Approving or rejecting needs RECOMMEND permission."));
     } else if (draft.status === "approved" && !auto) {

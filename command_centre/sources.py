@@ -437,13 +437,17 @@ def _publishing(conn) -> dict:
     """Whether the publisher is on, and each draft's latest publish error. Older databases have neither table."""
     try:
         state = conn.execute("SELECT value FROM publisher_state WHERE key='auto_publish'").fetchone()
-        errors = conn.execute(
-            "SELECT draft_id, error FROM publish_runs r WHERE outcome='failed' AND id="
+        latest = conn.execute(
+            "SELECT draft_id, outcome, error FROM publish_runs r WHERE outcome IN ('failed','started') AND id="
             "(SELECT MAX(id) FROM publish_runs s WHERE s.draft_id=r.draft_id)"
         ).fetchall()
     except sqlite3.OperationalError:
-        return {"on": False, "errors": {}}
-    return {"on": bool(state and state[0] == "on"), "errors": {r["draft_id"]: r["error"] for r in errors}}
+        return {"on": False, "errors": {}, "started": set()}
+    return {
+        "on": bool(state and state[0] == "on"),
+        "errors": {r["draft_id"]: r["error"] for r in latest if r["outcome"] == "failed"},
+        "started": {r["draft_id"] for r in latest if r["outcome"] == "started"},
+    }
 
 
 def instagram_drafts(settings: Settings, limit: int = 30) -> dict:
@@ -504,6 +508,7 @@ def instagram_drafts(settings: Settings, limit: int = 30) -> dict:
                 "posts_at": _posts_at(row),
                 "will_post": instagram_publish.will_post(row["status"], row["review_score"]),
                 "publish_error": publishing["errors"].get(row["draft_id"]),
+                "publishing": row["draft_id"] in publishing["started"],
             }
         )
     result["auto_publish"] = publishing["on"]

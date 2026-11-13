@@ -172,6 +172,17 @@ def runs_on(conn: sqlite3.Connection, day: str) -> int:
     ).fetchone()[0]
 
 
+_LATEST_RUN_STARTED = (
+    "SELECT 1 FROM publish_runs r WHERE r.draft_id=? AND r.outcome='started' AND r.id="
+    "(SELECT MAX(id) FROM publish_runs s WHERE s.draft_id=r.draft_id)"
+)
+
+
+def publishing_started(conn: sqlite3.Connection, draft_id: str) -> bool:
+    """True once the publisher has begun the final publish call for this draft."""
+    return conn.execute(_LATEST_RUN_STARTED, (draft_id,)).fetchone() is not None
+
+
 def decide_draft(conn: sqlite3.Connection, draft_id: str, decision: str, decided_at: str) -> bool:
     """Move a pending draft to approved/rejected and remember it. False if it was not pending."""
     if decision not in ("approved", "rejected"):
