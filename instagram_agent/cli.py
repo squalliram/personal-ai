@@ -152,9 +152,10 @@ def daily(conn, env: dict, media_dir: Path, now: datetime | None = None) -> str:
             voice=_read(env.get("INSTAGRAM_VOICE_FILE", "data/instagram/voice.md")),
         )
         stored = drafts.render_and_store(conn, ai, found, media_dir, now)
-    except AIError as exc:
+    except (AIError, OSError) as exc:
+        error = str(exc) if isinstance(exc, AIError) else type(exc).__name__
         with conn:
-            storage.record_run(conn, today, stamp, "failed", error=str(exc))
+            storage.record_run(conn, today, stamp, "failed", error=error)
         return "failed"
     with conn:
         storage.record_run(conn, today, stamp, "ok" if stored else "failed", stored, None if stored else "no drafts")

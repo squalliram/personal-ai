@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import secrets
@@ -175,7 +176,8 @@ def review(ai: AI, ctx: dict, drafts: list[dict], *, rules: str) -> None:
     reviews = reply.get("reviews") if isinstance(reply.get("reviews"), list) else []
     for draft, result in zip(drafts, reviews + [{}] * len(drafts), strict=False):
         score = result.get("score") if isinstance(result, dict) else None
-        draft["review_score"] = max(0, min(100, int(score))) if isinstance(score, (int, float)) else 0
+        valid = isinstance(score, (int, float)) and not isinstance(score, bool) and math.isfinite(score)
+        draft["review_score"] = max(0, min(100, int(score))) if valid else 0
         draft["review_notes"] = _text(result.get("notes"), 500) if isinstance(result, dict) else None
 
 
@@ -250,12 +252,16 @@ def render_and_store(conn, ai: AI, drafts: list[dict], media_dir: Path, now: dat
         except AIError:
             shutil.rmtree(folder, ignore_errors=True)
             continue
-        with conn:
-            storage.insert_draft(
-                conn,
-                {**draft, "draft_id": draft_id, "scheduled_for": slot},
-                now.astimezone(LONDON).date().isoformat(),
-                now.isoformat(timespec="seconds"),
-            )
+        try:
+            with conn:
+                storage.insert_draft(
+                    conn,
+                    {**draft, "draft_id": draft_id, "scheduled_for": slot},
+                    now.astimezone(LONDON).date().isoformat(),
+                    now.isoformat(timespec="seconds"),
+                )
+        except BaseException:
+            shutil.rmtree(folder, ignore_errors=True)
+            raise
         stored += 1
     return stored

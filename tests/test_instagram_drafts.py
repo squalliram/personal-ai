@@ -177,6 +177,31 @@ class DailyTickTests(unittest.TestCase):
         partial = {"CLOUDFLARE_API_TOKEN": "cf-secret", "OPENAI_API_KEY": "sk-x"}
         self.assertIsInstance(cli.model_client(partial), OpenAIClient)
 
+    def test_not_configured_runs_do_not_use_up_attempts(self):
+        with self.conn:
+            for _ in range(3):
+                storage.record_run(self.conn, "2026-11-12", MORNING.isoformat(), "not_configured")
+        self.assertEqual(storage.runs_on(self.conn, "2026-11-12"), 0)
+
+    def test_image_write_errors_are_recorded_as_failed_attempts(self):
+        with patch.object(drafts, "render_and_store", side_effect=PermissionError("/secret/path")):
+            self.assertEqual(self.tick(MORNING), "failed")
+        row = self.conn.execute("SELECT outcome, error FROM daily_runs").fetchone()
+        self.assertEqual(tuple(row), ("failed", "PermissionError"))
+
+    def test_failed_insert_removes_written_images(self):
+        ai = FakeAI([[raw_draft("a")]], [[90]])
+        found = drafts.generate(self.conn, ai, MORNING, count=1)
+        with patch.object(storage, "insert_draft", side_effect=RuntimeError("db")), self.assertRaises(RuntimeError):
+            drafts.render_and_store(self.conn, ai, found, self.root / "drafts", MORNING)
+        self.assertEqual(list((self.root / "drafts").iterdir()), [])
+
+    def test_non_finite_review_scores_count_as_zero(self):
+        found = drafts.generate(self.conn, FakeAI([[raw_draft(t) for t in "abc"]], [[90, 90, 90]]), MORNING)
+        ctx = drafts.context(self.conn, MORNING)
+        drafts.review(FakeAI([], [[float("nan"), float("inf"), True]]), ctx, found, rules="")
+        self.assertEqual([d["review_score"] for d in found], [0, 0, 0])
+
     def test_voice_profile_reaches_the_create_agent(self):
         (self.root / "voice.md").write_text("Warm, short sentences, Manchester slang.", encoding="utf-8")
         ai = FakeAI([[raw_draft("a"), raw_draft("b"), raw_draft("c")]], [[90, 80, 70]])

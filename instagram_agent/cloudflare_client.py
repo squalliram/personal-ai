@@ -75,7 +75,7 @@ class CloudflareAI:
             except HTTPError as exc:
                 if exc.code in NO_RETRY_STATUS or attempt == self.retries:
                     raise CloudflareError(f"Workers AI request failed (HTTP {exc.code})") from None
-            except (URLError, HTTPException, OSError, json.JSONDecodeError) as exc:
+            except (URLError, HTTPException, OSError, ValueError) as exc:
                 if attempt == self.retries:
                     raise CloudflareError(f"Workers AI request failed ({type(exc).__name__})") from None
             time.sleep(min(30, 5 * 2**attempt))

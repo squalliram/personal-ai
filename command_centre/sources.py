@@ -366,7 +366,7 @@ def instagram_drafts(settings: Settings, limit: int = 30) -> dict:
             # Every pending draft stays reviewable; only decided ones are capped.
             rows = conn.execute(
                 f"SELECT {DRAFT_COLUMNS} FROM drafts WHERE status='pending' OR draft_id IN "
-                "(SELECT draft_id FROM drafts WHERE status!='pending' ORDER BY created_at DESC LIMIT ?) "
+                "(SELECT draft_id FROM drafts WHERE status!='pending' ORDER BY decided_at DESC, draft_id LIMIT ?) "
                 "ORDER BY created_at DESC",
                 (limit,),
             )

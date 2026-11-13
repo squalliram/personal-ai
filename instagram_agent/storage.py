@@ -158,7 +158,9 @@ def record_run(
 
 
 def runs_on(conn: sqlite3.Connection, day: str) -> int:
-    return conn.execute("SELECT COUNT(*) FROM daily_runs WHERE run_on=? AND outcome!='skipped'", (day,)).fetchone()[0]
+    return conn.execute(
+        "SELECT COUNT(*) FROM daily_runs WHERE run_on=? AND outcome NOT IN ('skipped','not_configured')", (day,)
+    ).fetchone()[0]
 
 
 def decide_draft(conn: sqlite3.Connection, draft_id: str, decision: str, decided_at: str) -> bool:

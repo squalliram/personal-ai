@@ -78,13 +78,9 @@ class OpenAIClient:
                     return json.loads(response.read().decode("utf-8"))
             except HTTPError as exc:
                 code = _error_code(exc)
-                if (
-                    code == "insufficient_quota"
-                    or not (exc.code == 429 or 500 <= exc.code < 600)
-                    or attempt == self.retries
-                ):
+                if code in NO_RETRY_CODES or not (exc.code == 429 or 500 <= exc.code < 600) or attempt == self.retries:
                     raise OpenAIError(f"OpenAI request failed (HTTP {exc.code}{', ' + code if code else ''})") from None
-            except (URLError, HTTPException, OSError, json.JSONDecodeError) as exc:
+            except (URLError, HTTPException, OSError, ValueError) as exc:
                 if attempt == self.retries:
                     raise OpenAIError(f"OpenAI request failed ({type(exc).__name__})") from None
             time.sleep(min(30, 5 * 2**attempt))

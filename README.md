@@ -79,7 +79,7 @@ Collects my Instagram analytics and benchmarks the food and coffee accounts I fo
 | --- | --- |
 | `daily_briefing/` | Builds the daily briefing from a snapshot |
 | `octopus_energy/` | Octopus Energy sync, cost analysis, dashboard and MCP server ([README](octopus_energy/README.md)) |
-| `command_centre/` | Read-only Command Centre web app and API ([architecture](docs/command-centre/architecture.md)) |
+| `command_centre/` | Command Centre web app and API; its only write is recording Instagram Approve/Reject decisions locally ([architecture](docs/command-centre/architecture.md)) |
 | `agents/` | Instructions for the AI agents that run each workflow ([daily briefing](agents/daily-briefing.md), [energy analyst](agents/energy-analyst.md)) |
 | `instagram_agent/` | Instagram analytics, benchmarks, daily drafts and approved-post memory ([guide](docs/instagram-pipeline.md)) |
 | `scripts/` | Start, stop and dashboard-publish scripts |
@@ -90,7 +90,7 @@ Collects my Instagram analytics and benchmarks the food and coffee accounts I fo
 ## Privacy and safety
 
 - **No writes to outside services.** Calendar, Notion, Octopus and Instagram are only read. Adding any write capability would need my explicit approval.
-- **What goes to the model provider.** The daily Instagram drafts send Cloudflare Workers AI (or OpenAI) the voice profile, my approved examples and public benchmark captions and stats. Nothing else from this repo is sent.
+- **What goes to the model provider.** The daily Instagram drafts send Cloudflare Workers AI (or OpenAI) the voice profile, my approved examples, the topics of recent and rejected drafts, and public benchmark captions and stats. Nothing else from this repo is sent.
 - **Content is data, never instructions.** Text inside events and tasks is never followed as a command.
 - **Secrets stay local.** Credentials live in `.env`, which is ignored by Git. Run logs record only counts, timings and connector error messages. They never contain tokens, account numbers or meter identifiers, or the contents of events and tasks.
 - **Generated data isn't committed.** Reports, dashboards and databases are all ignored by Git.
