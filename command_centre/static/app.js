@@ -245,6 +245,8 @@
   }
 
   function closeAssistant(returnFocus = true) {
+    assistantGeneration += 1;
+    asking = false;
     stopQuestionListening();
     if ("speechSynthesis" in window) window.speechSynthesis.cancel();
     $("assistant").hidden = true;
@@ -262,6 +264,7 @@
   async function askJarvis(question) {
     question = question.trim();
     if (!question || asking) return;
+    stopQuestionListening();
     asking = true;
     const generation = assistantGeneration;
     $("assistant-input").value = "";

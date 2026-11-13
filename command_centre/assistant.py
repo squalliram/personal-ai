@@ -12,7 +12,8 @@ from datetime import datetime
 
 MAX_QUESTION = 500
 MAX_CONTEXT = 14_000
-MAX_ANSWER_TOKENS = 2_000
+# Reasoning models spend part of this budget before any visible text.
+MAX_ANSWER_TOKENS = 4_000
 
 SYSTEM_PROMPT = """You are Jarvis, the owner's personal dashboard assistant. Your answers are read aloud.
 Rules:

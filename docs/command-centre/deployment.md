@@ -122,7 +122,7 @@ Neither the passphrase nor its hash belongs in chat, command arguments or logs.
   a permission ceiling above RECOMMEND. Phase 1 has no execute routes.
 - Cookies are Secure, HttpOnly, SameSite=Strict, and use the `__Host-` prefix.
   Idle expiry is 30 minutes; absolute expiry is 12 hours. A "Remember this device" sign-in lasts 30 days from sign-in with no idle expiry.
-- **Ask Jarvis (optional).** Add the `COMMAND_CENTRE_OPENAI_API_KEY` Actions secret; the deploy passes it over SSH stdin and writes it to the private `command-centre.env` as `COMMAND_CENTRE_OPENAI_API_KEY`. Without it the assistant button stays hidden. `COMMAND_CENTRE_OPENAI_MODEL` overrides the default model. Set a monthly budget on the OpenAI project to cap spending.
+- **Ask Jarvis (optional).** Add the `COMMAND_CENTRE_OPENAI_API_KEY` Actions secret; the deploy passes it over SSH stdin and writes it to the private `command-centre.env` as `COMMAND_CENTRE_OPENAI_API_KEY`. Without it the assistant button stays hidden. `COMMAND_CENTRE_OPENAI_MODEL` overrides the default model for local runs only (the hosted `command-centre.env` is rewritten on each deploy). Set a monthly spend limit on the OpenAI project and turn on **Enforce a hard limit**; without it the limit only sends alerts, and enforcement can lag slightly.
 - Hosted sessions and rate counters share the private session database across
   Passenger workers. Login attempts reserve their rate-limit slot atomically
   before password verification.
