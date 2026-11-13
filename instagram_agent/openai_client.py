@@ -11,6 +11,7 @@ from urllib.request import Request, urlopen
 API_BASE = "https://api.openai.com/v1/"
 TEXT_MODEL = "gpt-5-mini"
 IMAGE_MODEL = "gpt-image-2.5-flare"
+NO_RETRY_CODES = {"insufficient_quota", "credit_balance_exhausted", "billing_hard_limit_reached"}
 IMAGE_SIZE = "1024x1280"  # 4:5, Instagram's tallest feed ratio; both sides divisible by 16.
 
 
