@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hmac
+import ipaddress
 import json
 import os
 import re
@@ -351,12 +352,23 @@ class CommandCentreApp:
             return None, _error(400, "invalid_request")
         return body, None
 
+    def _passkeys_usable(self, request: Request) -> bool:
+        """WebAuthn needs a domain RP ID, so passkeys are off on IP-literal hosts such as 127.0.0.1."""
+        if self.passkeys is None:
+            return False
+        _, rp_id = self._webauthn_party(request.environ)
+        try:
+            ipaddress.ip_address(rp_id.strip("[]"))
+        except ValueError:
+            return True
+        return False
+
     def passkey_status(self, request: Request) -> Result:
-        available = self.passkeys is not None
+        available = self._passkeys_usable(request)
         return 200, {"available": available, "registered": available and self.passkeys.count() > 0}, []
 
     def passkey_login_options(self, request: Request) -> Result:
-        if self.passkeys is None:
+        if not self._passkeys_usable(request):
             return _error(503, "passkeys_unavailable")
         if (
             self.login_per_client.blocked(request.client)
@@ -380,7 +392,7 @@ class CommandCentreApp:
         )
 
     def passkey_login(self, request: Request) -> Result:
-        if self.passkeys is None:
+        if not self._passkeys_usable(request):
             return _error(503, "passkeys_unavailable")
         fields = {"credential_id", "client_data_json", "authenticator_data", "signature"}
         body, error = self._passkey_body(request.environ, fields, {"remember"})
@@ -423,7 +435,7 @@ class CommandCentreApp:
         return None if instant is None else self._iso(instant)
 
     def passkey_list(self, request: Request) -> Result:
-        if self.passkeys is None:
+        if not self._passkeys_usable(request):
             return 200, {"available": False, "passkeys": []}, []
         items = [
             {
@@ -436,7 +448,7 @@ class CommandCentreApp:
         return 200, {"available": True, "passkeys": items, "limit": passkeys.MAX_PASSKEYS}, []
 
     def passkey_register_options(self, request: Request) -> Result:
-        if self.passkeys is None:
+        if not self._passkeys_usable(request):
             return _error(503, "passkeys_unavailable")
         body, error = self._passkey_body(request.environ, {"password"}, set())
         if error:
@@ -470,7 +482,7 @@ class CommandCentreApp:
         )
 
     def passkey_register(self, request: Request) -> Result:
-        if self.passkeys is None:
+        if not self._passkeys_usable(request):
             return _error(503, "passkeys_unavailable")
         body, error = self._passkey_body(
             request.environ, {"client_data_json", "attestation_object"}, {"label"}, limit=16 * 1024
@@ -500,7 +512,7 @@ class CommandCentreApp:
         return self.passkey_list(request)
 
     def passkey_remove(self, request: Request) -> Result:
-        if self.passkeys is None:
+        if not self._passkeys_usable(request):
             return _error(503, "passkeys_unavailable")
         body, error = self._passkey_body(request.environ, {"credential_id"}, set())
         if error:

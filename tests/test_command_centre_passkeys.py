@@ -7,11 +7,20 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from command_centre_fixtures import ORIGIN, PASSWORD, Client, Clock, make_app, make_settings
+from command_centre_fixtures import PASSWORD, Client, Clock, make_app, make_settings
 
 from command_centre import passkeys
+from command_centre.app import CommandCentreApp
 
-RP_ID = "127.0.0.1"
+HOST = "localhost:8770"
+ORIGIN = f"http://{HOST}"
+RP_ID = "localhost"
+
+
+class LocalClient(Client):
+    def request(self, method, path, **kwargs):
+        kwargs.setdefault("origin", ORIGIN)
+        return super().request(method, path, **kwargs)
 
 
 def b64(data: bytes) -> str:
@@ -109,8 +118,15 @@ class PasskeyApiTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.clock = Clock()
-        self.app = make_app(make_settings(self.root, passkeys_db=self.root / "passkeys.sqlite3"), clock=self.clock)
-        self.owner = Client(self.app)
+        settings = make_settings(self.root, passkeys_db=self.root / "passkeys.sqlite3")
+        self.app = CommandCentreApp(
+            settings,
+            allowed_hosts={HOST, "127.0.0.1:8770"},
+            clock=self.clock,
+            monotonic=self.clock,
+            cron_reader=lambda: ("absent", ""),
+        )
+        self.owner = LocalClient(self.app, host=HOST)
         self.assertEqual(self.owner.login().status, 200)
 
     def post(self, client, path, body, csrf=True):
@@ -127,17 +143,17 @@ class PasskeyApiTests(unittest.TestCase):
         return authenticator
 
     def sign_in(self, authenticator, client=None, **overrides):
-        client = client or Client(self.app)
+        client = client or LocalClient(self.app, host=HOST)
         challenge = client.request("POST", "/api/v1/passkeys/login/options", body={})
         self.assertEqual(challenge.status, 200, challenge.body)
         body = {**authenticator.assert_(challenge.json()["challenge"], **overrides.pop("assertion", {})), **overrides}
         return client, client.request("POST", "/api/v1/passkeys/login", body=body)
 
     def test_register_then_sign_in_with_a_passkey(self):
-        status = Client(self.app).request("GET", "/api/v1/passkeys/status").json()
+        status = LocalClient(self.app, host=HOST).request("GET", "/api/v1/passkeys/status").json()
         self.assertEqual(status, {"available": True, "registered": False})
         authenticator = self.register()
-        self.assertTrue(Client(self.app).request("GET", "/api/v1/passkeys/status").json()["registered"])
+        self.assertTrue(LocalClient(self.app, host=HOST).request("GET", "/api/v1/passkeys/status").json()["registered"])
         client, response = self.sign_in(authenticator, remember=True)
         self.assertEqual(response.status, 200, response.body)
         self.assertTrue(response.json()["remembered"])
@@ -170,16 +186,20 @@ class PasskeyApiTests(unittest.TestCase):
 
     def test_challenges_are_single_use_and_expire(self):
         authenticator = self.register()
-        client = Client(self.app)
+        client = LocalClient(self.app, host=HOST)
         challenge = client.request("POST", "/api/v1/passkeys/login/options", body={}).json()["challenge"]
         self.assertEqual(
             client.request("POST", "/api/v1/passkeys/login", body=authenticator.assert_(challenge)).status, 200
         )
-        replay = Client(self.app).request("POST", "/api/v1/passkeys/login", body=authenticator.assert_(challenge))
+        replay = LocalClient(self.app, host=HOST).request(
+            "POST", "/api/v1/passkeys/login", body=authenticator.assert_(challenge)
+        )
         self.assertEqual(replay.status, 401)
         challenge = client.request("POST", "/api/v1/passkeys/login/options", body={}).json()["challenge"]
         self.clock.now += passkeys.CHALLENGE_SECONDS + 1
-        late = Client(self.app).request("POST", "/api/v1/passkeys/login", body=authenticator.assert_(challenge))
+        late = LocalClient(self.app, host=HOST).request(
+            "POST", "/api/v1/passkeys/login", body=authenticator.assert_(challenge)
+        )
         self.assertEqual(late.status, 401)
 
     def test_a_counter_that_goes_backwards_is_rejected(self):
@@ -193,10 +213,12 @@ class PasskeyApiTests(unittest.TestCase):
         self.assertEqual(wrong.status, 401)
         no_csrf = self.post(self.owner, "/api/v1/passkeys/register/options", {"password": PASSWORD}, csrf=False)
         self.assertEqual(no_csrf.status, 403)
-        anonymous = Client(self.app).request("POST", "/api/v1/passkeys/register/options", body={"password": PASSWORD})
+        anonymous = LocalClient(self.app, host=HOST).request(
+            "POST", "/api/v1/passkeys/register/options", body={"password": PASSWORD}
+        )
         self.assertEqual(anonymous.status, 401)
         options = self.post(self.owner, "/api/v1/passkeys/register/options", {"password": PASSWORD})
-        other = Client(self.app)
+        other = LocalClient(self.app, host=HOST)
         other.login()
         stolen = self.post(other, "/api/v1/passkeys/register", Authenticator().register(options.json()["challenge"]))
         self.assertEqual(stolen.status, 400)
@@ -207,11 +229,13 @@ class PasskeyApiTests(unittest.TestCase):
         authenticator = self.register()
         statuses = [self.sign_in(authenticator, assertion={"tamper": True})[1].status for _ in range(5)]
         self.assertEqual(statuses, [401] * 5)
-        blocked = Client(self.app).request("POST", "/api/v1/passkeys/login/options", body={})
+        blocked = LocalClient(self.app, host=HOST).request("POST", "/api/v1/passkeys/login/options", body={})
         self.assertEqual(blocked.status, 429)
 
     def test_options_and_removal(self):
-        self.assertEqual(Client(self.app).request("POST", "/api/v1/passkeys/login/options", body={}).status, 404)
+        self.assertEqual(
+            LocalClient(self.app, host=HOST).request("POST", "/api/v1/passkeys/login/options", body={}).status, 404
+        )
         authenticator = self.register()
         options = self.post(self.owner, "/api/v1/passkeys/register/options", {"password": PASSWORD}).json()
         self.assertEqual(options["exclude_credentials"], [b64(authenticator.credential_id)])
@@ -220,7 +244,7 @@ class PasskeyApiTests(unittest.TestCase):
         self.assertEqual(self.sign_in_status(authenticator), 404)
 
     def sign_in_status(self, authenticator):
-        return Client(self.app).request("POST", "/api/v1/passkeys/login/options", body={}).status
+        return LocalClient(self.app, host=HOST).request("POST", "/api/v1/passkeys/login/options", body={}).status
 
     def test_sign_in_challenges_are_rate_limited_and_cannot_evict_a_registration(self):
         self.register()
@@ -230,7 +254,7 @@ class PasskeyApiTests(unittest.TestCase):
             store.issue_challenge("login")
         second = Authenticator().register(options["challenge"])
         self.assertEqual(self.post(self.owner, "/api/v1/passkeys/register", second).status, 200)
-        anonymous = Client(self.app)
+        anonymous = LocalClient(self.app, host=HOST)
         statuses = [anonymous.request("POST", "/api/v1/passkeys/login/options", body={}).status for _ in range(21)]
         self.assertEqual(statuses[:20], [200] * 20)
         self.assertEqual(statuses[20], 429)
@@ -240,6 +264,12 @@ class PasskeyApiTests(unittest.TestCase):
         for n in range(passkeys.MAX_PASSKEYS + 2):
             store.add(os.urandom(32), Authenticator().cose, 0, f"key {n}")
         self.assertEqual(store.count(), passkeys.MAX_PASSKEYS)
+
+    def test_passkeys_are_off_on_ip_literal_hosts(self):
+        self.register()
+        client = Client(self.app)
+        self.assertEqual(client.request("GET", "/api/v1/passkeys/status").json()["available"], False)
+        self.assertEqual(client.request("POST", "/api/v1/passkeys/login/options", body={}).status, 503)
 
     def test_passkeys_are_off_without_a_database(self):
         app = make_app(make_settings(self.root), clock=self.clock)
