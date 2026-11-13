@@ -176,7 +176,11 @@ def review(ai: AI, ctx: dict, drafts: list[dict], *, rules: str) -> None:
     reviews = reply.get("reviews") if isinstance(reply.get("reviews"), list) else []
     for draft, result in zip(drafts, reviews + [{}] * len(drafts), strict=False):
         score = result.get("score") if isinstance(result, dict) else None
-        valid = isinstance(score, (int, float)) and not isinstance(score, bool) and (isinstance(score, int) or math.isfinite(score))
+        valid = (
+            isinstance(score, (int, float))
+            and not isinstance(score, bool)
+            and (isinstance(score, int) or math.isfinite(score))
+        )
         draft["review_score"] = max(0, min(100, int(score))) if valid else 0
         draft["review_notes"] = _text(result.get("notes"), 500) if isinstance(result, dict) else None
 
