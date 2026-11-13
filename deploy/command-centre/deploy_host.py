@@ -6,7 +6,9 @@ used as a Git object store and read-only data source, never checked out here.
 
 from __future__ import annotations
 
+import base64
 import fcntl
+import hashlib
 import io
 import json
 import os
@@ -20,6 +22,7 @@ import sys
 import tarfile
 import tempfile
 import time
+import zipfile
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
@@ -39,9 +42,32 @@ def run(args, *, cwd=None, umask=0o077):
     return result.stdout
 
 
-def vendor(release: Path) -> bool:
-    """Install the hash-pinned passkey dependencies into <release>/vendor; passkeys stay off on failure."""
+def unpack_wheels(target: Path, wheels: dict, requirements: Path) -> None:
+    """Unpack wheels the runner downloaded, accepting only files whose SHA-256 is pinned in requirements."""
+    pinned = set(re.findall(r"--hash=sha256:([0-9a-f]{64})", requirements.read_text()))
+    target.mkdir()
+    root = target.resolve()
+    for name, encoded in wheels.items():
+        require(isinstance(name, str) and bool(re.fullmatch(r"[A-Za-z0-9_.+-]+\.whl", name)), "Invalid wheel name")
+        data = base64.b64decode(encoded, validate=True)
+        require(hashlib.sha256(data).hexdigest() in pinned, "Wheel is not hash-pinned")
+        with zipfile.ZipFile(io.BytesIO(data)) as wheel:
+            require(all((root / m.filename).resolve().is_relative_to(root) for m in wheel.infolist()), "Unsafe wheel")
+            wheel.extractall(root)
+
+
+def vendor(release: Path, wheels: dict | None = None) -> bool:
+    """Install the hash-pinned passkey dependencies into <release>/vendor; passkeys stay off on failure.
+
+    Wheels shipped by the deploy runner are preferred, because the host may have no pip or no PyPI access.
+    """
     target = release / "vendor"
+    if wheels:
+        try:
+            unpack_wheels(target, wheels, release / "deploy/command-centre/requirements.txt")
+            return True
+        except (OSError, ValueError, TypeError, zipfile.BadZipFile, ReleaseError):
+            shutil.rmtree(target, ignore_errors=True)
     try:
         result = subprocess.run(
             [
@@ -287,7 +313,15 @@ def verify(app: Path, sha: str, deployment_id: str, *, revoke_sessions=False):
         application.sessions.revoke(token)
 
 
-def install(checkout: Path, sha: str, password_hash: str, *, home: Path | None = None, openai_api_key: str = ""):
+def install(
+    checkout: Path,
+    sha: str,
+    password_hash: str,
+    *,
+    home: Path | None = None,
+    openai_api_key: str = "",
+    wheels: dict | None = None,
+):
     home = (home or Path.home()).resolve()
     checkout = checkout.resolve()
     require(bool(re.fullmatch(r"[a-f0-9]{40}", sha)), "Invalid release SHA")
@@ -338,7 +372,7 @@ def install(checkout: Path, sha: str, password_hash: str, *, home: Path | None =
                 archive = run(["git", "archive", "--format=tar", sha], cwd=checkout)
                 with tarfile.open(fileobj=io.BytesIO(archive)) as source:
                     source.extractall(staging, filter="data")
-                vendor(staging)
+                vendor(staging, wheels)
                 atomic_write(staging / ".complete", sha.encode())
                 os.replace(staging, release)
             finally:
@@ -438,9 +472,13 @@ def install(checkout: Path, sha: str, password_hash: str, *, home: Path | None =
 
 def main():
     try:
-        payload = json.loads(sys.stdin.read(16 * 1024))
+        payload = json.loads(sys.stdin.read(32 * 1024 * 1024))
         result = install(
-            Path(sys.argv[1]), sys.argv[2], payload["password_hash"], openai_api_key=payload.get("openai_api_key") or ""
+            Path(sys.argv[1]),
+            sys.argv[2],
+            payload["password_hash"],
+            openai_api_key=payload.get("openai_api_key") or "",
+            wheels=payload.get("wheels") or {},
         )
         print(json.dumps(result, sort_keys=True))
     except Exception as error:

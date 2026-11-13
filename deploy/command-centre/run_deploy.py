@@ -1,5 +1,6 @@
 """Runner-side SSH transport. Never put the password hash or API keys in argv or output."""
 
+import base64
 import json
 import os
 import re
@@ -7,6 +8,14 @@ import shlex
 import subprocess
 import sys
 from pathlib import Path
+
+
+def wheels(directory: str) -> dict[str, str]:
+    """Passkey wheels downloaded on the runner; the host checks each against the pinned hashes."""
+    path = Path(directory) if directory else None
+    if path is None or not path.is_dir():
+        return {}
+    return {wheel.name: base64.b64encode(wheel.read_bytes()).decode() for wheel in sorted(path.glob("*.whl"))}
 
 
 def main():
@@ -45,6 +54,7 @@ def main():
             {
                 "password_hash": env["COMMAND_CENTRE_PASSWORD_HASH"],
                 "openai_api_key": env.get("COMMAND_CENTRE_OPENAI_API_KEY", ""),
+                "wheels": wheels(env.get("COMMAND_CENTRE_WHEELS_DIR", "")),
             }
         ).encode(),
         timeout=600,

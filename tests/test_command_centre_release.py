@@ -470,3 +470,46 @@ class SmokeTests(unittest.TestCase):
             if stale_deployment:
                 sleep.assert_called_once_with(3)
             return result
+
+
+class VendorTests(unittest.TestCase):
+    def setUp(self):
+        import base64
+        import hashlib
+        import io
+        import zipfile
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.release = Path(self.tmp.name)
+        (self.release / "deploy/command-centre").mkdir(parents=True)
+
+        def wheel(files):
+            buffer = io.BytesIO()
+            with zipfile.ZipFile(buffer, "w") as archive:
+                for name, body in files.items():
+                    archive.writestr(name, body)
+            return buffer.getvalue()
+
+        self.good = wheel({"fakepkg/__init__.py": "VALUE = 1\n"})
+        self.evil = wheel({"../escape.py": "x"})
+        hashes = " ".join(f"--hash=sha256:{hashlib.sha256(w).hexdigest()}" for w in (self.good, self.evil))
+        (self.release / "deploy/command-centre/requirements.txt").write_text(f"fakepkg==1 {hashes}\n")
+        self.encode = lambda data: base64.b64encode(data).decode()
+        self.pip = self.enterContext(patch.object(HOST.subprocess, "run", side_effect=OSError("no pip")))
+
+    def test_pinned_wheels_are_unpacked_without_pip(self):
+        self.assertTrue(HOST.vendor(self.release, {"fakepkg-1-py3-none-any.whl": self.encode(self.good)}))
+        self.assertTrue((self.release / "vendor/fakepkg/__init__.py").is_file())
+        self.pip.assert_not_called()
+
+    def test_unpinned_or_unsafe_wheels_fall_back_and_leave_no_vendor_dir(self):
+        for wheels in (
+            {"other-1-py3-none-any.whl": self.encode(b"PK not pinned")},
+            {"evil-1-py3-none-any.whl": self.encode(self.evil)},
+            {"../x.whl": self.encode(self.good)},
+        ):
+            with self.subTest(wheels=list(wheels)):
+                self.assertFalse(HOST.vendor(self.release, wheels))
+                self.assertFalse((self.release / "vendor").exists())
+                self.assertFalse((self.release.parent / "escape.py").exists())
