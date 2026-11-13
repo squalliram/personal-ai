@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .security import Permission
@@ -49,6 +49,8 @@ class Settings:
     session_remember_seconds: int = 30 * 24 * 60 * 60
     instagram_db: Path | None = None
     instagram_media: Path | None = None
+    openai_api_key: str | None = field(default=None, repr=False)
+    openai_model: str | None = None
 
 
 def load_settings(root: Path = ROOT, environ: Mapping[str, str] | None = None) -> Settings:
@@ -82,4 +84,6 @@ def load_settings(root: Path = ROOT, environ: Mapping[str, str] | None = None) -
         inspect_crontab=values.get(PREFIX + "INSPECT_CRONTAB", "1").lower() not in ("0", "false", "no"),
         instagram_db=path("INSTAGRAM_DB", "data/instagram.sqlite3"),
         instagram_media=path("INSTAGRAM_MEDIA", "data/instagram/drafts"),
+        openai_api_key=(values.get(PREFIX + "OPENAI_API_KEY") or "").strip() or None,
+        openai_model=(values.get(PREFIX + "OPENAI_MODEL") or "").strip() or None,
     )

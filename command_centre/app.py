@@ -19,9 +19,10 @@ from pathlib import Path
 from urllib.parse import parse_qs
 from zoneinfo import ZoneInfo
 
+from instagram_agent import openai_client
 from instagram_agent import storage as instagram_storage
 
-from . import sources
+from . import assistant, sources
 from .audit import AuditLog
 from .automations import CronReader, list_automations, read_crontab
 from .config import Settings
@@ -126,10 +127,12 @@ class CommandCentreApp:
         self.login_per_client = RateLimiter(5, 15 * 60, clock=monotonic)
         self.login_global = RateLimiter(20, 15 * 60, clock=monotonic)
         self.api_limiter = RateLimiter(240, 60, clock=monotonic)
+        self.assistant_limiter = RateLimiter(30, 60 * 60, clock=monotonic)
         if settings.sessions_db:
             self.login_per_client = SqliteRateLimiter(settings.sessions_db, "login_client", 5, 900, clock=clock)
             self.login_global = SqliteRateLimiter(settings.sessions_db, "login_global", 20, 900, clock=clock)
             self.api_limiter = SqliteRateLimiter(settings.sessions_db, "api", 240, 60, clock=clock)
+            self.assistant_limiter = SqliteRateLimiter(settings.sessions_db, "assistant", 30, 3600, clock=clock)
         self.static = {
             path: ((STATIC_DIR / name).read_bytes(), content_type)
             for path, (name, content_type) in STATIC_FILES.items()
@@ -140,6 +143,8 @@ class CommandCentreApp:
             ("GET", "/api/v1/session"): Route(self.session_info, Permission.READ),
             ("DELETE", "/api/v1/session"): Route(self.logout, Permission.READ, csrf=True),
             ("GET", "/api/v1/overview"): Route(self.overview, Permission.READ),
+            ("GET", "/api/v1/assistant"): Route(self.assistant_status, Permission.READ),
+            ("POST", "/api/v1/assistant"): Route(self.ask_assistant, Permission.READ, csrf=True),
             ("GET", "/api/v1/modules"): Route(self.modules, Permission.READ),
             ("GET", "/api/v1/agents"): Route(self.agents, Permission.READ),
             ("GET", "/api/v1/integrations"): Route(self.integrations, Permission.READ),
@@ -180,7 +185,8 @@ class CommandCentreApp:
             ("Cache-Control", "no-store"),
             ("Cross-Origin-Opener-Policy", "same-origin"),
             ("Cross-Origin-Resource-Policy", "same-origin"),
-            ("Permissions-Policy", "camera=(), microphone=(), geolocation=()"),
+            # The microphone is for the browser's own speech recognition; no audio reaches this server.
+            ("Permissions-Policy", "camera=(), microphone=(self), geolocation=()"),
         ]
         if self.secure:
             headers.append(("Strict-Transport-Security", "max-age=31536000"))
@@ -393,6 +399,47 @@ class CommandCentreApp:
             },
             [],
         )
+
+    def assistant_status(self, request: Request) -> Result:
+        return 200, {"available": bool(self.settings.openai_api_key)}, []
+
+    def ask_assistant(self, request: Request) -> Result:
+        if not self.settings.openai_api_key:
+            return _error(503, "assistant_not_configured")
+        body, error = _json_body(request.environ)
+        if error:
+            return error
+        question = body.get("question") if isinstance(body, dict) else None
+        if not isinstance(question, str) or set(body) != {"question"}:
+            return _error(400, "invalid_request")
+        question = " ".join(question.split())
+        if not 0 < len(question) <= assistant.MAX_QUESTION:
+            return _error(400, "invalid_request")
+        if not self.assistant_limiter.hit("all"):
+            self.audit.record("assistant", "rate_limited", actor="owner", client=request.client)
+            return _error(429, "rate_limited", [("Retry-After", "600")])
+        data = self._collect()
+        context = assistant.build_context(
+            now=data["now"], data=data, instagram=sources.instagram_drafts(self.settings), agents=sources.agents()
+        )
+        client = openai_client.OpenAIClient(
+            self.settings.openai_api_key,
+            text_model=self.settings.openai_model or openai_client.TEXT_MODEL,
+            timeout=45,
+            retries=0,
+        )
+        try:
+            answer = client.chat_text(
+                assistant.SYSTEM_PROMPT,
+                assistant.user_message(question, context),
+                max_tokens=assistant.MAX_ANSWER_TOKENS,
+            )
+        except openai_client.AIError:
+            self.audit.record("assistant", "failure", actor="owner", client=request.client)
+            return _error(502, "assistant_unavailable")
+        # The question and answer are owner content, so only the outcome is audited.
+        self.audit.record("assistant", "success", actor="owner", client=request.client)
+        return 200, {"answer": answer[:2000], "model": client.text_model, "generated_at": self._iso(self.clock())}, []
 
     def modules(self, request: Request) -> Result:
         data = self._collect()

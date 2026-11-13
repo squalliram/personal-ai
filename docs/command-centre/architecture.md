@@ -60,6 +60,7 @@ Devin's assessment argued against a live web app and for extending the static `d
 | --- | --- |
 | Authentication | Single owner passphrase, PBKDF2-SHA256 600,000 iterations, stored as `COMMAND_CENTRE_PASSWORD_HASH`. Missing hash means the server refuses to start. |
 | Sessions | 256-bit random token; only its SHA-256 is stored, in memory locally or in `data/sessions.sqlite3` when hosted. `HttpOnly; SameSite=Strict; Path=/`, plus `Secure` and the `__Host-` prefix under TLS. 30-minute idle and 12-hour absolute expiry, or a fixed 30 days from sign-in when "Remember this device" is ticked. |
+| Ask Jarvis | `POST /api/v1/assistant` (READ + CSRF, 30 questions an hour) sends the question and a compact, capped JSON snapshot of the dashboard (`command_centre/assistant.py`) to OpenAI Chat Completions with `COMMAND_CENTRE_OPENAI_API_KEY`, which never reaches the browser. The system prompt treats the snapshot as untrusted data and the assistant as read-only; it has no tools. `<` in the data is JSON-escaped so content cannot close the data block. Only the outcome is audited, never the question or answer. Speech in and out uses the browser's own speech APIs. |
 | CSRF | Every non-GET needs an exact `Origin` match and no cross-site `Sec-Fetch-Site`. Session routes also need `X-CSRF-Token`. Login needs `application/json`. |
 | DNS rebinding | `Host` must be in an allow-list (`127.0.0.1:PORT`, `localhost:PORT`). Otherwise 421. |
 | HTTPS | Loopback by default. Any other bind address requires `--tls-cert` and `--tls-key`, and HSTS is sent. |

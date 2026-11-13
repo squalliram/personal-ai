@@ -103,6 +103,23 @@ class OpenAIClient:
             raise OpenAIError("OpenAI returned no JSON reply")
         return parsed
 
+    def chat_text(self, system: str, user: str, *, max_tokens: int = 2000) -> str:
+        reply = self._post(
+            "chat/completions",
+            {
+                "model": self.text_model,
+                "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+                "max_completion_tokens": max_tokens,
+            },
+        )
+        try:
+            content = reply["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError):
+            content = None
+        if not isinstance(content, str) or not content.strip():
+            raise OpenAIError("OpenAI returned no reply")
+        return content.strip()
+
     def image(self, prompt: str) -> bytes:
         reply = self._post(
             "images/generations",

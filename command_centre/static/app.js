@@ -74,6 +74,9 @@
 
   function showLogin(message) {
     session = null; csrf = null;
+    closeAssistant(false);
+    $("assistant-toggle").hidden = true;
+    $("assistant-log").replaceChildren();
     $("app-view").hidden = true;
     $("login-view").hidden = false;
     $("login-status").textContent = message || "";
@@ -87,6 +90,7 @@
     $("app-view").hidden = false;
     $("permission-badge").textContent = `Permission: ${info.permission.toUpperCase()}`;
     render();
+    setupAssistant();
   }
 
   const VAULT_LIMIT_MS = 1500;
@@ -205,6 +209,118 @@
     } finally {
       button.disabled = false;
       settled();
+    }
+  }
+
+  // Ask Jarvis ------------------------------------------------------------------------------
+  const QuestionRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const ASSISTANT_ERRORS = {
+    assistant_not_configured: "Ask Jarvis needs an OpenAI key on the server.",
+    assistant_unavailable: "Jarvis could not reach OpenAI. Try again in a moment.",
+    rate_limited: "That's the hourly question limit. Try again later.",
+    network_error: "The server could not be reached.",
+  };
+  let questionListener = null;
+  let asking = false;
+
+  async function setupAssistant() {
+    const result = await api("api/v1/assistant");
+    const available = Boolean(result.ok && result.data.available && session);
+    $("assistant-toggle").hidden = !available;
+    $("assistant-mic").hidden = !QuestionRecognition;
+  }
+
+  function orb(state, message) {
+    $("assistant-orb").className = `orb ${state}`;
+    if (message !== undefined) $("assistant-state").textContent = message;
+  }
+
+  function openAssistant() {
+    $("assistant").hidden = false;
+    $("assistant-toggle").setAttribute("aria-expanded", "true");
+    $("assistant-input").focus();
+  }
+
+  function closeAssistant(returnFocus = true) {
+    stopQuestionListening();
+    if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+    $("assistant").hidden = true;
+    $("assistant-toggle").setAttribute("aria-expanded", "false");
+    if (returnFocus) $("assistant-toggle").focus();
+  }
+
+  function addTurn(kind, text) {
+    const item = el("li", { class: `turn-${kind}` },
+      el("span", { class: "from" }, kind === "you" ? "You" : "Jarvis"), text);
+    $("assistant-log").append(item);
+    item.scrollIntoView({ block: "nearest" });
+  }
+
+  async function askJarvis(question) {
+    question = question.trim();
+    if (!question || asking) return;
+    asking = true;
+    $("assistant-input").value = "";
+    addTurn("you", question);
+    orb("thinking", "Searching your Jarvis data…");
+    const result = await api("api/v1/assistant", { method: "POST", body: { question } });
+    asking = false;
+    if (result.status === 401) { showLogin("Your session has ended. Sign in again."); return; }
+    if (!result.ok) {
+      const message = ASSISTANT_ERRORS[result.data && result.data.error] || "Jarvis could not answer that.";
+      addTurn("error", message);
+      orb("error", message);
+      return;
+    }
+    addTurn("jarvis", result.data.answer);
+    orb("speaking", "Answering…");
+    speak(result.data.answer);
+    setTimeout(() => { if (!asking && !questionListener) orb("idle", "Ask another question, or close."); },
+      Math.min(20000, 1500 + result.data.answer.length * 55));
+  }
+
+  function stopQuestionListening() {
+    if (questionListener) {
+      const active = questionListener;
+      questionListener = null;
+      active.abort();
+    }
+    $("assistant-mic").setAttribute("aria-pressed", "false");
+    $("assistant-mic").classList.remove("listening");
+  }
+
+  function listenForQuestion() {
+    if (questionListener) { stopQuestionListening(); orb("idle", "Stopped listening."); return; }
+    if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+    const listener = new QuestionRecognition();
+    listener.lang = "en-GB";
+    listener.interimResults = true;
+    let finalText = "";
+    listener.onresult = (event) => {
+      if (questionListener !== listener) return;
+      const text = Array.from(event.results).map((r) => r[0].transcript).join(" ");
+      $("assistant-input").value = text;
+      if (event.results[event.results.length - 1].isFinal) finalText = text;
+    };
+    listener.onerror = (event) => {
+      if (questionListener !== listener) return;
+      stopQuestionListening();
+      orb("error", ["not-allowed", "service-not-allowed"].includes(event.error)
+        ? "Microphone access is blocked for this site." : "Jarvis could not hear you. Try again or type.");
+    };
+    listener.onend = () => {
+      if (questionListener !== listener) return;
+      stopQuestionListening();
+      if (finalText.trim()) askJarvis(finalText);
+      else orb("idle", "Jarvis did not catch that. Try again or type.");
+    };
+    questionListener = listener;
+    $("assistant-mic").setAttribute("aria-pressed", "true");
+    $("assistant-mic").classList.add("listening");
+    orb("listening", "Listening…");
+    try { listener.start(); } catch {
+      stopQuestionListening();
+      orb("error", "Voice input is unavailable in this browser. Type your question.");
     }
   }
 
@@ -578,6 +694,11 @@
       el("li", {}, el("a", { href: `#${id}`, "data-section": id }, label))));
     $("login-form").addEventListener("submit", login);
     $("logout").addEventListener("click", logout);
+    $("assistant-toggle").addEventListener("click", () => ($("assistant").hidden ? openAssistant() : closeAssistant()));
+    $("assistant-close").addEventListener("click", () => closeAssistant());
+    $("assistant-mic").addEventListener("click", listenForQuestion);
+    $("assistant-form").addEventListener("submit", (event) => { event.preventDefault(); askJarvis($("assistant-input").value); });
+    $("assistant").addEventListener("keydown", (event) => { if (event.key === "Escape") closeAssistant(); });
     $("menu-toggle").addEventListener("click", () => {
       const open = $("nav").classList.toggle("open");
       $("menu-toggle").setAttribute("aria-expanded", String(open));

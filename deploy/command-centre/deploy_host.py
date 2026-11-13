@@ -242,12 +242,13 @@ def verify(app: Path, sha: str, deployment_id: str, *, revoke_sessions=False):
             "authenticated_read_smoke": True,
             "owner_passphrase_sign_in_tested": False,
             "existing_sessions_revoked": revoke_sessions,
+            "assistant_configured": bool(application.settings.openai_api_key),
         }
     finally:
         application.sessions.revoke(token)
 
 
-def install(checkout: Path, sha: str, password_hash: str, *, home: Path | None = None):
+def install(checkout: Path, sha: str, password_hash: str, *, home: Path | None = None, openai_api_key: str = ""):
     home = (home or Path.home()).resolve()
     checkout = checkout.resolve()
     require(bool(re.fullmatch(r"[a-f0-9]{40}", sha)), "Invalid release SHA")
@@ -256,6 +257,11 @@ def install(checkout: Path, sha: str, password_hash: str, *, home: Path | None =
         "Invalid password hash format",
     )
     require(600_000 <= int(password_hash.split("$")[1]) <= 10_000_000, "Unsafe password hash iterations")
+    openai_api_key = openai_api_key.strip()
+    require(
+        not openai_api_key or bool(re.fullmatch(r"[A-Za-z0-9_-]{20,400}", openai_api_key)),
+        "Invalid OpenAI API key format",
+    )
     app = checkout.parent / "command-centre-app"
     require(app.is_relative_to(home) and "public_html" not in app.relative_to(home).parts, "App root is not private")
     require((checkout / ".git").is_dir(), "Server Git checkout is unavailable")
@@ -317,6 +323,8 @@ def install(checkout: Path, sha: str, password_hash: str, *, home: Path | None =
             "PERMISSION": "recommend",
             "INSPECT_CRONTAB": "1",
         }
+        if openai_api_key:
+            values["OPENAI_API_KEY"] = openai_api_key
         require(
             all("\n" not in value and "\r" not in value for value in values.values()), "Invalid configuration value"
         )
@@ -390,7 +398,9 @@ def install(checkout: Path, sha: str, password_hash: str, *, home: Path | None =
 def main():
     try:
         payload = json.loads(sys.stdin.read(16 * 1024))
-        result = install(Path(sys.argv[1]), sys.argv[2], payload["password_hash"])
+        result = install(
+            Path(sys.argv[1]), sys.argv[2], payload["password_hash"], openai_api_key=payload.get("openai_api_key") or ""
+        )
         print(json.dumps(result, sort_keys=True))
     except Exception as error:
         # Even exception strings from external tools may include protected values.

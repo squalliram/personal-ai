@@ -1,4 +1,4 @@
-"""Runner-side SSH transport. Never put the password hash in argv or output."""
+"""Runner-side SSH transport. Never put the password hash or API keys in argv or output."""
 
 import json
 import os
@@ -41,7 +41,12 @@ def main():
             f"{user}@{host}",
             command,
         ],
-        input=json.dumps({"password_hash": env["COMMAND_CENTRE_PASSWORD_HASH"]}).encode(),
+        input=json.dumps(
+            {
+                "password_hash": env["COMMAND_CENTRE_PASSWORD_HASH"],
+                "openai_api_key": env.get("COMMAND_CENTRE_OPENAI_API_KEY", ""),
+            }
+        ).encode(),
         timeout=600,
     )
     return result.returncode
