@@ -322,7 +322,8 @@ class AgentTests(SourceTestCase):
         self.assertEqual([a["id"] for a in agents], ["daily-briefing", "energy-analyst", "instagram"])
         for agent in agents:
             self.assertEqual(
-                set(agent), {"id", "name", "status", "summary", "definition", "runs_in", "guardrail", "commands"}
+                set(agent),
+                {"id", "name", "status", "summary", "definition", "runs_in", "guardrail", "commands", "activity"},
             )
             self.assertTrue((ROOT / agent["definition"]).is_file(), agent["definition"])
         self.assertEqual(

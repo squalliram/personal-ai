@@ -90,8 +90,38 @@ def _energy_refresh(settings: Settings, now: datetime, cron: tuple[str, str], en
     }
 
 
+def _instagram_daily(health: dict | None, instagram: dict | None) -> dict:
+    runs = instagram["runs"] if instagram else []
+    return {
+        "id": "instagram-daily",
+        "name": "Instagram daily drafts",
+        "purpose": "Draft food, coffee and restaurant carousels for your approval on the Instagram page.",
+        "trigger": "Server cron every 15 minutes (scripts/install-instagram-daily.sh).",
+        "installed_by": "Deploy protected energy dashboard workflow (Configure Instagram daily drafts)",
+        "integrations": ["instagram"],
+        "status": health["status"] if health else "not_configured",
+        "summary": health["summary"] if health else "Instagram drafting is not configured.",
+        "alerts": [],
+        "last_execution": instagram.get("latest_attempt") if instagram else None,
+        "next_execution": None,
+        "next_execution_note": "Each tick tops the day up to 3 drafts until 12:00; other ticks skip.",
+        "local_cron": None,
+        "stop_control": None,
+        "execution_history": [
+            {"started_at": run["started_at"], "status": run["outcome"], "error_category": None} for run in runs
+        ],
+        "controls": CONTROLS,
+    }
+
+
 def list_automations(
-    settings: Settings, now: datetime, cron_reader: CronReader, energy: dict, briefing: dict, health: dict
+    settings: Settings,
+    now: datetime,
+    cron_reader: CronReader,
+    energy: dict,
+    briefing: dict,
+    health: dict,
+    instagram: dict | None = None,
 ) -> list[dict]:
     cron = cron_reader() if settings.inspect_crontab else ("not_inspected", "")
     briefing_status = health["daily_briefing"]
@@ -119,6 +149,7 @@ def list_automations(
             "execution_history": briefing["runs"],
             "controls": CONTROLS,
         },
+        _instagram_daily(health.get("instagram"), instagram),
         {
             "id": "energy-mcp",
             "name": "Energy MCP tools",
