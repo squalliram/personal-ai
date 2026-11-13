@@ -205,7 +205,7 @@ def publish_slots(conn, now: datetime, count: int) -> list[str]:
     """The best London hours from analytics, from noon today (or now if later) onwards."""
     local = now.astimezone(LONDON)
     earliest = max(local, datetime.combine(local.date(), READY_BY, LONDON))
-    hours = analysis.best_hours(conn, top=max(count, 3)) or list(FALLBACK_HOURS)
+    hours = analysis.best_hours(conn, top=max(count, 3), now=now) or list(FALLBACK_HOURS)
     slots = []
     for hour in hours:
         slot = datetime.combine(earliest.date(), time(hour), LONDON)
