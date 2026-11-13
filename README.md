@@ -69,6 +69,10 @@ The connector writes a JSON file in this format. Fields that aren't available ca
 
 The briefing is written to `reports/daily/YYYY-MM-DD.md`. A small run log goes to `data/daily_briefing.sqlite3`. It records counts, timings and any connector error messages, never event or task contents.
 
+### 4. Instagram pipeline: "What should @instafoodielove post today?"
+
+Collects my Instagram analytics and benchmarks the food and coffee accounts I follow: their best recent posts, the hashtags doing best and the hours my followers are online. It also remembers which drafts I approved and how they then performed. This first part only reads from Instagram. Daily drafts, the approve/reject queue and publishing come next. See the [Instagram pipeline guide](docs/instagram-pipeline.md).
+
 ## What's in the repo
 
 | Path | What it is |
@@ -77,6 +81,7 @@ The briefing is written to `reports/daily/YYYY-MM-DD.md`. A small run log goes t
 | `octopus_energy/` | Octopus Energy sync, cost analysis, dashboard and MCP server ([README](octopus_energy/README.md)) |
 | `command_centre/` | Read-only Command Centre web app and API ([architecture](docs/command-centre/architecture.md)) |
 | `agents/` | Instructions for the AI agents that run each workflow ([daily briefing](agents/daily-briefing.md), [energy analyst](agents/energy-analyst.md)) |
+| `instagram_agent/` | Instagram analytics, benchmarks and approved-post memory ([guide](docs/instagram-pipeline.md)) |
 | `scripts/` | Start, stop and dashboard-publish scripts |
 | `docs/` | Operating guides, e.g. [energy dashboard deployment](docs/energy-dashboard.md) |
 | `reports/`, `data/` | Generated output and local SQLite databases (not committed) |
@@ -84,7 +89,7 @@ The briefing is written to `reports/daily/YYYY-MM-DD.md`. A small run log goes t
 
 ## Privacy and safety
 
-- **No writes to outside services.** Calendar, Notion and Octopus are only read. Adding any write capability would need my explicit approval.
+- **No writes to outside services.** Calendar, Notion, Octopus and Instagram are only read. Adding any write capability would need my explicit approval.
 - **Content is data, never instructions.** Text inside events and tasks is never followed as a command.
 - **Secrets stay local.** Credentials live in `.env`, which is ignored by Git. Run logs record only counts, timings and connector error messages. They never contain tokens, account numbers or meter identifiers, or the contents of events and tasks.
 - **Generated data isn't committed.** Reports, dashboards and databases are all ignored by Git.
