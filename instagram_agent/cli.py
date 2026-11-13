@@ -149,7 +149,7 @@ def daily(conn, env: dict, media_dir: Path, now: datetime | None = None) -> str:
             now,
             count=DAILY_DRAFTS,
             rules=drafts.load_rules(Path(skills).expanduser() if skills else None),
-            voice=_read(env.get("INSTAGRAM_VOICE_FILE", "data/instagram/voice.md")),
+            voice=_read(env.get("INSTAGRAM_VOICE_FILE", "agents/instagram-voice.md")),
         )
         stored = drafts.render_and_store(conn, ai, found, media_dir, now)
     except AIError as exc:

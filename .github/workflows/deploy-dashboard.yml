@@ -89,3 +89,27 @@ jobs:
             ./scripts/install-energy-refresh.sh && \
             ENERGY_REFRESH_EXPECTED_SHA='$DEPLOY_SHA' \
             ./scripts/refresh-energy.sh --force --inherited-lock-fd 9"
+      - name: Configure Instagram daily drafts
+        env:
+          CPANEL_SSH_HOST: ${{ secrets.CPANEL_SSH_HOST }}
+          CPANEL_SSH_USERNAME: ${{ secrets.CPANEL_SSH_USERNAME }}
+          CPANEL_SSH_PORT: ${{ secrets.CPANEL_SSH_PORT }}
+          CPANEL_APP_PATH: ${{ secrets.CPANEL_APP_PATH }}
+          DEPLOY_SHA: ${{ github.event.workflow_run.head_sha }}
+          # Optional: unset secrets leave the server's existing values alone.
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          [[ "$CPANEL_APP_PATH" =~ ^/[a-zA-Z0-9_./-]+$ ]] || exit 1
+          [[ "$DEPLOY_SHA" =~ ^[a-f0-9]{40}$ ]] || exit 1
+          [[ "${CPANEL_SSH_PORT:-22}" =~ ^[0-9]+$ ]] || exit 1
+          # Keys travel on stdin, never in the remote command line.
+          printf 'CLOUDFLARE_ACCOUNT_ID=%s\nCLOUDFLARE_API_TOKEN=%s\n' "$CLOUDFLARE_ACCOUNT_ID" "$CLOUDFLARE_API_TOKEN" | \
+          ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes -o StrictHostKeyChecking=yes -p "${CPANEL_SSH_PORT:-22}" \
+            "$CPANEL_SSH_USERNAME@$CPANEL_SSH_HOST" \
+            "cd '$CPANEL_APP_PATH' && command -v flock >/dev/null && test -d .git && \
+            exec 9>.git/energy-dashboard.deploy.lock && flock -x 9 && \
+            if [ \"\$(git rev-parse HEAD)\" != '$DEPLOY_SHA' ]; then \
+            echo 'Checkout is not the tested commit; skipping Instagram setup.'; exit 0; fi && \
+            . ./scripts/find-python.sh && \"\$PYTHON\" -m instagram_agent.env_install --env-file .env && \
+            ./scripts/install-instagram-daily.sh"
