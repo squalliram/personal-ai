@@ -23,7 +23,14 @@ from command_centre_fixtures import (
 from command_centre import sources
 from command_centre.automations import marked_entries
 
-ALL_GETS = ("/api/v1/overview", "/api/v1/integrations", "/api/v1/automations", "/api/v1/energy", "/api/v1/modules")
+ALL_GETS = (
+    "/api/v1/overview",
+    "/api/v1/integrations",
+    "/api/v1/automations",
+    "/api/v1/energy",
+    "/api/v1/modules",
+    "/api/v1/agents",
+)
 FORBIDDEN = (
     "storage import connect",
     "storage.connect",
@@ -307,6 +314,34 @@ class ModuleTests(SourceTestCase):
         states = {m["id"]: m["state"] for m in modules}
         for missing in ("career", "finance", "family", "health"):
             self.assertEqual(states[missing], "not_implemented")
+
+
+class AgentTests(SourceTestCase):
+    def test_registry_lists_every_agent_definition(self):
+        agents = self.get(self.client(), "/api/v1/agents")["agents"]
+        self.assertEqual([a["id"] for a in agents], ["daily-briefing", "energy-analyst", "instagram"])
+        for agent in agents:
+            self.assertEqual(
+                set(agent), {"id", "name", "status", "summary", "definition", "runs_in", "guardrail", "commands"}
+            )
+            self.assertTrue((ROOT / agent["definition"]).is_file(), agent["definition"])
+        self.assertEqual(
+            sorted(path.name for path in (ROOT / "agents").glob("*.md") if not path.name.endswith("-voice.md")),
+            sorted(Path(a["definition"]).name for a in agents),
+        )
+
+    def test_instagram_agent_offers_the_ig_skill_commands_and_drafts_only(self):
+        instagram = self.by_id(self.get(self.client(), "/api/v1/agents")["agents"])["instagram"]
+        self.assertEqual(instagram["name"], "Instagram")
+        self.assertEqual(instagram["status"], "available")
+        self.assertIn("nothing is posted automatically", instagram["summary"])
+        commands = [c["command"] for c in instagram["commands"]]
+        self.assertEqual(len(commands), 13)
+        self.assertEqual(len(set(commands)), 13)
+        self.assertTrue(all(c.startswith("/ig-") for c in commands))
+        definition = (ROOT / instagram["definition"]).read_text(encoding="utf-8")
+        for command in commands:
+            self.assertIn(f"`{command}`", definition)
 
 
 if __name__ == "__main__":

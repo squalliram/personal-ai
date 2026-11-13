@@ -79,6 +79,7 @@ Devin's assessment argued against a live web app and for extending the static `d
 | `DELETE /api/v1/session` | READ + CSRF | Sign out |
 | `GET /api/v1/overview` | READ | Attention items (facts), counts, briefing, energy, automations, missing integrations |
 | `GET /api/v1/modules` | READ | 13 navigation sections with honest states |
+| `GET /api/v1/agents` | READ | Agent registry (daily briefing, energy analyst, Instagram): status, definition file, where it runs, guardrail and commands. Nothing is started from here |
 | `GET /api/v1/integrations` | READ | Source health with evidence |
 | `GET /api/v1/automations` | READ | Registry, last execution, history, cron marker count, stop-control truth |
 | `GET /api/v1/energy` | READ | Totals, 14-day daily, monthly estimates, tariffs, anomalies, sync history, labelled `measured` / `estimated` / `inferred` |

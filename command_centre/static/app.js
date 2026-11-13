@@ -453,6 +453,18 @@
       table([["Source", (r) => r.id.replace(/_/g, " ")], ["Status", (r) => status(r.status)]], module.sources, "No data sources.")));
   }
 
+  async function agentsView(view) {
+    await placeholder(view, "agents");
+    const data = await load("api/v1/agents");
+    if (!data) return;
+    for (const agent of data.agents) {
+      view.append(card(agent.name, el("p", {}, status(agent.status), " ", agent.summary),
+        keyValues([["Runs in", agent.runs_in], ["Definition", agent.definition], ["Guardrail", agent.guardrail]]),
+        agent.commands.length ? [el("h3", {}, "Commands"),
+          table([["Command", (r) => el("code", {}, r.command)], ["What it does", (r) => r.purpose]], agent.commands)] : null));
+    }
+  }
+
   const DRAFT_STATUS = {
     pending: "Awaiting review", approved: "Approved", rejected: "Rejected", published: "Published", failed: "Failed",
   };
@@ -522,9 +534,8 @@
   }
 
   async function instagram(view) {
-    const mine = renders;
     const data = await load("api/v1/instagram/drafts");
-    if (!data || mine !== renders) return;
+    if (!data) return;
     const canDecide = Boolean(session) && ["recommend", "execute"].includes(session.permission);
     const last = data.runs[0];
     view.append(card("Daily drafts",
@@ -535,13 +546,12 @@
     for (const draft of data.drafts) view.append(draftCard(draft, canDecide));
   }
 
-  const VIEWS = { overview, energy, integrations, automations: automationsView, settings, instagram };
 
-  let renders = 0;
+  const VIEWS = { overview, energy, agents: agentsView, integrations, automations: automationsView, settings, instagram };
 
+  let renderCount = 0;
   async function render() {
     if (!session) return;
-    const mine = ++renders;
     const id = (location.hash || "#overview").slice(1);
     const section = SECTIONS.find(([key]) => key === id) || SECTIONS[0];
     for (const link of document.querySelectorAll("#nav-list a")) {
@@ -550,10 +560,12 @@
     }
     $("view-title").textContent = section[1];
     $("view-status").textContent = "Loading…";
-    const view = $("view");
-    view.replaceChildren();
+    const current = ++renderCount;
+    $("view").replaceChildren();
+    const view = document.createDocumentFragment();
     await (VIEWS[section[0]] ? VIEWS[section[0]](view) : placeholder(view, section[0]));
-    if (mine !== renders) return;
+    if (current !== renderCount) return;
+    $("view").replaceChildren(view);
     if ($("view-status").textContent === "Loading…") $("view-status").textContent = "";
     if (section[0] !== "overview" && $("view-title").textContent !== section[1]) $("view-title").textContent = section[1];
     $("nav").classList.remove("open");

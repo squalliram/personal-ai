@@ -34,6 +34,10 @@ A local, read-only web app that brings the briefing history, energy insights, in
 
 See the [Command Centre architecture](docs/command-centre/architecture.md) and [operations guide](docs/command-centre/operations.md).
 
+### 4. Instagram agent: "Draft this week's posts in my voice"
+
+An agent that writes Instagram content: reel scripts with scored hooks, captions, carousels, stories, DM replies, weekly plans and post audits. It is the 13 `/ig-*` skills from [instagram-agent-skill](https://github.com/squalliram/instagram-agent-skill), run through Jarvis or Claude Code. **It drafts only. Nothing is posted automatically.** Fill in `~/.claude/instagram/voice.md` first. See [agents/instagram.md](agents/instagram.md).
+
 ## Quick start
 
 Requires Python 3.10 or newer and has no third-party runtime dependencies.
@@ -80,7 +84,7 @@ Collects my Instagram analytics and benchmarks the food and coffee accounts I fo
 | `daily_briefing/` | Builds the daily briefing from a snapshot |
 | `octopus_energy/` | Octopus Energy sync, cost analysis, dashboard and MCP server ([README](octopus_energy/README.md)) |
 | `command_centre/` | Command Centre web app and API; its only write is recording Instagram Approve/Reject decisions locally ([architecture](docs/command-centre/architecture.md)) |
-| `agents/` | Instructions for the AI agents that run each workflow ([daily briefing](agents/daily-briefing.md), [energy analyst](agents/energy-analyst.md)) |
+| `agents/` | Instructions for the AI agents that run each workflow ([daily briefing](agents/daily-briefing.md), [energy analyst](agents/energy-analyst.md), [Instagram](agents/instagram.md)). The Command Centre's AI Agents section lists them |
 | `instagram_agent/` | Instagram analytics, benchmarks, daily drafts and approved-post memory ([guide](docs/instagram-pipeline.md)) |
 | `scripts/` | Start, stop and dashboard-publish scripts |
 | `docs/` | Operating guides, e.g. [energy dashboard deployment](docs/energy-dashboard.md) |
