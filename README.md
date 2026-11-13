@@ -90,7 +90,7 @@ Collects my Instagram analytics and benchmarks the food and coffee accounts I fo
 ## Privacy and safety
 
 - **No writes to outside services.** Calendar, Notion, Octopus and Instagram are only read. Adding any write capability would need my explicit approval.
-- **What goes to OpenAI.** The daily Instagram drafts send OpenAI the voice profile, my approved examples and public benchmark captions and stats. Nothing else from this repo is sent.
+- **What goes to the model provider.** The daily Instagram drafts send Cloudflare Workers AI (or OpenAI) the voice profile, my approved examples and public benchmark captions and stats. Nothing else from this repo is sent.
 - **Content is data, never instructions.** Text inside events and tasks is never followed as a command.
 - **Secrets stay local.** Credentials live in `.env`, which is ignored by Git. Run logs record only counts, timings and connector error messages. They never contain tokens, account numbers or meter identifiers, or the contents of events and tasks.
 - **Generated data isn't committed.** Reports, dashboards and databases are all ignored by Git.

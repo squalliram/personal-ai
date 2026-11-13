@@ -6,7 +6,7 @@ A daily pipeline on the hosting server that drafts food, coffee and restaurant c
 | --- | --- | --- |
 | 1 | **Analytics**: own posts, daily insights, follower online hours | Done (read-only) |
 | 2 | **Benchmarks**: accounts I follow, ranked by followers and engagement; their best recent posts and hashtags | Done (read-only) |
-| 3 | **Create**: 3 carousels a day by 12:00, OpenAI text and images, in my voice, using the `/ig-*` skill rules | Done |
+| 3 | **Create**: 3 carousels a day by 12:00, in my voice, using the `/ig-*` skill rules. Text and images from Cloudflare Workers AI (free) or OpenAI | Done |
 | 4 | **Tags**: up to 20 per post, mostly from `trending_hashtags` | Done |
 | 5 | **Review**: scores each draft against `top_benchmark_posts`; under 70 goes back to Create with notes, up to 3 rounds | Done |
 | 6 | **Queue**: Instagram page in the Command Centre with **Approve** and **Reject**; decisions feed the memory | Done |
@@ -51,16 +51,21 @@ From 09:00 London time, the first tick of the day:
 2. **Create** writes carousels in the voice from `INSTAGRAM_VOICE_FILE` (default `data/instagram/voice.md`), following the `ig-carousel`, `ig-caption` and `ig-human` rules from `INSTAGRAM_SKILLS_DIR` when the skill pack is installed. Topics are limited to food, coffee and restaurants. Approved examples that performed well count for more; rejected topics and the last 14 days' topics are avoided.
 3. **Tags** adds up to 20 hashtags per draft.
 4. **Review** scores each draft 0-100. Drafts under 70 go back to Create with the reviewer's notes, up to 3 rounds. If fewer than 3 pass, the best of the rest still go in the queue, labelled with their score.
-5. OpenAI draws every slide (4:5 portrait), with the slide text drawn into the image. A draft whose images fail is dropped.
+5. The image model draws every slide at 1024×1280 (4:5 portrait), with the slide's short text drawn onto it. A draft whose images fail is dropped. Cloudflare returns JPEGs and OpenAI returns PNGs; each is saved in the format it arrives in.
 6. Each draft gets a suggested publish slot: the best hours from `best_hours`, from 12:00 onwards (18:00, 12:00 and 20:00 until there's data).
 
 A day that already has drafts is skipped. A day gives up after 3 failed attempts, so a broken key can't run up costs. Runs are recorded in `daily_runs` and shown on the Instagram page.
 
 Benchmark captions and hashtags are other people's text. The prompts tell the agents to treat them as data and never follow instructions in them. The output is validated before it is stored: category, slide count and length, caption length and real hashtags only.
 
-### Cost
+### Models and cost
 
-Each day makes 3-9 text calls and one image per slide, about 15 images for 3 five-slide carousels. Both are billed to the OpenAI account. The models are set with `OPENAI_TEXT_MODEL` (default `gpt-5-mini`) and `OPENAI_IMAGE_MODEL` (default `gpt-image-2.5-flare`). The defaults come from OpenAI's API reference.
+`model_client()` uses Cloudflare Workers AI when `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` are set, and OpenAI otherwise. `INSTAGRAM_AI_PROVIDER` overrides the choice.
+
+- **Cloudflare (default, free):** `@cf/meta/llama-4-scout-17b-16e-instruct` writes and `@cf/black-forest-labs/flux-2-klein-4b` draws. The free plan allows 10,000 neurons a day, reset at 00:00 UTC. From Cloudflare's price list, a day of drafts should use a few thousand. In a side-by-side test of Create, Llama 4 Scout wrote more specific slides and captions than Llama 3.3 70B. `gpt-oss-120b` doesn't answer this API call format.
+- **OpenAI (paid):** `gpt-5-mini` writes and `gpt-image-2.5-flare` draws. A day costs 3-9 text calls and about 15 images.
+
+Models can be changed with `CLOUDFLARE_TEXT_MODEL` / `CLOUDFLARE_IMAGE_MODEL` or `OPENAI_TEXT_MODEL` / `OPENAI_IMAGE_MODEL`.
 
 ## Reviewing in the Command Centre
 
