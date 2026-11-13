@@ -36,8 +36,9 @@ def upsert(path: Path, values: dict[str, str]) -> bool:
     out = []
     for line in lines:
         key = line.split("=", 1)[0].strip()
-        if "=" in line and not line.lstrip().startswith("#") and key in remaining:
-            out.append(f"{key}={remaining.pop(key)}")
+        if "=" in line and not line.lstrip().startswith("#") and key in values:
+            if key in remaining:
+                out.append(f"{key}={remaining.pop(key)}")
         else:
             out.append(line)
     out.extend(f"{key}={value}" for key, value in remaining.items())

@@ -34,5 +34,10 @@ class EnvInstallTests(unittest.TestCase):
                 env_install.parse(text)
 
 
+    def test_duplicate_owned_keys_collapse_to_the_new_value(self):
+        self.path.write_text("CLOUDFLARE_API_TOKEN=old1\nX=1\nCLOUDFLARE_API_TOKEN=old2\n")
+        self.assertTrue(env_install.upsert(self.path, {"CLOUDFLARE_API_TOKEN": "new"}))
+        self.assertEqual(self.path.read_text(), "CLOUDFLARE_API_TOKEN=new\nX=1\n")
+
 if __name__ == "__main__":
     unittest.main()
