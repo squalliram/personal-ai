@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import hmac
 import json
+import os
 import re
 import sqlite3
+import stat
 import sys
 import time
 from collections.abc import Callable, Iterable
@@ -416,8 +418,13 @@ class CommandCentreApp:
             return _error(404, "not_found")
         for extension, content_type in (("png", "image/png"), ("jpg", "image/jpeg")):
             path = media / draft / f"slide-{int(number)}.{extension}"
-            if path.is_file() and not path.is_symlink():
-                return 200, (path.read_bytes(), content_type), []
+            try:
+                fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            except OSError:
+                continue
+            with os.fdopen(fd, "rb") as stream:
+                if stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                    return 200, (stream.read(), content_type), []
         return _error(404, "not_found")
 
     def instagram_decision(self, request: Request) -> Result:

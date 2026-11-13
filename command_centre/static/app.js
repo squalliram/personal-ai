@@ -522,8 +522,9 @@
   }
 
   async function instagram(view) {
+    const mine = renders;
     const data = await load("api/v1/instagram/drafts");
-    if (!data) return;
+    if (!data || mine !== renders) return;
     const canDecide = Boolean(session) && ["recommend", "execute"].includes(session.permission);
     const last = data.runs[0];
     view.append(card("Daily drafts",
@@ -536,8 +537,11 @@
 
   const VIEWS = { overview, energy, integrations, automations: automationsView, settings, instagram };
 
+  let renders = 0;
+
   async function render() {
     if (!session) return;
+    const mine = ++renders;
     const id = (location.hash || "#overview").slice(1);
     const section = SECTIONS.find(([key]) => key === id) || SECTIONS[0];
     for (const link of document.querySelectorAll("#nav-list a")) {
@@ -549,6 +553,7 @@
     const view = $("view");
     view.replaceChildren();
     await (VIEWS[section[0]] ? VIEWS[section[0]](view) : placeholder(view, section[0]));
+    if (mine !== renders) return;
     if ($("view-status").textContent === "Loading…") $("view-status").textContent = "";
     if (section[0] !== "overview" && $("view-title").textContent !== section[1]) $("view-title").textContent = section[1];
     $("nav").classList.remove("open");
