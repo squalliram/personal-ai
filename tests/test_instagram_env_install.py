@@ -39,5 +39,11 @@ class EnvInstallTests(unittest.TestCase):
         self.assertTrue(env_install.upsert(self.path, {"CLOUDFLARE_API_TOKEN": "new"}))
         self.assertEqual(self.path.read_text(), "CLOUDFLARE_API_TOKEN=new\nX=1\n")
 
+    def test_unchanged_file_is_still_made_private(self):
+        self.path.write_text("CLOUDFLARE_API_TOKEN=tok\n")
+        self.path.chmod(0o644)
+        self.assertFalse(env_install.upsert(self.path, {"CLOUDFLARE_API_TOKEN": "tok"}))
+        self.assertEqual(stat.S_IMODE(self.path.stat().st_mode), 0o600)
+
 if __name__ == "__main__":
     unittest.main()
