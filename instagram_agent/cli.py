@@ -1,4 +1,4 @@
-"""Collect @instafoodielove analytics and benchmarks, and write the daily drafts. Never posts to Instagram."""
+"""Collect @instafoodielove analytics and benchmarks, write the daily drafts and publish due ones (see publish.py)."""
 
 from __future__ import annotations
 
@@ -12,10 +12,10 @@ from pathlib import Path
 
 from octopus_energy.cli import load_env
 
-from . import analysis, cloudflare_client, drafts, following, storage
+from . import analysis, cloudflare_client, drafts, following, publish, storage
 from .analysis import LONDON
 from .cloudflare_client import CloudflareAI
-from .graph import GRAPH_VERSION, GraphAPIError, GraphClient
+from .graph import GRAPH_HOST, GRAPH_VERSION, INSTAGRAM_HOST, GraphAPIError, GraphClient
 from .openai_client import IMAGE_MODEL, IMAGE_SIZE, TEXT_MODEL, AIError, OpenAIClient
 
 DEFAULT_MEDIA = Path("data/instagram/drafts")
@@ -24,6 +24,17 @@ DAILY_ATTEMPTS = 3
 DAILY_DRAFTS = 3
 
 INSIGHT_WINDOW = timedelta(days=30)
+
+
+def graph_client(env: dict) -> GraphClient:
+    """Instagram Login tokens (IG...) go to graph.instagram.com, Facebook Login tokens to graph.facebook.com."""
+    token = env["INSTAGRAM_ACCESS_TOKEN"]
+    return GraphClient(
+        token,
+        env["INSTAGRAM_USER_ID"],
+        version=env.get("META_GRAPH_VERSION", GRAPH_VERSION),
+        host=INSTAGRAM_HOST if token.startswith("IG") else GRAPH_HOST,
+    )
 
 
 def _now() -> datetime:
@@ -59,6 +70,7 @@ def sync(conn, client: GraphClient, *, benchmarks: int = 50, now: datetime | Non
         except GraphAPIError:
             # Accounts under 100 followers have no audience insights; keep the rest of the run.
             counts["audience_errors"] += 1
+        storage.link_published_drafts(conn)
     due = conn.execute(
         "SELECT username FROM benchmark_accounts ORDER BY synced_at IS NOT NULL, synced_at LIMIT ?", (benchmarks,)
     ).fetchall()
@@ -136,11 +148,7 @@ def daily(conn, env: dict, media_dir: Path, now: datetime | None = None) -> str:
             storage.record_run(conn, today, stamp, "not_configured")
         return "not_configured"
     if env.get("INSTAGRAM_ACCESS_TOKEN") and env.get("INSTAGRAM_USER_ID"):
-        graph = GraphClient(
-            env["INSTAGRAM_ACCESS_TOKEN"],
-            env["INSTAGRAM_USER_ID"],
-            version=env.get("META_GRAPH_VERSION", GRAPH_VERSION),
-        )
+        graph = graph_client(env)
         try:
             sync(conn, graph, benchmarks=int(env.get("INSTAGRAM_BENCHMARKS_PER_RUN", "50")), now=now)
         except GraphAPIError:
@@ -206,13 +214,14 @@ def main(argv: list[str] | None = None) -> int:
                 except BlockingIOError:
                     return 0  # The previous tick is still drafting.
                 outcome = daily(conn, env, args.media)
-            print(outcome)
+                published = publish.tick(conn, env, args.media, _now())
+            print(outcome, published, sep="; ")
             return 0 if outcome in ("ok", "partial", "skipped", "gave_up") else 1
         token, user_id = env.get("INSTAGRAM_ACCESS_TOKEN", ""), env.get("INSTAGRAM_USER_ID", "")
         if not token or not user_id:
             print("Set INSTAGRAM_ACCESS_TOKEN and INSTAGRAM_USER_ID.", file=sys.stderr)
             return 2
-        client = GraphClient(token, user_id, version=env.get("META_GRAPH_VERSION", GRAPH_VERSION))
+        client = graph_client(env)
         try:
             counts = sync(conn, client, benchmarks=args.benchmarks)
         except GraphAPIError as exc:

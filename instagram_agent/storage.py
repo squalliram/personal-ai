@@ -119,6 +119,15 @@ def record_decision(
     )
 
 
+def link_published_drafts(conn: sqlite3.Connection) -> None:
+    """Approved examples whose auto-published post has now been synced into `posts`."""
+    conn.execute(
+        "UPDATE examples SET media_id=(SELECT d.media_id FROM drafts d WHERE d.draft_id=examples.draft_id) "
+        "WHERE decision='approved' AND media_id IS NULL AND EXISTS (SELECT 1 FROM drafts d JOIN posts p "
+        "ON p.media_id=d.media_id WHERE d.draft_id=examples.draft_id AND d.status='published')"
+    )
+
+
 def link_published(conn: sqlite3.Connection, draft_id: str, media_id: str) -> None:
     conn.execute("UPDATE examples SET media_id=? WHERE draft_id=? AND decision='approved'", (media_id, draft_id))
 
@@ -163,13 +172,26 @@ def runs_on(conn: sqlite3.Connection, day: str) -> int:
     ).fetchone()[0]
 
 
+_LATEST_RUN_STARTED = (
+    "SELECT 1 FROM publish_runs r WHERE r.draft_id=? AND r.outcome='started' AND r.id="
+    "(SELECT MAX(id) FROM publish_runs s WHERE s.draft_id=r.draft_id)"
+)
+
+
+def publishing_started(conn: sqlite3.Connection, draft_id: str) -> bool:
+    """True once the publisher has begun the final publish call for this draft."""
+    return conn.execute(_LATEST_RUN_STARTED, (draft_id,)).fetchone() is not None
+
+
 def decide_draft(conn: sqlite3.Connection, draft_id: str, decision: str, decided_at: str) -> bool:
     """Move a pending draft to approved/rejected and remember it. False if it was not pending."""
     if decision not in ("approved", "rejected"):
         raise ValueError("decision must be approved or rejected")
     with conn:
         changed = conn.execute(
-            "UPDATE drafts SET status=?, decided_at=? WHERE draft_id=? AND status='pending'",
+            "UPDATE drafts SET status=?, decided_at=? WHERE draft_id=? AND status='pending' AND NOT EXISTS "
+            "(SELECT 1 FROM publish_runs r WHERE r.draft_id=drafts.draft_id AND r.outcome='started' AND r.id="
+            "(SELECT MAX(id) FROM publish_runs s WHERE s.draft_id=r.draft_id))",
             (decision, decided_at, draft_id),
         ).rowcount
         if not changed:

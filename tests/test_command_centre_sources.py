@@ -331,11 +331,12 @@ class AgentTests(SourceTestCase):
             sorted(Path(a["definition"]).name for a in agents),
         )
 
-    def test_instagram_agent_offers_the_ig_skill_commands_and_drafts_only(self):
+    def test_instagram_agent_offers_the_ig_skill_commands_and_states_its_one_write(self):
         instagram = self.by_id(self.get(self.client(), "/api/v1/agents")["agents"])["instagram"]
         self.assertEqual(instagram["name"], "Instagram")
         self.assertEqual(instagram["status"], "available")
-        self.assertIn("nothing is posted automatically", instagram["summary"])
+        self.assertIn("unless rejected first", instagram["summary"])
+        self.assertIn("Never comments, follows or sends DMs", instagram["guardrail"])
         commands = [c["command"] for c in instagram["commands"]]
         self.assertEqual(len(commands), 13)
         self.assertEqual(len(set(commands)), 13)

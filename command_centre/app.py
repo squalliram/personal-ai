@@ -750,7 +750,7 @@ class CommandCentreApp:
         return _error(404, "not_found")
 
     def instagram_decision(self, request: Request) -> Result:
-        """Approve or reject a pending draft. This only records the decision; it never posts to Instagram."""
+        """Approve or reject a pending draft. Reject stops it posting; Approve lets a weaker draft post at its slot."""
         body, error = _json_body(request.environ)
         if error:
             return error
@@ -772,10 +772,14 @@ class CommandCentreApp:
                 conn, draft_id, decision, self._now().isoformat(timespec="seconds")
             )
             exists = changed or conn.execute("SELECT 1 FROM drafts WHERE draft_id=?", (draft_id,)).fetchone()
+            publishing = not changed and exists and instagram_storage.publishing_started(conn, draft_id)
         finally:
             conn.close()
         if not exists:
             return _error(404, "not_found")
+        if publishing:
+            self.audit.record("instagram_decision", "publishing", actor="owner", draft=draft_id)
+            return _error(409, "publishing")
         if not changed:
             self.audit.record("instagram_decision", "already_decided", actor="owner", draft=draft_id)
             return _error(409, "already_decided")

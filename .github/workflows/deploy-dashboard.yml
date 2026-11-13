@@ -99,12 +99,25 @@ jobs:
           # Optional: unset secrets leave the server's existing values alone.
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          INSTAGRAM_ACCESS_TOKEN: ${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
+          INSTAGRAM_USER_ID: ${{ secrets.INSTAGRAM_USER_ID }}
+          # Auto-posting turns on with the token; set the repository variable to 0 to stop it.
+          INSTAGRAM_AUTO_PUBLISH: ${{ vars.INSTAGRAM_AUTO_PUBLISH || '1' }}
         run: |
           [[ "$CPANEL_APP_PATH" =~ ^/[a-zA-Z0-9_./-]+$ ]] || exit 1
           [[ "$DEPLOY_SHA" =~ ^[a-f0-9]{40}$ ]] || exit 1
           [[ "${CPANEL_SSH_PORT:-22}" =~ ^[0-9]+$ ]] || exit 1
           # Keys travel on stdin, never in the remote command line.
-          printf 'CLOUDFLARE_ACCOUNT_ID=%s\nCLOUDFLARE_API_TOKEN=%s\n' "$CLOUDFLARE_ACCOUNT_ID" "$CLOUDFLARE_API_TOKEN" | \
+          [[ "$INSTAGRAM_AUTO_PUBLISH" =~ ^[01]$ ]] || exit 1
+          {
+            printf 'CLOUDFLARE_ACCOUNT_ID=%s\nCLOUDFLARE_API_TOKEN=%s\n' "$CLOUDFLARE_ACCOUNT_ID" "$CLOUDFLARE_API_TOKEN"
+            printf 'INSTAGRAM_ACCESS_TOKEN=%s\nINSTAGRAM_USER_ID=%s\n' "$INSTAGRAM_ACCESS_TOKEN" "$INSTAGRAM_USER_ID"
+            if [ -n "$INSTAGRAM_ACCESS_TOKEN" ]; then
+              printf 'INSTAGRAM_AUTO_PUBLISH=%s\n' "$INSTAGRAM_AUTO_PUBLISH"
+              printf 'INSTAGRAM_PUBLIC_DIR=%s\n' "${CPANEL_APP_PATH%/*}/public_html/ig-media"
+              printf 'INSTAGRAM_PUBLIC_URL=https://iramkhan.com/ig-media\n'
+            fi
+          } | \
           ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes -o StrictHostKeyChecking=yes -p "${CPANEL_SSH_PORT:-22}" \
             "$CPANEL_SSH_USERNAME@$CPANEL_SSH_HOST" \
             "cd '$CPANEL_APP_PATH' && command -v flock >/dev/null && test -d .git && \

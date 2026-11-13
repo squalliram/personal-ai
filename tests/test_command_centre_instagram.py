@@ -116,6 +116,22 @@ class InstagramQueueTests(unittest.TestCase):
         self.assertIn(("instagram_decision", "approved"), outcomes)
         self.assertIn(("instagram_decision", "already_decided"), outcomes)
 
+    def test_decision_is_refused_while_publishing(self):
+        conn = storage.connect(self.db)
+        with conn:
+            conn.execute(
+                "INSERT INTO publish_runs(draft_id, started_at, outcome) VALUES(?, ?, 'started')",
+                (DRAFT, "2026-11-12T19:00:00+00:00"),
+            )
+        conn.close()
+        client = self.client()
+        draft = client.request("GET", "/api/v1/instagram/drafts").json()["drafts"][0]
+        self.assertTrue(draft["publishing"])
+        response = self.decide(client, "reject")
+        self.assertEqual((response.status, response.json()["error"]), (409, "publishing"))
+        outcomes = [(e["action"], e["outcome"]) for e in self.app.audit.recent(10)]
+        self.assertIn(("instagram_decision", "publishing"), outcomes)
+
     def test_decisions_need_recommend_csrf_and_a_valid_body(self):
         self.assertEqual(self.decide(self.client(Permission.READ), "approve").status, 403)
         client = self.client()

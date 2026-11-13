@@ -1,4 +1,4 @@
-"""Upsert the Instagram pipeline's provider keys into the server's `.env`.
+"""Upsert the Instagram pipeline's provider keys and publishing settings into the server's `.env`.
 
 Values arrive as KEY=VALUE lines on stdin (never argv, so they stay out of process
 listings). Only ALLOWED keys are accepted, empty values are skipped, every other line
@@ -12,8 +12,16 @@ import sys
 import tempfile
 from pathlib import Path
 
-ALLOWED = ("CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN")
-SAFE_VALUE = re.compile(r"[A-Za-z0-9._~+/=-]+")
+ALLOWED = (
+    "CLOUDFLARE_ACCOUNT_ID",
+    "CLOUDFLARE_API_TOKEN",
+    "INSTAGRAM_ACCESS_TOKEN",
+    "INSTAGRAM_USER_ID",
+    "INSTAGRAM_AUTO_PUBLISH",
+    "INSTAGRAM_PUBLIC_DIR",
+    "INSTAGRAM_PUBLIC_URL",
+)
+SAFE_VALUE = re.compile(r"[A-Za-z0-9._~+/=-]+|https://[A-Za-z0-9._~/-]+")
 
 
 def parse(text: str) -> dict[str, str]:

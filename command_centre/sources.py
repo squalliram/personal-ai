@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from instagram_agent import publish as instagram_publish
 from octopus_energy.mcp_server import RefreshRequiredError, dispatch
 from octopus_energy.refresh import validate_status
 
@@ -377,11 +378,14 @@ AGENTS = (
         "status": "available",
         "summary": (
             "Manages Instagram content — reel scripts with scored hooks, captions, carousels, stories, DM replies,"
-            " weekly planning and post audits. Drafts only; nothing is posted automatically."
+            " weekly planning and post audits. Daily carousels post at their slot unless rejected first."
         ),
         "definition": "agents/instagram.md",
         "runs_in": "Jarvis bridge (squalliram/jarvis) or Claude Code, via the instagram-agent-skill pack",
-        "guardrail": "Drafts only. Never posts, comments, follows or sends DMs on Instagram.",
+        "guardrail": (
+            "Posts only drafts that passed review or were approved, at their slot, unless rejected first."
+            " Never comments, follows or sends DMs."
+        ),
         "commands": INSTAGRAM_COMMANDS,
     },
 )
@@ -417,8 +421,33 @@ def modules(found: list[dict]) -> list[dict]:
 DRAFT_ID = re.compile(r"[0-9a-f]{16}")
 DRAFT_COLUMNS = (
     "draft_id,created_on,created_at,status,category,topic,angle,slides,caption,hashtags,"
-    "review_score,review_notes,scheduled_for,decided_at"
+    "review_score,review_notes,scheduled_for,decided_at,media_id"
 )
+
+
+def _posts_at(row) -> str | None:
+    try:
+        when = instagram_publish.posts_at(row["scheduled_for"], row["created_at"])
+    except (TypeError, ValueError):
+        return None
+    return when.isoformat(timespec="minutes") if when else None
+
+
+def _publishing(conn) -> dict:
+    """Whether the publisher is on, and each draft's latest publish error. Older databases have neither table."""
+    try:
+        state = conn.execute("SELECT value FROM publisher_state WHERE key='auto_publish'").fetchone()
+        latest = conn.execute(
+            "SELECT draft_id, outcome, error FROM publish_runs r WHERE outcome IN ('failed','started') AND id="
+            "(SELECT MAX(id) FROM publish_runs s WHERE s.draft_id=r.draft_id)"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return {"on": False, "errors": {}, "started": set()}
+    return {
+        "on": bool(state and state[0] == "on"),
+        "errors": {r["draft_id"]: r["error"] for r in latest if r["outcome"] == "failed"},
+        "started": {r["draft_id"] for r in latest if r["outcome"] == "started"},
+    }
 
 
 def instagram_drafts(settings: Settings, limit: int = 30) -> dict:
@@ -427,6 +456,7 @@ def instagram_drafts(settings: Settings, limit: int = 30) -> dict:
         "source": "instagram",
         "state": "not_configured",
         "basis": "inferred",
+        "auto_publish": False,
         "drafts": [],
         "runs": [],
         "latest_attempt": None,
@@ -447,6 +477,7 @@ def instagram_drafts(settings: Settings, limit: int = 30) -> dict:
             runs = conn.execute(
                 "SELECT run_on,started_at,outcome,drafts,error FROM daily_runs ORDER BY id DESC LIMIT 10"
             ).fetchall()
+            publishing = _publishing(conn)
             # Ticks every 15 minutes mostly skip, so find the latest real attempt separately.
             attempt = conn.execute(
                 "SELECT run_on,started_at,outcome,drafts,error FROM daily_runs WHERE outcome!='skipped' "
@@ -474,8 +505,13 @@ def instagram_drafts(settings: Settings, limit: int = 30) -> dict:
                     if isinstance(s, dict)
                 ],
                 "hashtags": (row["hashtags"] or "").split(),
+                "posts_at": _posts_at(row),
+                "will_post": instagram_publish.will_post(row["status"], row["review_score"]),
+                "publish_error": publishing["errors"].get(row["draft_id"]),
+                "publishing": row["draft_id"] in publishing["started"],
             }
         )
+    result["auto_publish"] = publishing["on"]
     result["runs"] = [dict(run) for run in runs]
     result["latest_attempt"] = dict(attempt) if attempt else None
     result["state"] = "available"

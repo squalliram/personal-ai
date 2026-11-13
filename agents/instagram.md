@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Manages Instagram content: reel scripts with scored hooks, captions, carousels, stories, DM replies, weekly planning and post audits. Drafts only; nothing is posted automatically.
+Manages Instagram content: reel scripts with scored hooks, captions, carousels, stories, DM replies, weekly planning and post audits. The daily carousels post automatically at their slot unless rejected first.
 
 ## Where it runs
 
@@ -34,7 +34,7 @@ The scoring scripts (`hookscore.py`, `beats.py`, `caption.py`, `humanize.py`, `d
 
 ## Guardrails
 
-- Drafts only. Never posts, comments, follows, likes or sends DMs on Instagram, by API, browser automation or any other tool. Every skill ends with copy-ready text for you to post.
+- The only Instagram write is the daily pipeline publishing its carousels through Meta's official API (`instagram_agent/publish.py`): drafts that passed review or were approved, at their slot, unless rejected first. Never comments, follows, likes or sends DMs, and never uses browser automation. The `/ig-*` skills end with copy-ready text for you to post.
 - Never fabricates metrics, clients or outcomes; missing numbers come back as `{{your number}}` placeholders.
 - `/ig-viral` reads public posts at human speed in your own browser. No scraping, no logging in as you.
 - Shared state (`voice.md`, `swipe.md`, `plan.md`, `log.md`) lives in `~/.claude/instagram/` on your machine only.

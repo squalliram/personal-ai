@@ -9,6 +9,7 @@ from urllib.parse import urlencode, urljoin, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 GRAPH_HOST = "https://graph.facebook.com/"
+INSTAGRAM_HOST = "https://graph.instagram.com/"
 GRAPH_VERSION = "v27.0"
 MEDIA_FIELDS = "id,caption,media_type,timestamp,permalink,like_count,comments_count"
 MEDIA_METRICS = "reach,likes,comments,saved,shares,views,total_interactions"
@@ -24,6 +25,16 @@ def _origin(url: str) -> tuple[str, str | None, int]:
     return parts.scheme, parts.hostname, parts.port or 443
 
 
+def _meta_code(exc: HTTPError) -> str:
+    """Meta's numeric error code and subcode only, never its message."""
+    try:
+        error = json.loads(exc.read().decode("utf-8")).get("error") or {}
+    except (OSError, ValueError, AttributeError):
+        return ""
+    codes = [f"{k} {error[k]}" for k in ("code", "error_subcode") if isinstance(error.get(k), int)]
+    return ", " + ", ".join(codes) if codes else ""
+
+
 class _SameOriginRedirectHandler(HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         if _origin(newurl) != _origin(req.full_url):
@@ -32,7 +43,7 @@ class _SameOriginRedirectHandler(HTTPRedirectHandler):
 
 
 class GraphClient:
-    """Read-only client for the Instagram API with Facebook Login."""
+    """Client for the Instagram API. Only `instagram_agent.publish` uses `post`."""
 
     def __init__(
         self,
@@ -53,30 +64,52 @@ class GraphClient:
         self._token = access_token.strip()
         self._opener = build_opener(_SameOriginRedirectHandler())
 
-    def get(self, path_or_url: str, params: dict[str, str] | None = None) -> dict[str, Any]:
+    def _url(self, path_or_url: str) -> str:
         url = urljoin(self.base_url, path_or_url)
         parts = urlsplit(url)
         if _origin(url) != _origin(self.base_url) or parts.username or parts.password:
             raise GraphAPIError("Graph API URL left the trusted origin")
-        query = dict(params or {})
-        if "access_token=" not in parts.query:
-            query["access_token"] = self._token
-        if query:
-            url += ("&" if "?" in url else "?") + urlencode(query)
-        for attempt in range(self.retries + 1):
-            request = Request(url, headers={"Accept": "application/json", "User-Agent": "personal-ai-instagram/1.0"})
+        return url
+
+    def _send(self, request: Request, retries: int) -> dict[str, Any]:
+        for attempt in range(retries + 1):
             try:
                 with self._opener.open(request, timeout=self.timeout) as response:
                     return json.loads(response.read().decode("utf-8"))
             except HTTPError as exc:
                 retryable = exc.code == 429 or 500 <= exc.code < 600
-                if not retryable or attempt == self.retries:
-                    raise GraphAPIError(f"Graph API request failed (HTTP {exc.code})") from None
+                if not retryable or attempt == retries:
+                    raise GraphAPIError(f"Graph API request failed (HTTP {exc.code}{_meta_code(exc)})") from None
             except (URLError, TimeoutError, json.JSONDecodeError) as exc:
-                if attempt == self.retries:
+                if attempt == retries:
                     raise GraphAPIError(f"Graph API request failed ({type(exc).__name__})") from None
             time.sleep(min(8, 2**attempt))
         raise AssertionError("unreachable")
+
+    def get(self, path_or_url: str, params: dict[str, str] | None = None) -> dict[str, Any]:
+        url = self._url(path_or_url)
+        query = dict(params or {})
+        if "access_token=" not in urlsplit(url).query:
+            query["access_token"] = self._token
+        if query:
+            url += ("&" if "?" in url else "?") + urlencode(query)
+        request = Request(url, headers={"Accept": "application/json", "User-Agent": "personal-ai-instagram/1.0"})
+        return self._send(request, self.retries)
+
+    def post(self, path: str, params: dict[str, str], *, retry: bool = True) -> dict[str, Any]:
+        """A form POST with the token in the body. Pass retry=False where a repeat could post twice."""
+        body = urlencode({**params, "access_token": self._token}).encode()
+        request = Request(
+            self._url(path),
+            data=body,
+            method="POST",
+            headers={
+                "Accept": "application/json",
+                "Content-Type": "application/x-www-form-urlencoded",
+                "User-Agent": "personal-ai-instagram/1.0",
+            },
+        )
+        return self._send(request, self.retries if retry else 0)
 
     def paginated(self, path: str, params: dict[str, str] | None = None, *, limit: int = 100) -> Iterator[dict]:
         page = self.get(path, params)
