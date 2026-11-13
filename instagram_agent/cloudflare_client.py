@@ -38,6 +38,8 @@ def _json_object(text: str) -> dict | None:
 class CloudflareAI:
     """Workers AI over its REST API: text and images within the free daily allocation."""
 
+    draws_text = False  # FLUX.2 klein garbles lettering, so slides are clean photos.
+
     def __init__(
         self,
         account_id: str,

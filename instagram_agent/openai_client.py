@@ -40,6 +40,8 @@ def _error_code(exc: HTTPError) -> str | None:
 
 
 class OpenAIClient:
+    draws_text = True
+
     def __init__(
         self,
         api_key: str,

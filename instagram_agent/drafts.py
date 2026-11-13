@@ -44,7 +44,7 @@ CREATE = (
     "The caption (80-180 words, no hashtags) opens with a hook line, then explains every slide in one short line "
     "each, then ends with exactly one ask: save, share or comment. "
     "Favour topics and formats like the approved examples that performed best, avoid ones like rejected drafts, "
-    "and do not repeat recent topics. "
+    "and do not repeat recent topics. Make topics fit today's date and season. "
     'Reply with JSON only: {{"drafts": [{{"category": "...", "topic": "...", "angle": "...", '
     '"slides": [{{"text": "...", "image_prompt": "..."}}], "caption": "..."}}]}}'
 )
@@ -114,7 +114,10 @@ def load_rules(skills_dir: Path | None) -> str:
 def context(conn: sqlite3.Connection, now: datetime) -> dict:
     learned = analysis.learned_examples(conn)
     since = (now.astimezone(LONDON).date() - timedelta(days=14)).isoformat()
+    local = now.astimezone(LONDON)
+    season = ("winter", "spring", "summer", "autumn")[local.month % 12 // 3]
     return {
+        "today": f"{local:%A %d %B %Y} in London ({season})",
         "top_benchmark_posts": [
             {k: p[k] for k in ("username", "media_type", "outlier", "likes", "comments")}
             | {"caption": (p["caption"] or "")[:400]}
@@ -214,6 +217,15 @@ def publish_slots(conn, now: datetime, count: int) -> list[str]:
     return [s.isoformat(timespec="minutes") for s in slots[:count]]
 
 
+def slide_prompt(slide: dict, *, draws_text: bool) -> str:
+    base = (
+        f"{slide['image_prompt']}\n\nA 4:5 portrait Instagram carousel photo for a food, coffee and restaurant account."
+    )
+    if draws_text:
+        return base + f' Overlay this text in large, clean, legible type, spelled exactly: "{slide["text"]}"'
+    return base + " No text, words, letters or logos anywhere in the image."
+
+
 def _private_dir(path: Path) -> None:
     path.mkdir(mode=0o700, parents=True, exist_ok=True)
     if path.is_symlink() or not path.is_dir():
@@ -230,10 +242,7 @@ def render_and_store(conn, ai: AI, drafts: list[dict], media_dir: Path, now: dat
         _private_dir(folder)
         try:
             for number, slide in enumerate(draft["slides"], 1):
-                image = ai.image(
-                    f"{slide['image_prompt']}\n\nAn Instagram carousel slide for a food, coffee and restaurant account, "
-                    f'4:5 portrait. Overlay this text in large, clean, legible type, spelled exactly: "{slide["text"]}"'
-                )
+                image = ai.image(slide_prompt(slide, draws_text=getattr(ai, "draws_text", True)))
                 slide["file"] = f"slide-{number}.{image_extension(image)}"
                 flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
                 with os.fdopen(os.open(folder / slide["file"], flags, 0o600), "wb") as stream:

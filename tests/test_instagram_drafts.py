@@ -72,6 +72,7 @@ class DraftTests(unittest.TestCase):
         second_create = [payload for system, payload in ai.calls if system.startswith("You are the Create")][1]
         self.assertEqual(second_create["feedback_on_weak_drafts"], ["sourdough: note 50"])
         self.assertIn("sourdough", second_create["recent_topics"])
+        self.assertEqual(second_create["today"], "Thursday 12 November 2026 in London (autumn)")
         self.assertEqual(found[0]["hashtags"], ["#coffee", "#latteart"])
         self.assertIn(drafts.UNTRUSTED, ai.calls[0][0])
 
@@ -179,6 +180,16 @@ class DailyTickTests(unittest.TestCase):
         ai = FakeAI([[raw_draft("a"), raw_draft("b"), raw_draft("c")]], [[90, 80, 70]])
         self.tick(MORNING, ai)
         self.assertIn("Manchester slang", ai.calls[0][0])
+
+
+class SlidePromptTests(unittest.TestCase):
+    def test_text_is_drawn_only_by_models_that_spell_it(self):
+        slide = {"text": "Flat white 101", "image_prompt": "a flat white on marble"}
+        self.assertIn('spelled exactly: "Flat white 101"', drafts.slide_prompt(slide, draws_text=True))
+        clean = drafts.slide_prompt(slide, draws_text=False)
+        self.assertNotIn("Flat white 101", clean)
+        self.assertIn("No text", clean)
+        self.assertFalse(CloudflareAI.draws_text)
 
 
 class OpenAIClientTests(unittest.TestCase):
