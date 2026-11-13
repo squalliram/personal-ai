@@ -42,13 +42,15 @@ Data goes to `data/instagram.sqlite3` (ignored by Git).
 
 ```bash
 python3 -m instagram_agent daily          # one tick; safe to run as often as you like
-./scripts/install-instagram-daily.sh      # once on the server: one marked cron entry, every 15 minutes
+./scripts/install-instagram-daily.sh      # one marked cron entry, every 15 minutes (the deploy runs this)
 ```
+
+On the server, the deploy does this for you after every merge to `main` (`Configure Instagram daily drafts` in `deploy-dashboard.yml`). It writes the `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` GitHub Actions secrets into the server's `.env` with `python3 -m instagram_agent.env_install` (keys go over stdin, the file stays `0600`, other lines are kept), then installs the cron entry.
 
 From 09:00 London time, the first tick of the day:
 
 1. Syncs analytics and benchmarks (when the Meta token is set). If Instagram is down, it drafts from the data it already has.
-2. **Create** writes carousels in the voice from `INSTAGRAM_VOICE_FILE` (default `data/instagram/voice.md`), following the `ig-carousel`, `ig-caption` and `ig-human` rules from `INSTAGRAM_SKILLS_DIR` when the skill pack is installed. Topics are limited to food, coffee and restaurants. Approved examples that performed well count for more; rejected topics and the last 14 days' topics are avoided.
+2. **Create** writes carousels in the voice from `INSTAGRAM_VOICE_FILE` (default `agents/instagram-voice.md`), following the `ig-carousel`, `ig-caption` and `ig-human` rules from `INSTAGRAM_SKILLS_DIR` when the skill pack is installed. Topics are limited to food, coffee and restaurants. Approved examples that performed well count for more; rejected topics and the last 14 days' topics are avoided.
 3. **Tags** adds up to 20 hashtags per draft.
 4. **Review** scores each draft 0-100. Drafts under 70 go back to Create with the reviewer's notes, up to 3 rounds. If fewer than 3 pass, the best of the rest still go in the queue, labelled with their score.
 5. The image model draws every slide at 1024×1280 (4:5 portrait). OpenAI's image model also draws the slide's short text onto it. Cloudflare's FLUX.2 klein garbles lettering, so with Cloudflare the slides are clean photos and the caption carries the words. A draft whose images fail is dropped. Cloudflare returns JPEGs and OpenAI returns PNGs; each is saved in the format it arrives in.
