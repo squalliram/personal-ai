@@ -80,7 +80,7 @@ class ServerSmokeTests(unittest.TestCase):
         self.assertEqual(json.loads(data)["timezone"], "Europe/London")
         page, html = request("GET", "/", headers={"Cookie": cookie})
         self.assertEqual(page.status, 200)
-        self.assertIn(b"Command Centre", html)
+        self.assertIn(b"Jarvis", html)
         response, _ = request("DELETE", "/api/v1/session", headers={"Cookie": cookie, "X-CSRF-Token": csrf})
         self.assertEqual(response.status, 200)
         self.assertEqual(request("GET", "/api/v1/overview", headers={"Cookie": cookie})[0].status, 401)
