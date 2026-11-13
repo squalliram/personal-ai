@@ -127,20 +127,18 @@ class SqliteSessionStoreTests(unittest.TestCase):
         self.clock.now += 501
         self.assertIsNone(store.get(token))
 
-    def test_existing_database_gains_the_remember_column(self):
-        legacy = Path(self.directory.name) / "legacy.sqlite3"
-        with closing(sqlite3.connect(legacy)) as conn, conn:
-            conn.execute(
-                "CREATE TABLE sessions (token_hash TEXT PRIMARY KEY, csrf_token TEXT NOT NULL,"
-                " permission INTEGER NOT NULL, created_at REAL NOT NULL, last_seen_at REAL NOT NULL)"
-            )
+    def test_schema_stays_compatible_with_the_previous_release(self):
+        store = SqliteSessionStore(
+            self.path, idle_seconds=30, absolute_seconds=120, remember_seconds=1000, clock=self.clock
+        )
+        remembered, _ = store.create(Permission.READ, remember=True)
+        with closing(sqlite3.connect(self.path)) as conn, conn:
+            # The insert the previous release makes must keep working after a rollback.
             conn.execute("INSERT INTO sessions VALUES('old','csrf',1,?,?)", (self.clock.now, self.clock.now))
-        legacy.chmod(0o600)
-        store = SqliteSessionStore(legacy, idle_seconds=30, absolute_seconds=120, clock=self.clock)
-        token, _ = store.create(Permission.READ)
-        self.assertFalse(store.get(token).remember)
-        with closing(sqlite3.connect(legacy)) as conn:
-            self.assertEqual(conn.execute("SELECT remember FROM sessions WHERE token_hash='old'").fetchone(), (0,))
+        self.assertTrue(store.get(remembered).remember)
+        store.revoke(remembered)
+        with closing(sqlite3.connect(self.path)) as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM remembered_sessions").fetchone(), (0,))
 
     def test_max_sessions_evicts_least_recently_used(self):
         store = SqliteSessionStore(self.path, idle_seconds=300, absolute_seconds=3600, clock=self.clock, max_sessions=2)
