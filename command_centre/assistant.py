@@ -34,6 +34,12 @@ def _trim(value, depth: int = 0):
     return value if isinstance(value, (int, float, bool)) or value is None else str(value)[:300]
 
 
+def _last_days(rows: list[dict], days: int) -> list[dict]:
+    """Rows for the latest `days` dates; dual-fuel homes have one row per fuel per date."""
+    dates = sorted({row.get("date") for row in rows if isinstance(row.get("date"), str)})[-days:]
+    return [row for row in rows if row.get("date") in dates]
+
+
 def build_context(*, now: datetime, data: dict, instagram: dict, agents: list[dict]) -> str:
     """A compact JSON snapshot of the dashboard, capped at MAX_CONTEXT characters."""
     energy, briefing = data["energy"], data["briefing"]
@@ -54,7 +60,7 @@ def build_context(*, now: datetime, data: dict, instagram: dict, agents: list[di
         "energy": {
             "state": energy.get("state"),
             "last_successful_sync_at": energy.get("last_successful_sync_at"),
-            "daily_last_14_days": energy.get("daily", [])[-14:],
+            "daily_last_14_days": _last_days(energy.get("daily", []), 14),
             "monthly_estimates": energy.get("monthly", [])[:6],
             "unusual_days": energy.get("anomalies", [])[:10],
             "note": "Costs are estimates from stored tariffs, not bills.",
