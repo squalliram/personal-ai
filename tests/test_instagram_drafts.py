@@ -183,6 +183,44 @@ class DailyTickTests(unittest.TestCase):
                 storage.record_run(self.conn, "2026-11-12", MORNING.isoformat(), "not_configured")
         self.assertEqual(storage.runs_on(self.conn, "2026-11-12"), 0)
 
+    def test_a_dropped_draft_is_recorded_and_topped_up_before_noon(self):
+        first = FakeAI([[raw_draft("a"), raw_draft("b"), raw_draft("c")]], [[90, 80, 70]], fail_images_after=9)
+        self.assertEqual(self.tick(MORNING, first), "partial")
+        row = self.conn.execute("SELECT outcome, drafts, error FROM daily_runs").fetchone()
+        self.assertEqual(
+            tuple(row),
+            ("partial", 2, "1 of 3 drafts not made: slide image failed (OpenAI request failed (HTTP 500))"),
+        )
+        topped_up = FakeAI([[raw_draft("d")]], [[85]])
+        self.assertEqual(self.tick(MORNING, topped_up), "ok")
+        self.assertIn("a", topped_up.calls[0][1]["recent_topics"])
+        rows = self.conn.execute("SELECT topic, scheduled_for FROM drafts ORDER BY created_at, topic").fetchall()
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(len({r["scheduled_for"] for r in rows}), 3)
+        self.assertEqual(self.tick(MORNING), "skipped")
+
+    def test_a_short_day_is_left_alone_after_noon(self):
+        self.tick(MORNING, FakeAI([[raw_draft("a"), raw_draft("b")], [], []], [[90, 80]]))
+        self.assertEqual(storage.drafts_on(self.conn, "2026-11-12"), 2)
+        self.assertEqual(self.tick(datetime(2026, 11, 12, 12, 15, tzinfo=timezone.utc)), "skipped")
+
+    def test_a_failed_slide_image_gets_one_more_try(self):
+        ai = FakeAI([], [])
+        calls = iter([OpenAIError("OpenAI request failed (HTTP 500)")])
+
+        def flaky(prompt):
+            error = next(calls, None)
+            if error:
+                raise error
+            return PNG
+
+        ai.image = flaky
+        dropped = []
+        stored = drafts.render_and_store(
+            self.conn, ai, [drafts.normalise(raw_draft("one"))], self.root / "drafts", MORNING, dropped
+        )
+        self.assertEqual((stored, dropped), (1, []))
+
     def test_image_write_errors_are_recorded_as_failed_attempts(self):
         with patch.object(drafts, "render_and_store", side_effect=PermissionError("/secret/path")):
             self.assertEqual(self.tick(MORNING), "failed")

@@ -238,30 +238,46 @@ def _private_dir(path: Path) -> None:
         raise OSError("Draft media directory is not a private directory")
 
 
-def render_and_store(conn, ai: AI, drafts: list[dict], media_dir: Path, now: datetime) -> int:
-    """An image for each slide, then the draft row. A draft whose images fail is dropped."""
+def _image(ai: AI, slide: dict) -> bytes:
+    """One slide image, with one more try on top of the client's own retries."""
+    prompt = slide_prompt(slide, draws_text=getattr(ai, "draws_text", True))
+    try:
+        return ai.image(prompt)
+    except AIError:
+        return ai.image(prompt)
+
+
+def render_and_store(
+    conn, ai: AI, drafts: list[dict], media_dir: Path, now: datetime, dropped: list[str] | None = None
+) -> int:
+    """An image for each slide, then the draft row. A draft whose images fail is dropped and its reason kept."""
     _private_dir(media_dir)
+    day = now.astimezone(LONDON).date().isoformat()
+    taken = {r[0] for r in conn.execute("SELECT scheduled_for FROM drafts WHERE created_on=?", (day,))}
+    slots = [s for s in publish_slots(conn, now, len(drafts) + len(taken)) if s not in taken]
     stored = 0
-    for draft, slot in zip(drafts, publish_slots(conn, now, len(drafts)), strict=True):
+    for draft, slot in zip(drafts, slots, strict=False):
         draft_id = secrets.token_hex(8)
         folder = media_dir / draft_id
         _private_dir(folder)
         try:
             for number, slide in enumerate(draft["slides"], 1):
-                image = ai.image(slide_prompt(slide, draws_text=getattr(ai, "draws_text", True)))
+                image = _image(ai, slide)
                 slide["file"] = f"slide-{number}.{image_extension(image)}"
                 flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
                 with os.fdopen(os.open(folder / slide["file"], flags, 0o600), "wb") as stream:
                     stream.write(image)
-        except AIError:
+        except AIError as exc:
             shutil.rmtree(folder, ignore_errors=True)
+            if dropped is not None:
+                dropped.append(f"slide image failed ({exc})")
             continue
         try:
             with conn:
                 storage.insert_draft(
                     conn,
                     {**draft, "draft_id": draft_id, "scheduled_for": slot},
-                    now.astimezone(LONDON).date().isoformat(),
+                    day,
                     now.isoformat(timespec="seconds"),
                 )
         except BaseException:
