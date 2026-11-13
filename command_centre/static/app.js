@@ -79,6 +79,7 @@
     $("login-status").textContent = message || "";
     $("password").value = "";
     $("password").focus();
+    refreshPasskeyOptions();
   }
 
   function showApp(info) {
@@ -177,12 +178,222 @@
     await pendingLogout;
     const result = await api("api/v1/session", { method: "POST", body: { password, remember: $("remember").checked } });
     $("password").value = "";
-    if (result.ok) {
-      playVault("unlock");
-      speak(VAULT.unlock.caption, reducedMotion() ? 0 : VAULT_GRANTED_MS);
-      showApp(result.data);
-    }
+    if (result.ok) granted(result.data);
     else $("login-status").textContent = LOGIN_ERRORS[result.data && result.data.error] || "Sign-in failed.";
+  }
+
+  function granted(data) {
+    stopListening();
+    playVault("unlock");
+    speak(VAULT.unlock.caption, reducedMotion() ? 0 : VAULT_GRANTED_MS);
+    showApp(data);
+  }
+
+  // Passkeys ---------------------------------------------------------------------------------
+  const b64 = {
+    encode(buffer) {
+      let text = "";
+      for (const byte of new Uint8Array(buffer)) text += String.fromCharCode(byte);
+      return btoa(text).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    },
+    decode(text) {
+      const raw = atob(text.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((text.length + 3) % 4));
+      return Uint8Array.from(raw, (c) => c.charCodeAt(0));
+    },
+  };
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const passkeysSupported = () => Boolean(window.PublicKeyCredential && navigator.credentials);
+  const OPTIONS_MAX_AGE_MS = 4 * 60 * 1000;
+  let loginOptions = null;
+
+  // Options are fetched ahead so the passkey prompt opens straight from the tap; Safari only
+  // shows it while the tap still counts as a user gesture.
+  async function prefetchLoginOptions() {
+    const result = await api("api/v1/passkeys/login/options", { method: "POST", body: {} });
+    loginOptions = result.ok ? { ...result.data, fetched: Date.now() } : null;
+    return result;
+  }
+
+  async function refreshPasskeyOptions() {
+    $("passkey-options").hidden = true;
+    if (!passkeysSupported()) return;
+    const result = await api("api/v1/passkeys/status");
+    if (!result.ok || !result.data.available || !result.data.registered || session) return;
+    $("passkey-options").hidden = false;
+    $("hello-jarvis").hidden = !SpeechRecognition;
+    await prefetchLoginOptions();
+  }
+
+  async function passkeySignIn() {
+    stopListening();
+    let options = loginOptions;
+    loginOptions = null;
+    if (!options || Date.now() - options.fetched > OPTIONS_MAX_AGE_MS) {
+      const result = await prefetchLoginOptions();
+      if (!result.ok) {
+        $("login-status").textContent = LOGIN_ERRORS[result.data && result.data.error] || "Passkey sign-in is unavailable.";
+        return;
+      }
+      options = loginOptions;
+      loginOptions = null;
+    }
+    $("login-status").textContent = "Confirm it's you with your passkey…";
+    let credential;
+    try {
+      credential = await navigator.credentials.get({ publicKey: {
+        challenge: b64.decode(options.challenge), rpId: options.rp_id, timeout: options.timeout,
+        userVerification: options.user_verification, allowCredentials: [] } });
+    } catch (error) {
+      credential = null;
+      $("login-status").textContent = error && error.name === "NotAllowedError"
+        ? "Passkey sign-in was cancelled. Tap “Sign in with passkey” to try again."
+        : "This device could not use a passkey.";
+    }
+    prefetchLoginOptions();
+    if (!credential) return;
+    await pendingLogout;
+    const response = credential.response;
+    const result = await api("api/v1/passkeys/login", { method: "POST", body: {
+      credential_id: b64.encode(credential.rawId), client_data_json: b64.encode(response.clientDataJSON),
+      authenticator_data: b64.encode(response.authenticatorData), signature: b64.encode(response.signature),
+      remember: $("remember").checked } });
+    if (result.ok) granted(result.data);
+    else if (result.data && result.data.error === "invalid_credentials") $("login-status").textContent = "That passkey was not accepted.";
+    else $("login-status").textContent = LOGIN_ERRORS[result.data && result.data.error] || "Passkey sign-in failed.";
+  }
+
+  // "Hello Jarvis" only starts the passkey prompt: the device's Face ID, Touch ID or PIN is
+  // what signs you in, so a recording or cloned voice cannot.
+  const WAKE_PHRASE = /\b(hello|hey|hi)\W*jarvis\b/i;
+  let recognition = null;
+  function stopListening() {
+    if (recognition) {
+      const active = recognition;
+      recognition = null;
+      active.abort();
+    }
+    $("hello-jarvis").setAttribute("aria-pressed", "false");
+    $("hello-jarvis").classList.remove("listening");
+  }
+
+  function helloJarvis() {
+    if (recognition) { stopListening(); $("login-status").textContent = ""; return; }
+    const listener = new SpeechRecognition();
+    listener.lang = "en-GB";
+    listener.interimResults = true;
+    listener.maxAlternatives = 3;
+    let heard = false;
+    listener.onresult = (event) => {
+      if (recognition !== listener || heard) return;
+      heard = Array.from(event.results).some((result) => Array.from(result).some((alt) => WAKE_PHRASE.test(alt.transcript)));
+      if (!heard) return;
+      stopListening();
+      speak("Hello. Confirm it's you.");
+      passkeySignIn();
+    };
+    listener.onerror = (event) => {
+      if (recognition !== listener) return;
+      stopListening();
+      $("login-status").textContent = ["not-allowed", "service-not-allowed"].includes(event.error)
+        ? "Microphone access is blocked for this site." : "Jarvis could not hear you. Try again.";
+    };
+    listener.onend = () => {
+      if (recognition !== listener) return;
+      stopListening();
+      $("login-status").textContent = "Jarvis did not hear “Hello Jarvis”. Try again.";
+    };
+    recognition = listener;
+    $("hello-jarvis").setAttribute("aria-pressed", "true");
+    $("hello-jarvis").classList.add("listening");
+    $("login-status").textContent = "Listening… say “Hello Jarvis”.";
+    try { listener.start(); } catch {
+      stopListening();
+      $("login-status").textContent = "Voice sign-in is unavailable in this browser.";
+    }
+  }
+
+  function deviceName() {
+    const agent = navigator.userAgent;
+    if (/iPhone/.test(agent)) return "iPhone";
+    if (/iPad/.test(agent)) return "iPad";
+    if (/Android/.test(agent)) return "Android phone";
+    if (/Macintosh|Mac OS X/.test(agent)) return navigator.maxTouchPoints > 1 ? "iPad" : "Mac";
+    if (/Windows/.test(agent)) return "Windows PC";
+    return "This device";
+  }
+
+  async function passkeyCard() {
+    const result = await api("api/v1/passkeys");
+    if (!result.ok) return null;
+    if (!result.data.available) return card("Passkeys", muted("Passkeys are not available on this server yet, so sign in with your passphrase."));
+    const notice = el("p", { role: "status", "aria-live": "polite" });
+    const removeButton = (item) => {
+      const button = el("button", { type: "button", "aria-label": `Remove passkey ${item.label}` }, "Remove");
+      button.addEventListener("click", async () => {
+        button.disabled = true;
+        const removed = await api("api/v1/passkeys/remove", { method: "POST", body: { credential_id: item.id } });
+        if (removed.ok) render(); else { button.disabled = false; notice.textContent = "The passkey could not be removed."; }
+      });
+      return button;
+    };
+    const finish = el("button", { type: "button", class: "primary", hidden: "" }, "Create passkey");
+    const form = el("form", { class: "passkey-add" },
+      el("input", { type: "text", name: "username", autocomplete: "username", value: "jarvis", hidden: "" }),
+      el("label", { for: "passkey-password" }, "Passphrase"),
+      el("input", { id: "passkey-password", type: "password", autocomplete: "current-password", required: "", maxlength: "1024" }),
+      el("label", { for: "passkey-label" }, "Name this device"),
+      el("input", { id: "passkey-label", type: "text", maxlength: "60", value: deviceName() }),
+      el("button", { type: "submit" }, "Add a passkey on this device"), finish);
+    let pending = null;
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      finish.hidden = true;
+      if (!passkeysSupported()) { notice.textContent = "This browser does not support passkeys."; return; }
+      const password = $("passkey-password").value;
+      if (!password) { notice.textContent = "Enter your passphrase first."; return; }
+      notice.textContent = "Checking your passphrase…";
+      const options = await api("api/v1/passkeys/register/options", { method: "POST", body: { password } });
+      $("passkey-password").value = "";
+      if (!options.ok) {
+        notice.textContent = options.data && options.data.error === "invalid_credentials"
+          ? "That passphrase was not accepted." : LOGIN_ERRORS[options.data && options.data.error] || "Passkey setup could not start.";
+        return;
+      }
+      pending = options.data;
+      finish.hidden = false;
+      finish.focus();
+      notice.textContent = "Passphrase accepted. Select “Create passkey” and confirm with Face ID, Touch ID or your device PIN.";
+    });
+    finish.addEventListener("click", async () => {
+      const o = pending;
+      if (!o) return;
+      pending = null;
+      finish.hidden = true;
+      let credential;
+      try {
+        credential = await navigator.credentials.create({ publicKey: {
+          challenge: b64.decode(o.challenge), rp: { id: o.rp_id, name: o.rp_name },
+          user: { id: b64.decode(o.user_id), name: o.user_name, displayName: o.user_display_name },
+          pubKeyCredParams: [{ type: "public-key", alg: -7 }, { type: "public-key", alg: -257 }],
+          authenticatorSelection: { residentKey: "required", requireResidentKey: true, userVerification: "required" },
+          excludeCredentials: o.exclude_credentials.map((id) => ({ type: "public-key", id: b64.decode(id) })),
+          attestation: "none", timeout: o.timeout } });
+      } catch (error) {
+        notice.textContent = error && error.name === "InvalidStateError"
+          ? "This device already has a Jarvis passkey." : "Passkey setup was cancelled.";
+        return;
+      }
+      const saved = await api("api/v1/passkeys/register", { method: "POST", body: {
+        client_data_json: b64.encode(credential.response.clientDataJSON),
+        attestation_object: b64.encode(credential.response.attestationObject), label: $("passkey-label").value } });
+      if (saved.ok) render();
+      else notice.textContent = "The passkey could not be saved.";
+    });
+    return card("Passkeys",
+      muted("Sign in with Face ID, Touch ID, Windows Hello or your phone instead of the passphrase. Passkeys saved to iCloud Keychain or Google Password Manager work on your other devices, and on any other computer you can scan a QR code with your phone. On the sign-in screen, say “Hello Jarvis” to open the passkey prompt."),
+      table([["Passkey", (r) => r.label], ["Added", (r) => when(r.created_at)],
+        ["Last used", (r) => (r.last_used_at ? when(r.last_used_at) : "Never")], ["", removeButton]], result.data.passkeys, "No passkeys yet."),
+      result.data.passkeys.length < result.data.limit ? form : muted("The passkey limit has been reached."), notice);
   }
 
   const LOGOUT_DEADLINE_MS = 10000;
@@ -433,6 +644,7 @@
   async function settings(view) {
     const data = await load("api/v1/audit");
     if (!data || !session) return;
+    const passkeys = await passkeyCard();
     view.append(
       card("Session", keyValues([["Permission", session.permission.toUpperCase()], ["Session expires", when(session.expires_at)],
         session.remembered ? ["Remembered device", "Yes, until the session expires or you sign out"]
@@ -440,6 +652,7 @@
       el("ul", {}, el("li", {}, "READ: retrieve and analyse data."),
         el("li", {}, "RECOMMEND: suggest changes and prepare drafts."),
         el("li", {}, "EXECUTE: perform explicitly approved operations. No execute operations exist yet."))),
+      passkeys,
       card("Audit log", muted("Operational metadata only. Content and secrets are never recorded."),
         table([["When", (r) => when(r.at)], ["Actor", (r) => r.actor], ["Action", (r) => r.action], ["Outcome", (r) => r.outcome]],
           data.entries, "No audit entries.")));
@@ -578,6 +791,8 @@
       el("li", {}, el("a", { href: `#${id}`, "data-section": id }, label))));
     $("login-form").addEventListener("submit", login);
     $("logout").addEventListener("click", logout);
+    $("passkey-signin").addEventListener("click", passkeySignIn);
+    $("hello-jarvis").addEventListener("click", helloJarvis);
     $("menu-toggle").addEventListener("click", () => {
       const open = $("nav").classList.toggle("open");
       $("menu-toggle").setAttribute("aria-expanded", String(open));

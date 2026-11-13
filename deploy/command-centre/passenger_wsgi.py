@@ -36,6 +36,9 @@ checkout = values.get("COMMAND_CENTRE_CHECKOUT")
 if not checkout:
     raise RuntimeError("COMMAND_CENTRE_CHECKOUT is not set in command-centre.env")
 sys.path.insert(0, checkout)
+# Hash-pinned passkey dependencies the deploy installs per release; without them passkeys stay off.
+if (Path(checkout) / "vendor").is_dir():
+    sys.path.insert(1, str(Path(checkout) / "vendor"))
 
 from command_centre.app import CommandCentreApp  # noqa: E402
 from command_centre.config import load_settings  # noqa: E402
