@@ -79,7 +79,7 @@ jobs:
             "$CPANEL_SSH_USERNAME@$CPANEL_SSH_HOST" \
             "cd '$CPANEL_APP_PATH' && command -v flock >/dev/null && test -d .git && \
             exec 9>.git/energy-dashboard.deploy.lock && flock -x 9 && \
-            test -z \"\$(git status --porcelain)\" && \
+            test -z \"\$(git status --porcelain | grep -v '^?? data/instagram/')\" && \
             test \"\$(git branch --show-current)\" = main && git fetch --no-tags origin main && \
             if [ \"\$(git rev-parse origin/main)\" != '$DEPLOY_SHA' ]; then \
             echo 'origin/main has moved past the tested commit; skipping deploy.'; exit 0; fi && \

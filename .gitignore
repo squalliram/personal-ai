@@ -3,6 +3,8 @@
 *.sqlite3-shm
 # Private config, ID-only request flags, atomic flag temp files and logs.
 data/energy-refresh/
+# Instagram draft slides and the daily tick's lock file.
+data/instagram/
 __pycache__/
 reports/daily/*.md
 .env
