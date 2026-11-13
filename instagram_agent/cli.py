@@ -97,7 +97,8 @@ def _read(path: str | None) -> str:
 
 def model_client(env: dict):
     """Cloudflare Workers AI (free daily allocation) or OpenAI, per INSTAGRAM_AI_PROVIDER or whichever is set."""
-    provider = env.get("INSTAGRAM_AI_PROVIDER") or ("cloudflare" if env.get("CLOUDFLARE_API_TOKEN") else "openai")
+    cloudflare = bool(env.get("CLOUDFLARE_ACCOUNT_ID") and env.get("CLOUDFLARE_API_TOKEN"))
+    provider = env.get("INSTAGRAM_AI_PROVIDER") or ("cloudflare" if cloudflare else "openai")
     if provider == "cloudflare" and env.get("CLOUDFLARE_ACCOUNT_ID") and env.get("CLOUDFLARE_API_TOKEN"):
         return CloudflareAI(
             env["CLOUDFLARE_ACCOUNT_ID"],

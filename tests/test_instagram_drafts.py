@@ -174,6 +174,8 @@ class DailyTickTests(unittest.TestCase):
         self.assertIsInstance(cli.model_client(env), CloudflareAI)
         self.assertIsInstance(cli.model_client({**env, "INSTAGRAM_AI_PROVIDER": "openai"}), OpenAIClient)
         self.assertIsNone(cli.model_client({"CLOUDFLARE_API_TOKEN": "cf-secret"}))
+        partial = {"CLOUDFLARE_API_TOKEN": "cf-secret", "OPENAI_API_KEY": "sk-x"}
+        self.assertIsInstance(cli.model_client(partial), OpenAIClient)
 
     def test_voice_profile_reaches_the_create_agent(self):
         (self.root / "voice.md").write_text("Warm, short sentences, Manchester slang.", encoding="utf-8")
