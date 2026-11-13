@@ -412,10 +412,13 @@ class CommandCentreApp:
         if not sources.DRAFT_ID.fullmatch(draft) or not number.isdigit() or not 1 <= int(number) <= 10:
             return _error(400, "invalid_parameters")
         media = self.settings.instagram_media
-        path = media / draft / f"slide-{int(number)}.png" if media else None
-        if path is None or media.is_symlink() or path.parent.is_symlink() or path.is_symlink() or not path.is_file():
+        if media is None or media.is_symlink() or (media / draft).is_symlink():
             return _error(404, "not_found")
-        return 200, (path.read_bytes(), "image/png"), []
+        for extension, content_type in (("png", "image/png"), ("jpg", "image/jpeg")):
+            path = media / draft / f"slide-{int(number)}.{extension}"
+            if path.is_file() and not path.is_symlink():
+                return 200, (path.read_bytes(), content_type), []
+        return _error(404, "not_found")
 
     def instagram_decision(self, request: Request) -> Result:
         """Approve or reject a pending draft. This only records the decision; it never posts to Instagram."""

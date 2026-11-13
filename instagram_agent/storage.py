@@ -134,7 +134,7 @@ def insert_draft(conn: sqlite3.Connection, draft: dict, created_on: str, created
             draft["category"],
             draft["topic"],
             draft.get("angle"),
-            json.dumps([{"text": s["text"]} for s in draft["slides"]], ensure_ascii=False),
+            json.dumps([{k: s[k] for k in ("text", "file") if k in s} for s in draft["slides"]], ensure_ascii=False),
             draft["caption"],
             " ".join(draft["hashtags"]),
             draft.get("review_score"),

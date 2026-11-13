@@ -38,6 +38,7 @@ class InstagramQueueTests(unittest.TestCase):
         conn.close()
         (self.media / DRAFT).mkdir(parents=True)
         (self.media / DRAFT / "slide-1.png").write_bytes(PNG)
+        (self.media / DRAFT / "slide-2.jpg").write_bytes(b"\xff\xd8\xff")
 
     def client(self, permission=Permission.RECOMMEND):
         settings = make_settings(
@@ -95,7 +96,9 @@ class InstagramQueueTests(unittest.TestCase):
         client = self.client(Permission.READ)
         ok = client.request("GET", "/api/v1/instagram/slide", query=f"draft={DRAFT}&n=1")
         self.assertEqual((ok.status, ok.header("Content-Type"), ok.body), (200, "image/png", PNG))
-        for query in (f"draft={DRAFT}&n=2", f"draft={DRAFT}&n=11", "draft=../../etc&n=1", f"draft={DRAFT}&n=-1"):
+        jpeg = client.request("GET", "/api/v1/instagram/slide", query=f"draft={DRAFT}&n=2")
+        self.assertEqual((jpeg.status, jpeg.header("Content-Type")), (200, "image/jpeg"))
+        for query in (f"draft={DRAFT}&n=3", f"draft={DRAFT}&n=11", "draft=../../etc&n=1", f"draft={DRAFT}&n=-1"):
             with self.subTest(query=query):
                 self.assertIn(client.request("GET", "/api/v1/instagram/slide", query=query).status, (400, 404))
 

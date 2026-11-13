@@ -12,10 +12,11 @@ from pathlib import Path
 
 from octopus_energy.cli import load_env
 
-from . import analysis, drafts, following, storage
+from . import analysis, cloudflare_client, drafts, following, storage
 from .analysis import LONDON
+from .cloudflare_client import CloudflareAI
 from .graph import GRAPH_VERSION, GraphAPIError, GraphClient
-from .openai_client import IMAGE_MODEL, IMAGE_SIZE, TEXT_MODEL, OpenAIClient, OpenAIError
+from .openai_client import IMAGE_MODEL, IMAGE_SIZE, TEXT_MODEL, AIError, OpenAIClient
 
 DEFAULT_MEDIA = Path("data/instagram/drafts")
 DAILY_FROM_HOUR = 9
@@ -94,6 +95,27 @@ def _read(path: str | None) -> str:
     return file.read_text(encoding="utf-8") if file.is_file() and not file.is_symlink() else ""
 
 
+def model_client(env: dict):
+    """Cloudflare Workers AI (free daily allocation) or OpenAI, per INSTAGRAM_AI_PROVIDER or whichever is set."""
+    provider = env.get("INSTAGRAM_AI_PROVIDER") or ("cloudflare" if env.get("CLOUDFLARE_API_TOKEN") else "openai")
+    if provider == "cloudflare" and env.get("CLOUDFLARE_ACCOUNT_ID") and env.get("CLOUDFLARE_API_TOKEN"):
+        return CloudflareAI(
+            env["CLOUDFLARE_ACCOUNT_ID"],
+            env["CLOUDFLARE_API_TOKEN"],
+            text_model=env.get("CLOUDFLARE_TEXT_MODEL") or cloudflare_client.TEXT_MODEL,
+            image_model=env.get("CLOUDFLARE_IMAGE_MODEL") or cloudflare_client.IMAGE_MODEL,
+            image_size=env.get("CLOUDFLARE_IMAGE_SIZE") or cloudflare_client.IMAGE_SIZE,
+        )
+    if provider == "openai" and env.get("OPENAI_API_KEY"):
+        return OpenAIClient(
+            env["OPENAI_API_KEY"],
+            text_model=env.get("OPENAI_TEXT_MODEL") or TEXT_MODEL,
+            image_model=env.get("OPENAI_IMAGE_MODEL") or IMAGE_MODEL,
+            image_size=env.get("OPENAI_IMAGE_SIZE") or IMAGE_SIZE,
+        )
+    return None
+
+
 def daily(conn, env: dict, media_dir: Path, now: datetime | None = None) -> str:
     """One cron tick: from 09:00 London, make today's drafts once, with at most DAILY_ATTEMPTS tries."""
     now = now or _now()
@@ -103,7 +125,8 @@ def daily(conn, env: dict, media_dir: Path, now: datetime | None = None) -> str:
         return "skipped"
     if storage.runs_on(conn, today) >= DAILY_ATTEMPTS:
         return "gave_up"
-    if not env.get("OPENAI_API_KEY"):
+    ai = model_client(env)
+    if ai is None:
         with conn:
             storage.record_run(conn, today, stamp, "not_configured")
         return "not_configured"
@@ -117,12 +140,6 @@ def daily(conn, env: dict, media_dir: Path, now: datetime | None = None) -> str:
             sync(conn, graph, benchmarks=int(env.get("INSTAGRAM_BENCHMARKS_PER_RUN", "50")), now=now)
         except GraphAPIError:
             pass  # Draft from yesterday's data rather than miss noon.
-    ai = OpenAIClient(
-        env["OPENAI_API_KEY"],
-        text_model=env.get("OPENAI_TEXT_MODEL") or TEXT_MODEL,
-        image_model=env.get("OPENAI_IMAGE_MODEL") or IMAGE_MODEL,
-        image_size=env.get("OPENAI_IMAGE_SIZE") or IMAGE_SIZE,
-    )
     skills = env.get("INSTAGRAM_SKILLS_DIR")
     try:
         found = drafts.generate(
@@ -134,7 +151,7 @@ def daily(conn, env: dict, media_dir: Path, now: datetime | None = None) -> str:
             voice=_read(env.get("INSTAGRAM_VOICE_FILE", "data/instagram/voice.md")),
         )
         stored = drafts.render_and_store(conn, ai, found, media_dir, now)
-    except OpenAIError as exc:
+    except AIError as exc:
         with conn:
             storage.record_run(conn, today, stamp, "failed", error=str(exc))
         return "failed"

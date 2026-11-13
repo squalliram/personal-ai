@@ -1,3 +1,4 @@
+import base64
 import io
 import json
 import stat
@@ -9,6 +10,7 @@ from unittest.mock import patch
 from urllib.error import HTTPError
 
 from instagram_agent import cli, cron_install, drafts, storage
+from instagram_agent.cloudflare_client import CloudflareAI, CloudflareError
 from instagram_agent.openai_client import OpenAIClient, OpenAIError
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"0" * 32
@@ -117,7 +119,7 @@ class DraftTests(unittest.TestCase):
         self.assertEqual(stat.S_IMODE((folder / "slide-1.png").stat().st_mode), 0o600)
         row = self.conn.execute("SELECT * FROM drafts").fetchone()
         self.assertEqual((row["draft_id"], row["status"], row["created_on"]), (folder.name, "pending", "2026-11-12"))
-        self.assertEqual(json.loads(row["slides"])[0], {"text": "one 0"})
+        self.assertEqual(json.loads(row["slides"])[0], {"text": "one 0", "file": "slide-1.png"})
 
     def test_decisions_only_move_pending_drafts_and_feed_memory(self):
         draft = {**drafts.normalise(raw_draft("flat white")), "draft_id": "a" * 16, "hashtags": ["#coffee"]}
@@ -142,7 +144,7 @@ class DailyTickTests(unittest.TestCase):
 
     def tick(self, now, ai=None):
         ai = ai or FakeAI([[raw_draft("a"), raw_draft("b"), raw_draft("c")]], [[90, 80, 70]])
-        with patch.object(cli, "OpenAIClient", return_value=ai):
+        with patch.object(cli, "model_client", return_value=ai):
             return cli.daily(self.conn, self.env, self.root / "drafts", now=now)
 
     def test_runs_once_a_day_from_nine(self):
@@ -161,9 +163,16 @@ class DailyTickTests(unittest.TestCase):
 
     def test_missing_key_is_recorded_without_calling_openai(self):
         self.env.pop("OPENAI_API_KEY")
-        with patch.object(cli, "OpenAIClient") as client:
+        with patch.object(cli, "OpenAIClient") as openai, patch.object(cli, "CloudflareAI") as cloudflare:
             self.assertEqual(cli.daily(self.conn, self.env, self.root / "drafts", now=MORNING), "not_configured")
-        client.assert_not_called()
+        openai.assert_not_called()
+        cloudflare.assert_not_called()
+
+    def test_cloudflare_is_used_when_its_token_is_set(self):
+        env = {"CLOUDFLARE_ACCOUNT_ID": "a" * 32, "CLOUDFLARE_API_TOKEN": "cf-secret", "OPENAI_API_KEY": "sk-x"}
+        self.assertIsInstance(cli.model_client(env), CloudflareAI)
+        self.assertIsInstance(cli.model_client({**env, "INSTAGRAM_AI_PROVIDER": "openai"}), OpenAIClient)
+        self.assertIsNone(cli.model_client({"CLOUDFLARE_API_TOKEN": "cf-secret"}))
 
     def test_voice_profile_reaches_the_create_agent(self):
         (self.root / "voice.md").write_text("Warm, short sentences, Manchester slang.", encoding="utf-8")
@@ -199,6 +208,55 @@ class OpenAIClientTests(unittest.TestCase):
             client.chat_json("s", "u")
         self.assertEqual(str(caught.exception), "OpenAI request failed (HTTP 429)")
         self.assertEqual(call.call_count, 2)
+
+
+class CloudflareClientTests(unittest.TestCase):
+    def reply(self, body):
+        response = io.BytesIO(json.dumps(body).encode())
+        response.__enter__ = lambda *a: response
+        response.__exit__ = lambda *a: None
+        return response
+
+    def client(self):
+        return CloudflareAI("0123456789abcdef0123456789abcdef", "cf-secret", retries=0)
+
+    def test_chat_reads_object_or_text_replies(self):
+        for result in ({"response": {"drafts": []}}, {"response": 'Sure! ```json\n{"drafts": []}\n```'}):
+            with patch(
+                "instagram_agent.cloudflare_client.urlopen",
+                return_value=self.reply({"success": True, "result": result}),
+            ) as call:
+                self.assertEqual(self.client().chat_json("s", "u"), {"drafts": []})
+            request = call.call_args.args[0]
+            self.assertTrue(request.full_url.endswith("/ai/run/@cf/meta/llama-4-scout-17b-16e-instruct"))
+            self.assertEqual(json.loads(request.data)["max_tokens"], 4096)
+        with patch(
+            "instagram_agent.cloudflare_client.urlopen", return_value=self.reply({"result": {"response": "no"}})
+        ):
+            with self.assertRaises(CloudflareError):
+                self.client().chat_json("s", "u")
+
+    def test_flux_2_images_use_multipart_and_keep_their_format(self):
+        jpeg = b"\xff\xd8\xff" + b"0" * 16
+        body = {"success": True, "result": {"image": base64.b64encode(jpeg).decode()}}
+        with patch("instagram_agent.cloudflare_client.urlopen", return_value=self.reply(body)) as call:
+            self.assertEqual(self.client().image("a flat white"), jpeg)
+        request = call.call_args.args[0]
+        self.assertTrue(request.get_header("Content-type").startswith("multipart/form-data; boundary="))
+        self.assertIn(b'name="width"\r\n\r\n1024', request.data)
+        bad = {"success": True, "result": {"image": base64.b64encode(b"GIF89a").decode()}}
+        with patch("instagram_agent.cloudflare_client.urlopen", return_value=self.reply(bad)):
+            with self.assertRaises(CloudflareError):
+                self.client().image("x")
+
+    def test_errors_hide_the_token(self):
+        error = HTTPError("https://api.cloudflare.com/x", 401, "x", {}, io.BytesIO(b"cf-secret"))
+        with (
+            patch("instagram_agent.cloudflare_client.urlopen", side_effect=error),
+            self.assertRaises(CloudflareError) as caught,
+        ):
+            self.client().chat_json("s", "u")
+        self.assertEqual(str(caught.exception), "Workers AI request failed (HTTP 401)")
 
 
 class CronInstallTests(unittest.TestCase):

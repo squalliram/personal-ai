@@ -8,15 +8,16 @@ import re
 import secrets
 import shutil
 import sqlite3
+import typing
 from datetime import datetime, time, timedelta
 from pathlib import Path
 
 from . import analysis, storage
 from .analysis import LONDON
-from .openai_client import OpenAIClient, OpenAIError
+from .openai_client import AIError, image_extension
 
 CATEGORIES = ("food", "coffee", "restaurant")
-MIN_SLIDES, MAX_SLIDES = 3, 10
+MIN_SLIDES, MAX_SLIDES = 3, 8
 MAX_HASHTAGS = 20
 MAX_CAPTION = 2200
 PASS_SCORE = 70
@@ -24,6 +25,7 @@ MAX_ROUNDS = 3
 READY_BY = time(12, 0)
 FALLBACK_HOURS = (18, 12, 20)
 DRAFT_ID_RE = re.compile(r"[0-9a-f]{16}")
+AI = typing.Any  # OpenAIClient or CloudflareAI: chat_json(system, user) -> dict, image(prompt) -> bytes
 RULE_SKILLS = ("ig-carousel", "ig-caption", "ig-human")
 
 UNTRUSTED = (
@@ -33,11 +35,17 @@ UNTRUSTED = (
 CREATE = (
     "You are the Create agent for @instafoodielove, an Instagram account about food, coffee and restaurants. "
     "Write {count} carousel drafts in the account's own voice. Every draft's category must be food, coffee or "
-    f"restaurant. Each has {MIN_SLIDES}-{MAX_SLIDES} slides: short on-image text (at most 120 characters) and a "
-    "photographic image prompt with no text, logos or real people's faces. Favour topics and formats like the "
-    "approved examples that performed best, avoid ones like rejected drafts, and do not repeat recent topics. "
-    "The caption has no hashtags. "
-    'Reply with JSON: {{"drafts": [{{"category": "...", "topic": "...", "angle": "...", '
+    "restaurant, and its topic must be specific (a dish, a drink, a technique, a type of place or a named city "
+    "area), never generic like 'dining out'. "
+    f"Each has 5-{MAX_SLIDES} slides. Slide 1 is the hook: a specific promise or surprise in at most 6 words. "
+    "Every other slide's text is one concrete tip, fact or pick in at most 6 words, because it is drawn onto the "
+    "photo. Each image prompt describes one appetising, well-lit photograph of food, drinks or a beautiful venue "
+    "that matches that slide, with no text, logos, people's faces, rubbish or anything unappetising. "
+    "The caption (80-180 words, no hashtags) opens with a hook line, then explains every slide in one short line "
+    "each, then ends with exactly one ask: save, share or comment. "
+    "Favour topics and formats like the approved examples that performed best, avoid ones like rejected drafts, "
+    "and do not repeat recent topics. "
+    'Reply with JSON only: {{"drafts": [{{"category": "...", "topic": "...", "angle": "...", '
     '"slides": [{{"text": "...", "image_prompt": "..."}}], "caption": "..."}}]}}'
 )
 TAGS = (
@@ -48,7 +56,8 @@ TAGS = (
 REVIEW = (
     "You are the Review agent for @instafoodielove. Score each draft 0-100 for how likely it is to earn reach, "
     "saves, shares and comments compared with the top benchmark posts: hook strength of slide 1, value per slide, "
-    "a clear single ask in the caption, fit with the account, and whether it sounds human. Be strict; 70 means "
+    "a clear single ask in the caption, fit with the account, and whether it sounds human. Up to 20 hashtags is "
+    "intended; don't mark drafts down for the number of hashtags. Be strict; 70 means "
     'ready to post. Reply with JSON: {"reviews": [{"score": 0, "notes": "one or two sentences"}]}, in order.'
 )
 
@@ -132,14 +141,14 @@ def _prompt(system: str, rules: str, voice: str) -> str:
     return "\n\n".join(sections)
 
 
-def create(ai: OpenAIClient, ctx: dict, count: int, feedback: list[str], *, rules: str, voice: str) -> list[dict]:
+def create(ai: AI, ctx: dict, count: int, feedback: list[str], *, rules: str, voice: str) -> list[dict]:
     payload = {**ctx, "feedback_on_weak_drafts": feedback}
     reply = ai.chat_json(_prompt(CREATE.format(count=count), rules, voice), json.dumps(payload, ensure_ascii=False))
     found = [normalise(raw) for raw in reply.get("drafts", [])] if isinstance(reply.get("drafts"), list) else []
     return [d for d in found if d][:count]
 
 
-def tag(ai: OpenAIClient, ctx: dict, drafts: list[dict]) -> None:
+def tag(ai: AI, ctx: dict, drafts: list[dict]) -> None:
     payload = {
         "trending_hashtags": ctx["trending_hashtags"],
         "drafts": [{"topic": d["topic"], "category": d["category"], "caption": d["caption"]} for d in drafts],
@@ -150,7 +159,7 @@ def tag(ai: OpenAIClient, ctx: dict, drafts: list[dict]) -> None:
         draft["hashtags"] = clean_hashtags(tags, draft["caption"])
 
 
-def review(ai: OpenAIClient, ctx: dict, drafts: list[dict], *, rules: str) -> None:
+def review(ai: AI, ctx: dict, drafts: list[dict], *, rules: str) -> None:
     payload = {
         "top_benchmark_posts": ctx["top_benchmark_posts"],
         "drafts": [
@@ -167,7 +176,7 @@ def review(ai: OpenAIClient, ctx: dict, drafts: list[dict], *, rules: str) -> No
         draft["review_notes"] = _text(result.get("notes"), 500) if isinstance(result, dict) else None
 
 
-def generate(conn, ai: OpenAIClient, now: datetime, *, count: int = 3, rules: str = "", voice: str = "") -> list[dict]:
+def generate(conn, ai: AI, now: datetime, *, count: int = 3, rules: str = "", voice: str = "") -> list[dict]:
     """Create, tag and review; weak drafts go back to Create with the reviewer's notes, up to MAX_ROUNDS."""
     ctx = context(conn, now)
     passed, weak, feedback = [], [], []
@@ -211,8 +220,8 @@ def _private_dir(path: Path) -> None:
         raise OSError("Draft media directory is not a private directory")
 
 
-def render_and_store(conn, ai: OpenAIClient, drafts: list[dict], media_dir: Path, now: datetime) -> int:
-    """OpenAI images for each slide, then the draft row. A draft whose images fail is dropped."""
+def render_and_store(conn, ai: AI, drafts: list[dict], media_dir: Path, now: datetime) -> int:
+    """An image for each slide, then the draft row. A draft whose images fail is dropped."""
     _private_dir(media_dir)
     stored = 0
     for draft, slot in zip(drafts, publish_slots(conn, now, len(drafts)), strict=True):
@@ -223,14 +232,13 @@ def render_and_store(conn, ai: OpenAIClient, drafts: list[dict], media_dir: Path
             for number, slide in enumerate(draft["slides"], 1):
                 image = ai.image(
                     f"{slide['image_prompt']}\n\nAn Instagram carousel slide for a food, coffee and restaurant account, "
-                    f'4:5 portrait. Render this text large, legible and spelled exactly: "{slide["text"]}"'
+                    f'4:5 portrait. Overlay this text in large, clean, legible type, spelled exactly: "{slide["text"]}"'
                 )
-                fd = os.open(
-                    folder / f"slide-{number}.png", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600
-                )
-                with os.fdopen(fd, "wb") as stream:
+                slide["file"] = f"slide-{number}.{image_extension(image)}"
+                flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+                with os.fdopen(os.open(folder / slide["file"], flags, 0o600), "wb") as stream:
                     stream.write(image)
-        except OpenAIError:
+        except AIError:
             shutil.rmtree(folder, ignore_errors=True)
             continue
         with conn:

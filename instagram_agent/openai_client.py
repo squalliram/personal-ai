@@ -15,8 +15,19 @@ NO_RETRY_CODES = {"insufficient_quota", "credit_balance_exhausted", "billing_har
 IMAGE_SIZE = "1024x1280"  # 4:5, Instagram's tallest feed ratio; both sides divisible by 16.
 
 
-class OpenAIError(RuntimeError):
-    """A safe API error: it never includes the key, prompts or response bodies."""
+class AIError(RuntimeError):
+    """A safe model-provider error: it never includes keys, prompts or response bodies."""
+
+
+class OpenAIError(AIError):
+    pass
+
+
+IMAGE_TYPES = {b"\x89PNG\r\n\x1a\n": "png", b"\xff\xd8\xff": "jpg"}
+
+
+def image_extension(data: bytes) -> str | None:
+    return next((ext for magic, ext in IMAGE_TYPES.items() if data.startswith(magic)), None)
 
 
 def _error_code(exc: HTTPError) -> str | None:

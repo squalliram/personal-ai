@@ -385,7 +385,14 @@ def instagram_drafts(settings: Settings, limit: int = 30) -> dict:
         result["drafts"].append(
             {
                 **dict(row),
-                "slides": [{"text": str(s.get("text", ""))} for s in slides if isinstance(s, dict)],
+                "slides": [
+                    {
+                        "text": str(s.get("text", "")),
+                        "format": "jpg" if str(s.get("file", "")).endswith(".jpg") else "png",
+                    }
+                    for s in slides
+                    if isinstance(s, dict)
+                ],
                 "hashtags": (row["hashtags"] or "").split(),
             }
         )
