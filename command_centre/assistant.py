@@ -64,7 +64,8 @@ def build_context(*, now: datetime, data: dict, instagram: dict, agents: list[di
         "energy": {
             "state": energy.get("state"),
             "last_successful_sync_at": energy.get("last_successful_sync_at"),
-            "daily_last_14_days": _last_days(energy.get("daily", []), 14),
+            # Newest first, so shrinking the snapshot drops the oldest days.
+            "daily_last_14_days_newest_first": _last_days(energy.get("daily", []), 14)[::-1],
             "monthly_estimates": energy.get("monthly", [])[:6],
             "unusual_days": energy.get("anomalies", [])[:10],
             "note": "Costs are estimates from stored tariffs, not bills.",

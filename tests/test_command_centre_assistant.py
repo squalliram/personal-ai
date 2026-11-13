@@ -152,9 +152,12 @@ class AssistantTests(unittest.TestCase):
         text = assistant.build_context(
             now=datetime(2026, 11, 20, tzinfo=timezone.utc), data=data, instagram={"drafts": []}, agents=[]
         )
-        rows = json.loads(text)["energy"]["daily_last_14_days"]
+        rows = json.loads(text)["energy"]["daily_last_14_days_newest_first"]
         self.assertEqual(len({row["date"] for row in rows}), 14)
         self.assertEqual(len(rows), 28)
+        self.assertEqual(rows[0]["date"], "2026-11-20")
+        tight = assistant._trim(json.loads(text), 40, 5)
+        self.assertEqual(tight["energy"]["daily_last_14_days_newest_first"][0]["date"], "2026-11-20")
 
 
 if __name__ == "__main__":
