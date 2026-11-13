@@ -337,23 +337,24 @@
       return button;
     };
     const finish = el("button", { type: "button", class: "primary", hidden: "" }, "Create passkey");
+    // Keep references: render() may detach the form while a passkey prompt is open.
+    const passwordInput = el("input", { id: "passkey-password", type: "password", autocomplete: "current-password", required: "", maxlength: "1024" });
+    const labelInput = el("input", { id: "passkey-label", type: "text", maxlength: "60", value: deviceName() });
     const form = el("form", { class: "passkey-add" },
       el("input", { type: "text", name: "username", autocomplete: "username", value: "jarvis", hidden: "" }),
-      el("label", { for: "passkey-password" }, "Passphrase"),
-      el("input", { id: "passkey-password", type: "password", autocomplete: "current-password", required: "", maxlength: "1024" }),
-      el("label", { for: "passkey-label" }, "Name this device"),
-      el("input", { id: "passkey-label", type: "text", maxlength: "60", value: deviceName() }),
+      el("label", { for: "passkey-password" }, "Passphrase"), passwordInput,
+      el("label", { for: "passkey-label" }, "Name this device"), labelInput,
       el("button", { type: "submit" }, "Add a passkey on this device"), finish);
     let pending = null;
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
       finish.hidden = true;
       if (!passkeysSupported()) { notice.textContent = "This browser does not support passkeys."; return; }
-      const password = $("passkey-password").value;
+      const password = passwordInput.value;
       if (!password) { notice.textContent = "Enter your passphrase first."; return; }
       notice.textContent = "Checking your passphrase…";
       const options = await api("api/v1/passkeys/register/options", { method: "POST", body: { password } });
-      $("passkey-password").value = "";
+      passwordInput.value = "";
       if (!options.ok) {
         notice.textContent = options.data && options.data.error === "invalid_credentials"
           ? "That passphrase was not accepted." : LOGIN_ERRORS[options.data && options.data.error] || "Passkey setup could not start.";
@@ -385,7 +386,7 @@
       }
       const saved = await api("api/v1/passkeys/register", { method: "POST", body: {
         client_data_json: b64.encode(credential.response.clientDataJSON),
-        attestation_object: b64.encode(credential.response.attestationObject), label: $("passkey-label").value } });
+        attestation_object: b64.encode(credential.response.attestationObject), label: labelInput.value } });
       if (saved.ok) render();
       else notice.textContent = "The passkey could not be saved.";
     });
