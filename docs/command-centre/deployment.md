@@ -122,6 +122,7 @@ Neither the passphrase nor its hash belongs in chat, command arguments or logs.
   a permission ceiling above RECOMMEND. Phase 1 has no execute routes.
 - Cookies are Secure, HttpOnly, SameSite=Strict, and use the `__Host-` prefix.
   Idle expiry is 30 minutes; absolute expiry is 12 hours. A "Remember this device" sign-in lasts 30 days from sign-in with no idle expiry.
+- **Passkeys.** Each release installs `deploy/command-centre/requirements.txt` (hash-pinned `cryptography`) into `releases/<sha>/vendor` with the server's own `pip`. If that fails, the release still deploys with passkeys off and the passphrase working, and the deploy result reports `"passkeys_available": false`. Credentials live in `command-centre-app/data/passkeys.sqlite3` (`COMMAND_CENTRE_PASSKEYS_DB`). Add one from Settings → Passkeys after signing in with the passphrase.
 - Hosted sessions and rate counters share the private session database across
   Passenger workers. Login attempts reserve their rate-limit slot atomically
   before password verification.

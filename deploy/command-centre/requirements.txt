@@ -1,0 +1,20 @@
+# Passkey (WebAuthn) signature checks. Installed with --require-hashes into each release's
+# vendor/ directory by deploy_host.py, and into CI by test.yml. Linux x86_64/aarch64 wheels only.
+cryptography==48.0.1 \
+    --hash=sha256:f0d27a5696721ef7a672b8c810f6aded391058e0b9486e63e6d93baf765da691 \
+    --hash=sha256:3752f2dbc8f07a30aad2932c986cea495b03bb554887828225da104f732852b6 \
+    --hash=sha256:0ee6ea481db1ab889cba043ec1eda17bb9c1ea79db6722f779c3667f9f70322f \
+    --hash=sha256:86be3b1b0b6bf09482fb50a979c508d2950ed95f5621ec77f4e385962006b83a \
+    --hash=sha256:88c852a0ae366e262e5a1744b685e6a433dc8788dd2a277e418bf4904203609d \
+    --hash=sha256:b74ca3b8e5ecdd833bf6a002ca41b4793bb27fb8f1c06ffaf2643c9e9140e31b \
+    --hash=sha256:32143b24adb918f078134e1e230f1eb8cc04886b92c28b5f0041aaf3e5699225 \
+    --hash=sha256:eb86ce1af36fe65041b6db9a8bb064ee621a7e5fded0f80d475ec243477cd242 \
+    --hash=sha256:66fd0771e7b9c6dcd44cf1120690d2338d16d72795cf40cae2786a39eba65429 \
+    --hash=sha256:48fe40804d4caa2288f24e70ca8c64c42dd826da0ad7e4f1b41b2128d679e6c8 \
+    --hash=sha256:4ab0a343c807bbcd90c971cd1ecf072937cd01847a9e002bef88fb47ac6be577 \
+    --hash=sha256:fe0180af5bf9236518a087e35bf2d9a347d5f5f51e63c579d683ddff424e3d46
+cffi==2.0.0 \
+    --hash=sha256:3e17ed538242334bf70832644a32a7aae3d83b57567f9fd60a26257e992b79ba \
+    --hash=sha256:b21e08af67b8a103c71a250401c78d5e0893beff75e28c53c98f4de42f774062
+pycparser==2.23 \
+    --hash=sha256:e5c6e8d3fbad53479cab09ac03729e0a9faf2bee3db8208a550daf5af81a5934

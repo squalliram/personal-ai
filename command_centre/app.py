@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hmac
+import ipaddress
 import json
 import os
 import re
@@ -21,7 +22,7 @@ from zoneinfo import ZoneInfo
 
 from instagram_agent import storage as instagram_storage
 
-from . import sources
+from . import passkeys, sources
 from .audit import AuditLog
 from .automations import CronReader, list_automations, read_crontab
 from .config import Settings
@@ -77,15 +78,15 @@ def _error(status: int, code: str, headers: list[tuple[str, str]] | None = None)
     return status, {"error": code}, headers or []
 
 
-def _json_body(environ: dict) -> tuple[object, Result | None]:
+def _json_body(environ: dict, limit: int = MAX_BODY_BYTES) -> tuple[object, Result | None]:
     if not environ.get("CONTENT_TYPE", "").split(";")[0].strip() == "application/json":
         return None, _error(415, "json_required")
     try:
         length = int(environ.get("CONTENT_LENGTH") or 0)
     except ValueError:
         return None, _error(400, "invalid_request")
-    if not 0 < length <= MAX_BODY_BYTES:
-        return None, _error(413 if length > MAX_BODY_BYTES else 400, "invalid_request")
+    if not 0 < length <= limit:
+        return None, _error(413 if length > limit else 400, "invalid_request")
     try:
         return json.loads(environ["wsgi.input"].read(length)), None
     except (ValueError, UnicodeDecodeError):
@@ -123,13 +124,22 @@ class CommandCentreApp:
                 clock=clock,
             )
         self.audit = audit or AuditLog(settings.audit_db, clock=clock)
+        self.passkeys = (
+            passkeys.PasskeyStore(settings.passkeys_db, clock=clock)
+            if settings.passkeys_db and settings.password_hash and passkeys.available()
+            else None
+        )
         self.login_per_client = RateLimiter(5, 15 * 60, clock=monotonic)
         self.login_global = RateLimiter(20, 15 * 60, clock=monotonic)
         self.api_limiter = RateLimiter(240, 60, clock=monotonic)
+        self.passkey_options_limiter = RateLimiter(20, 15 * 60, clock=monotonic)
         if settings.sessions_db:
             self.login_per_client = SqliteRateLimiter(settings.sessions_db, "login_client", 5, 900, clock=clock)
             self.login_global = SqliteRateLimiter(settings.sessions_db, "login_global", 20, 900, clock=clock)
             self.api_limiter = SqliteRateLimiter(settings.sessions_db, "api", 240, 60, clock=clock)
+            self.passkey_options_limiter = SqliteRateLimiter(
+                settings.sessions_db, "passkey_options", 20, 900, clock=clock
+            )
         self.static = {
             path: ((STATIC_DIR / name).read_bytes(), content_type)
             for path, (name, content_type) in STATIC_FILES.items()
@@ -139,6 +149,15 @@ class CommandCentreApp:
             ("POST", "/api/v1/session"): Route(self.login, None),
             ("GET", "/api/v1/session"): Route(self.session_info, Permission.READ),
             ("DELETE", "/api/v1/session"): Route(self.logout, Permission.READ, csrf=True),
+            ("GET", "/api/v1/passkeys/status"): Route(self.passkey_status, None),
+            ("POST", "/api/v1/passkeys/login/options"): Route(self.passkey_login_options, None),
+            ("POST", "/api/v1/passkeys/login"): Route(self.passkey_login, None),
+            ("GET", "/api/v1/passkeys"): Route(self.passkey_list, Permission.READ),
+            ("POST", "/api/v1/passkeys/register/options"): Route(
+                self.passkey_register_options, Permission.READ, csrf=True
+            ),
+            ("POST", "/api/v1/passkeys/register"): Route(self.passkey_register, Permission.READ, csrf=True),
+            ("POST", "/api/v1/passkeys/remove"): Route(self.passkey_remove, Permission.READ, csrf=True),
             ("GET", "/api/v1/overview"): Route(self.overview, Permission.READ),
             ("GET", "/api/v1/modules"): Route(self.modules, Permission.READ),
             ("GET", "/api/v1/agents"): Route(self.agents, Permission.READ),
@@ -180,7 +199,8 @@ class CommandCentreApp:
             ("Cache-Control", "no-store"),
             ("Cross-Origin-Opener-Policy", "same-origin"),
             ("Cross-Origin-Resource-Policy", "same-origin"),
-            ("Permissions-Policy", "camera=(), microphone=(), geolocation=()"),
+            # The microphone is for the browser's own speech recognition ("Hello Jarvis"); no audio reaches this server.
+            ("Permissions-Policy", "camera=(), microphone=(self), geolocation=()"),
         ]
         if self.secure:
             headers.append(("Strict-Transport-Security", "max-age=31536000"))
@@ -287,20 +307,220 @@ class CommandCentreApp:
             return _error(401, "invalid_credentials")
         self.login_global.release("all", reservation)
         self.login_per_client.reset(client)
+        return self._start_session(request, remember, "passphrase")
+
+    def _start_session(self, request: Request, remember: bool, method: str) -> Result:
         self.sessions.revoke(request.token)
         token, session = self.sessions.create(self.settings.permission_ceiling, remember=remember)
         self.audit.record(
             "login",
             "success",
             actor="owner",
-            client=client,
+            client=request.client,
             permission=session.permission.label,
             remembered=session.remember,
+            method=method,
         )
         lifetime = (
             self.settings.session_remember_seconds if session.remember else self.settings.session_absolute_seconds
         )
         return 200, self._session_payload(session), [self._cookie(token, lifetime)]
+
+    # Passkeys ---------------------------------------------------------------------------------
+
+    def _webauthn_party(self, environ: dict) -> tuple[str, str]:
+        host = environ.get("HTTP_HOST", "")
+        return f"{'https' if self.secure else 'http'}://{host}", host.rpartition(":")[0] if ":" in host else host
+
+    def _reserve_attempt(self, client: str, action: str) -> tuple[int | None, Result | None]:
+        if self.login_per_client.blocked(client) or self.login_global.blocked("all"):
+            self.audit.record(action, "rate_limited", client=client)
+            return None, _error(429, "rate_limited", [("Retry-After", "900")])
+        reservation = self.login_global.reserve("all")
+        if reservation is None or not self.login_per_client.hit(client):
+            if reservation is not None:
+                self.login_global.release("all", reservation)
+            self.audit.record(action, "rate_limited", client=client)
+            return None, _error(429, "rate_limited", [("Retry-After", "900")])
+        return reservation, None
+
+    def _passkey_body(self, environ: dict, required: set[str], optional: set[str], limit: int = MAX_BODY_BYTES):
+        body, error = _json_body(environ, limit)
+        if error:
+            return None, error
+        if not isinstance(body, dict) or not required <= set(body) <= required | optional:
+            return None, _error(400, "invalid_request")
+        return body, None
+
+    def _passkeys_usable(self, request: Request) -> bool:
+        """WebAuthn needs a domain RP ID, so passkeys are off on IP-literal hosts such as 127.0.0.1."""
+        if self.passkeys is None:
+            return False
+        _, rp_id = self._webauthn_party(request.environ)
+        try:
+            ipaddress.ip_address(rp_id.strip("[]"))
+        except ValueError:
+            return True
+        return False
+
+    def passkey_status(self, request: Request) -> Result:
+        available = self._passkeys_usable(request)
+        return 200, {"available": available, "registered": available and self.passkeys.count() > 0}, []
+
+    def passkey_login_options(self, request: Request) -> Result:
+        if not self._passkeys_usable(request):
+            return _error(503, "passkeys_unavailable")
+        if (
+            self.login_per_client.blocked(request.client)
+            or self.login_global.blocked("all")
+            or not self.passkey_options_limiter.hit(request.client)
+        ):
+            return _error(429, "rate_limited", [("Retry-After", "900")])
+        if not self.passkeys.count():
+            return _error(404, "no_passkeys")
+        _, rp_id = self._webauthn_party(request.environ)
+        challenge = self.passkeys.issue_challenge("login")
+        return (
+            200,
+            {
+                "challenge": passkeys.b64url_encode(challenge),
+                "rp_id": rp_id,
+                "timeout": passkeys.CHALLENGE_SECONDS * 1000,
+                "user_verification": "required",
+            },
+            [],
+        )
+
+    def passkey_login(self, request: Request) -> Result:
+        if not self._passkeys_usable(request):
+            return _error(503, "passkeys_unavailable")
+        fields = {"credential_id", "client_data_json", "authenticator_data", "signature"}
+        body, error = self._passkey_body(request.environ, fields, {"remember"})
+        if error:
+            return error
+        remember = body.get("remember", False)
+        if not isinstance(remember, bool) or not all(isinstance(body[name], str) for name in fields):
+            return _error(400, "invalid_request")
+        reservation, error = self._reserve_attempt(request.client, "passkey_login")
+        if error:
+            return error
+        origin, rp_id = self._webauthn_party(request.environ)
+        try:
+            credential_id = passkeys.b64url_encode(passkeys.b64url_decode(body["credential_id"]))
+            client_data = passkeys.b64url_decode(body["client_data_json"])
+            challenge = passkeys.client_data_challenge(client_data, kind="webauthn.get", origin=origin)
+            if not self.passkeys.consume_challenge(challenge, "login"):
+                raise passkeys.PasskeyError("challenge_expired")
+            stored = self.passkeys.get(credential_id)
+            if stored is None:
+                raise passkeys.PasskeyError("unknown_credential")
+            count = passkeys.verify_assertion(
+                client_data_json=client_data,
+                authenticator_data=passkeys.b64url_decode(body["authenticator_data"]),
+                signature=passkeys.b64url_decode(body["signature"]),
+                rp_id=rp_id,
+                cose_key=stored[0],
+                stored_count=stored[1],
+            )
+            if not self.passkeys.mark_used(credential_id, stored[1], count):
+                raise passkeys.PasskeyError("counter_regressed")
+        except passkeys.PasskeyError as failure:
+            self.audit.record("passkey_login", "failure", client=request.client, reason=str(failure))
+            return _error(401, "invalid_credentials")
+        self.login_global.release("all", reservation)
+        self.login_per_client.reset(request.client)
+        return self._start_session(request, remember, "passkey")
+
+    def _iso_or_none(self, instant: float | None) -> str | None:
+        return None if instant is None else self._iso(instant)
+
+    def passkey_list(self, request: Request) -> Result:
+        if not self._passkeys_usable(request):
+            return 200, {"available": False, "passkeys": []}, []
+        items = [
+            {
+                **item,
+                "created_at": self._iso(item["created_at"]),
+                "last_used_at": self._iso_or_none(item["last_used_at"]),
+            }
+            for item in self.passkeys.list()
+        ]
+        return 200, {"available": True, "passkeys": items, "limit": passkeys.MAX_PASSKEYS}, []
+
+    def passkey_register_options(self, request: Request) -> Result:
+        if not self._passkeys_usable(request):
+            return _error(503, "passkeys_unavailable")
+        body, error = self._passkey_body(request.environ, {"password"}, set())
+        if error:
+            return error
+        if not isinstance(body["password"], str):
+            return _error(400, "invalid_request")
+        # Re-entering the passphrase stops a stolen session cookie from adding a lasting credential.
+        reservation, error = self._reserve_attempt(request.client, "passkey_register")
+        if error:
+            return error
+        if not verify_password(body["password"], self.settings.password_hash):
+            self.audit.record("passkey_register", "failure", actor="owner", client=request.client)
+            return _error(401, "invalid_credentials")
+        self.login_global.release("all", reservation)
+        self.login_per_client.reset(request.client)
+        _, rp_id = self._webauthn_party(request.environ)
+        challenge = self.passkeys.issue_challenge(f"register:{request.session.token_hash}")
+        return (
+            200,
+            {
+                "challenge": passkeys.b64url_encode(challenge),
+                "rp_id": rp_id,
+                "rp_name": "Jarvis",
+                "user_id": passkeys.b64url_encode(b"jarvis-owner"),
+                "user_name": "jarvis",
+                "user_display_name": "Jarvis",
+                "exclude_credentials": self.passkeys.credential_ids(),
+                "timeout": passkeys.CHALLENGE_SECONDS * 1000,
+            },
+            [],
+        )
+
+    def passkey_register(self, request: Request) -> Result:
+        if not self._passkeys_usable(request):
+            return _error(503, "passkeys_unavailable")
+        body, error = self._passkey_body(
+            request.environ, {"client_data_json", "attestation_object"}, {"label"}, limit=16 * 1024
+        )
+        if error:
+            return error
+        label = body.get("label", "Passkey")
+        if not isinstance(label, str) or not all(
+            isinstance(body[k], str) for k in ("client_data_json", "attestation_object")
+        ):
+            return _error(400, "invalid_request")
+        label = " ".join(label.split())[: passkeys.MAX_LABEL] or "Passkey"
+        origin, rp_id = self._webauthn_party(request.environ)
+        try:
+            client_data = passkeys.b64url_decode(body["client_data_json"])
+            challenge = passkeys.client_data_challenge(client_data, kind="webauthn.create", origin=origin)
+            if not self.passkeys.consume_challenge(challenge, f"register:{request.session.token_hash}"):
+                raise passkeys.PasskeyError("challenge_expired")
+            attestation = passkeys.b64url_decode(body["attestation_object"], limit=12 * 1024)
+            credential_id, public_key, count = passkeys.verify_registration(attestation, rp_id)
+        except passkeys.PasskeyError as failure:
+            self.audit.record("passkey_register", "failure", actor="owner", client=request.client, reason=str(failure))
+            return _error(400, "invalid_passkey")
+        if not self.passkeys.add(credential_id, public_key, count, label):
+            return _error(409, "passkey_not_added")
+        self.audit.record("passkey_register", "success", actor="owner", client=request.client)
+        return self.passkey_list(request)
+
+    def passkey_remove(self, request: Request) -> Result:
+        if not self._passkeys_usable(request):
+            return _error(503, "passkeys_unavailable")
+        body, error = self._passkey_body(request.environ, {"credential_id"}, set())
+        if error:
+            return error
+        if not isinstance(body["credential_id"], str) or not self.passkeys.remove(body["credential_id"]):
+            return _error(404, "not_found")
+        self.audit.record("passkey_remove", "success", actor="owner", client=request.client)
+        return self.passkey_list(request)
 
     def _session_payload(self, session: Session) -> dict:
         return {

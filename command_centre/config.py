@@ -49,6 +49,7 @@ class Settings:
     session_remember_seconds: int = 30 * 24 * 60 * 60
     instagram_db: Path | None = None
     instagram_media: Path | None = None
+    passkeys_db: Path | None = None
 
 
 def load_settings(root: Path = ROOT, environ: Mapping[str, str] | None = None) -> Settings:
@@ -82,4 +83,5 @@ def load_settings(root: Path = ROOT, environ: Mapping[str, str] | None = None) -
         inspect_crontab=values.get(PREFIX + "INSPECT_CRONTAB", "1").lower() not in ("0", "false", "no"),
         instagram_db=path("INSTAGRAM_DB", "data/instagram.sqlite3"),
         instagram_media=path("INSTAGRAM_MEDIA", "data/instagram/drafts"),
+        passkeys_db=path("PASSKEYS_DB", "data/command_centre_passkeys.sqlite3"),
     )

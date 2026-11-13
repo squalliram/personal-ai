@@ -20,6 +20,10 @@
     <input id="password" name="password" type="password" autocomplete="current-password" required maxlength="1024">
     <label class="remember" for="remember"><input id="remember" name="remember" type="checkbox"> Remember this device for 30 days</label>
     <button type="submit" class="primary">Sign in</button>
+    <div id="passkey-options" class="login-alt" hidden>
+      <button id="passkey-signin" type="button">Sign in with passkey</button>
+      <button id="hello-jarvis" type="button" class="mic" aria-pressed="false" hidden>Say “Hello Jarvis”</button>
+    </div>
     <p id="login-status" role="status" aria-live="polite"></p>
   </form>
 </section>
