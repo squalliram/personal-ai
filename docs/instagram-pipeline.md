@@ -10,7 +10,7 @@ A daily pipeline on the hosting server that drafts food, coffee and restaurant c
 | 4 | **Tags**: up to 20 per post, mostly from `trending_hashtags` | Done |
 | 5 | **Review**: scores each draft against `top_benchmark_posts`; under 70 goes back to Create with notes, up to 3 rounds | Done |
 | 6 | **Queue**: Instagram page in the Command Centre with **Approve** and **Reject**; decisions feed the memory | Done |
-| 7 | **Publish**: drafts that passed review (or that I approved) post at their slot unless I reject them first. Off until the Meta token is set | Built, waiting for the token |
+| 7 | **Publish**: drafts that passed review (or that I approved) post at their slot unless I reject them first. Off until the Meta token and user ID are set | Built, waiting for the token |
 | 8 | **DMs**: drafted replies, sent when I press send | Later, needs Meta app review |
 
 Step 7 is the only Instagram write. Steps 1-2 only call `GET` endpoints, and all three are skipped while there's no Meta token. The drafts then use the voice profile, past decisions and general food/coffee/restaurant knowledge.
@@ -80,7 +80,7 @@ Both need a RECOMMEND session, CSRF and same-origin, and both are written to the
 
 ## Automatic publishing
 
-`python3 -m instagram_agent daily` runs `publish.tick` after drafting, under the same lock. It is off (`publish_off`) unless `INSTAGRAM_AUTO_PUBLISH=1`, `INSTAGRAM_ACCESS_TOKEN`, `INSTAGRAM_USER_ID`, `INSTAGRAM_PUBLIC_DIR` and an `https://` `INSTAGRAM_PUBLIC_URL` are all set. The deploy writes these from the `INSTAGRAM_ACCESS_TOKEN` and `INSTAGRAM_USER_ID` secrets, with the public folder at `public_html/ig-media`; set the repository variable `INSTAGRAM_AUTO_PUBLISH` to `0` to stop posting.
+`python3 -m instagram_agent daily` runs `publish.tick` after drafting, under the same lock. It is off (`publish_off`) unless `INSTAGRAM_AUTO_PUBLISH=1`, `INSTAGRAM_ACCESS_TOKEN`, `INSTAGRAM_USER_ID`, `INSTAGRAM_PUBLIC_DIR` and an `https://` `INSTAGRAM_PUBLIC_URL` are all set. The deploy writes these from the `INSTAGRAM_ACCESS_TOKEN` and `INSTAGRAM_USER_ID` secrets, with the public folder at `public_html/ig-media`; set the repository variable `INSTAGRAM_AUTO_PUBLISH` to `0` to stop posting. That value is sent on every deploy, so it also stops a token already on the server.
 
 - **What posts:** approved drafts, and pending drafts scoring 70 or more. Rejected and weaker pending drafts never post.
 - **When:** at `max(scheduled_for, created_at + 1 hour)`, so there is always at least an hour to reject a draft. A draft more than 3 hours past its time is skipped rather than posted late.

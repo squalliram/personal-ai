@@ -75,7 +75,10 @@ def recover(conn, now: datetime) -> int:
             _record(
                 conn, draft_id, now.isoformat(timespec="seconds"), "failed", error="outcome unknown; check Instagram"
             )
-            conn.execute("UPDATE drafts SET status='failed' WHERE draft_id=? AND status!='published'", (draft_id,))
+            conn.execute(
+                "UPDATE drafts SET status='failed' WHERE draft_id=? AND status NOT IN ('rejected','published')",
+                (draft_id,),
+            )
     return len(stuck)
 
 
@@ -222,7 +225,10 @@ def tick(conn, env: dict, media_dir: Path, now: datetime, client: GraphClient | 
                     error = f"{error}; outcome unknown, check Instagram"
                 _record(conn, row["draft_id"], stamp, "failed", error=error)
                 if sent or row["fails"] + 1 >= MAX_ATTEMPTS:
-                    conn.execute("UPDATE drafts SET status='failed' WHERE draft_id=?", (row["draft_id"],))
+                    conn.execute(
+                        "UPDATE drafts SET status='failed' WHERE draft_id=? AND status NOT IN ('rejected','published')",
+                        (row["draft_id"],),
+                    )
             failed += 1
             continue
         with conn:

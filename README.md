@@ -75,7 +75,7 @@ The briefing is written to `reports/daily/YYYY-MM-DD.md`. A small run log goes t
 
 ### 4. Instagram pipeline: "What should @instafoodielove post today?"
 
-Collects my Instagram analytics and benchmarks the food and coffee accounts I follow: their best recent posts, the hashtags doing best and the hours my followers are online. It also remembers which drafts I approved and how they then performed. Every day it writes three AI-generated carousel drafts, ready by 12:00, and puts them on the Command Centre's Instagram page with Approve and Reject buttons. Once the Meta token is set, drafts that passed review post automatically at their slot unless I reject them first; until then I post approved ones myself. See the [Instagram pipeline guide](docs/instagram-pipeline.md).
+Collects my Instagram analytics and benchmarks the food and coffee accounts I follow: their best recent posts, the hashtags doing best and the hours my followers are online. It also remembers which drafts I approved and how they then performed. Every day it writes three AI-generated carousel drafts, ready by 12:00, and puts them on the Command Centre's Instagram page with Approve and Reject buttons. Once the `INSTAGRAM_ACCESS_TOKEN` and `INSTAGRAM_USER_ID` repository secrets are set (the deploy adds the public slide folder; the repository variable `INSTAGRAM_AUTO_PUBLISH=0` turns it off), drafts that passed review post automatically at their slot unless I reject them first; until then I post approved ones myself. The full list of settings is under [Automatic publishing](docs/instagram-pipeline.md#automatic-publishing). See the [Instagram pipeline guide](docs/instagram-pipeline.md).
 
 ## What's in the repo
 
