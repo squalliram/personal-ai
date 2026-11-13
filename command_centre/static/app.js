@@ -62,7 +62,7 @@
     try {
       response = await fetch(path, {
         method: opts.method || "GET", headers, credentials: "same-origin", cache: "no-store",
-        body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
+        body: opts.body === undefined ? undefined : JSON.stringify(opts.body), signal: opts.signal,
       });
     } catch {
       return { ok: false, status: 0, data: { error: "network_error" } };
@@ -89,24 +89,77 @@
     render();
   }
 
-  const BOOT_SWEEP_LIMIT_MS = 1500;
-  function bootSweep() {
-    const overlay = $("boot-sweep");
-    if (!overlay || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  const VAULT_LIMIT_MS = 1500;
+  const VAULT_SEALED_MS = 1100;
+  const VAULT_RELEASE_MS = 500;
+  const VAULT_GRANTED_MS = 650;
+  const VAULT = {
+    unlock: { shell: "vault-arrive", caption: "Access granted" },
+    lock: { shell: "vault-depart", caption: "Logging out of the command centre" },
+  };
+  const reducedMotion = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  let vaultRun = 0;
+  let cancelVault = () => {};
+
+  // Unlock resolves immediately. Lock holds the sealed dial until `ready` settles, then fades out
+  // and resolves with `ready`'s value so the caller can reveal the login screen underneath.
+  function playVault(mode, ready = Promise.resolve()) {
+    const overlay = $("vault");
+    const shell = $("app-view");
+    if (!overlay || reducedMotion()) return ready;
+    const { shell: shellClass, caption } = VAULT[mode];
+    cancelVault();
+    const run = ++vaultRun;
     let timer = 0;
+    const reset = () => {
+      overlay.classList.remove("run", "unlock", "lock", "release");
+      shell.classList.remove("vault-arrive", "vault-depart");
+    };
     const finish = () => {
       clearTimeout(timer);
       overlay.removeEventListener("animationend", onEnd);
-      overlay.classList.remove("run");
+      reset();
       overlay.hidden = true;
     };
-    const onEnd = (event) => { if (event.animationName === "boot-reveal") finish(); };
+    const onEnd = (event) => { if (event.animationName === "vault-out") finish(); };
+    cancelVault = () => { clearTimeout(timer); overlay.removeEventListener("animationend", onEnd); };
+    $("vault-caption").textContent = caption;
     overlay.hidden = false;
-    overlay.classList.remove("run");
+    reset();
     void overlay.offsetWidth;
     overlay.addEventListener("animationend", onEnd);
-    overlay.classList.add("run");
-    timer = setTimeout(finish, BOOT_SWEEP_LIMIT_MS);
+    overlay.classList.add("run", mode);
+    shell.classList.add(shellClass);
+    if (mode === "unlock") {
+      timer = setTimeout(finish, VAULT_LIMIT_MS);
+      return ready;
+    }
+    const sealed = new Promise((resolve) => setTimeout(resolve, VAULT_SEALED_MS));
+    return Promise.all([ready.catch(() => null), sealed]).then(() => {
+      if (run !== vaultRun) return ready;
+      overlay.classList.add("release");
+      timer = setTimeout(finish, VAULT_RELEASE_MS);
+      return ready;
+    });
+  }
+
+  const FEMALE_VOICE = /female|woman|samantha|victoria|karen|moira|tessa|serena|fiona|kate|zira|hazel|susan|libby|sonia|aria|jenny|natasha|catherine/i;
+  function pickVoice() {
+    const voices = window.speechSynthesis.getVoices().filter((voice) => /^en/i.test(voice.lang));
+    return voices.find((voice) => FEMALE_VOICE.test(voice.name) && /^en-GB/i.test(voice.lang))
+      || voices.find((voice) => FEMALE_VOICE.test(voice.name)) || voices[0] || null;
+  }
+  function speak(text, delay = 0) {
+    if (!("speechSynthesis" in window) || typeof SpeechSynthesisUtterance === "undefined") return;
+    setTimeout(() => {
+      const utterance = new SpeechSynthesisUtterance(text);
+      const voice = pickVoice();
+      if (voice) { utterance.voice = voice; utterance.lang = voice.lang; }
+      utterance.rate = 0.92;
+      utterance.pitch = 0.75;
+      window.speechSynthesis.cancel();
+      window.speechSynthesis.speak(utterance);
+    }, delay);
   }
 
   const LOGIN_ERRORS = {
@@ -121,15 +174,38 @@
     const password = $("password").value;
     if (!password) { $("login-status").textContent = "Enter your passphrase."; return; }
     $("login-status").textContent = "Signing in…";
+    await pendingLogout;
     const result = await api("api/v1/session", { method: "POST", body: { password } });
     $("password").value = "";
-    if (result.ok) { bootSweep(); showApp(result.data); }
+    if (result.ok) {
+      playVault("unlock");
+      speak(VAULT.unlock.caption, reducedMotion() ? 0 : VAULT_GRANTED_MS);
+      showApp(result.data);
+    }
     else $("login-status").textContent = LOGIN_ERRORS[result.data && result.data.error] || "Sign-in failed.";
   }
 
+  const LOGOUT_DEADLINE_MS = 10000;
+  let pendingLogout = Promise.resolve();
   async function logout() {
-    await api("api/v1/session", { method: "DELETE" });
-    showLogin("You have signed out.");
+    const button = $("logout");
+    if (button.disabled) return;
+    button.disabled = true;
+    speak(VAULT.lock.caption);
+    const controller = new AbortController();
+    const deadline = setTimeout(() => controller.abort(), LOGOUT_DEADLINE_MS);
+    const revoke = api("api/v1/session", { method: "DELETE", signal: controller.signal })
+      .finally(() => clearTimeout(deadline));
+    let settled;
+    pendingLogout = new Promise((resolve) => { settled = resolve; });
+    try {
+      const result = await playVault("lock", revoke);
+      if (result.ok || result.status === 401) showLogin("You have signed out.");
+      else $("view-status").textContent = "Sign-out did not complete. Try again.";
+    } finally {
+      button.disabled = false;
+      settled();
+    }
   }
 
   async function load(path) {
