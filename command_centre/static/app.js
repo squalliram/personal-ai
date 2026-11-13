@@ -246,6 +246,7 @@
 
   function closeAssistant(returnFocus = true) {
     assistantGeneration += 1;
+    if (asking) orb("idle", "Question cancelled. Ask again when you're ready.");
     asking = false;
     stopQuestionListening();
     if ("speechSynthesis" in window) window.speechSynthesis.cancel();
