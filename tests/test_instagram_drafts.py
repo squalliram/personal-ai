@@ -201,6 +201,8 @@ class DailyTickTests(unittest.TestCase):
         ctx = drafts.context(self.conn, MORNING)
         drafts.review(FakeAI([], [[float("nan"), float("inf"), True]]), ctx, found, rules="")
         self.assertEqual([d["review_score"] for d in found], [0, 0, 0])
+        drafts.review(FakeAI([], [[10**400, -(10**400), 75]]), ctx, found, rules="")
+        self.assertEqual([d["review_score"] for d in found], [100, 0, 75])
 
     def test_voice_profile_reaches_the_create_agent(self):
         (self.root / "voice.md").write_text("Warm, short sentences, Manchester slang.", encoding="utf-8")
