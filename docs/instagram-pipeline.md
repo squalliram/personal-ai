@@ -53,10 +53,10 @@ From 09:00 London time, the first tick of the day:
 2. **Create** writes carousels in the voice from `INSTAGRAM_VOICE_FILE` (default `agents/instagram-voice.md`), following the `ig-carousel`, `ig-caption` and `ig-human` rules from `INSTAGRAM_SKILLS_DIR` when the skill pack is installed. Topics are limited to food, coffee and restaurants. Approved examples that performed well count for more; rejected topics and the last 14 days' topics are avoided.
 3. **Tags** adds up to 20 hashtags per draft.
 4. **Review** scores each draft 0-100. Drafts under 70 go back to Create with the reviewer's notes, up to 3 rounds. If fewer than 3 pass, the best of the rest still go in the queue, labelled with their score.
-5. The image model draws every slide at 1024×1280 (4:5 portrait). OpenAI's image model also draws the slide's short text onto it. Cloudflare's FLUX.2 klein garbles lettering, so with Cloudflare the slides are clean photos and the caption carries the words. A draft whose images fail is dropped. Cloudflare returns JPEGs and OpenAI returns PNGs; each is saved in the format it arrives in.
+5. The image model draws every slide at 1024×1280 (4:5 portrait). OpenAI's image model also draws the slide's short text onto it. Cloudflare's FLUX.2 klein garbles lettering, so with Cloudflare the slides are clean photos and the caption carries the words. A slide image that fails gets one more try; if it still fails, that draft is dropped and the reason is recorded. Cloudflare returns JPEGs and OpenAI returns PNGs; each is saved in the format it arrives in.
 6. Each draft gets a suggested publish slot: the best hours from `best_hours`, from 12:00 onwards (18:00, 12:00 and 20:00 until there's data).
 
-A day that already has drafts is skipped. A day gives up after 3 failed attempts, so a broken key can't run up costs. Runs are recorded in `daily_runs` and shown on the Instagram page.
+If a run makes fewer than 3 drafts, later ticks before 12:00 top the day up to 3, avoiding the slots already suggested; after 12:00 a day with drafts is left as it is. A day gives up after 3 failed or partial attempts, so a broken key can't run up costs. Runs are recorded in `daily_runs` and shown on the Instagram page.
 
 Benchmark captions and hashtags are other people's text. The prompts tell the agents to treat them as data and never follow instructions in them. The output is validated before it is stored: category, slide count and length, caption length and real hashtags only.
 

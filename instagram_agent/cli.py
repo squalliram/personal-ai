@@ -118,11 +118,15 @@ def model_client(env: dict):
 
 
 def daily(conn, env: dict, media_dir: Path, now: datetime | None = None) -> str:
-    """One cron tick: from 09:00 London, make today's drafts once, with at most DAILY_ATTEMPTS tries."""
+    """One cron tick: from 09:00 London make today's drafts, topping up to DAILY_DRAFTS until 12:00.
+
+    A day stops after DAILY_ATTEMPTS failed or partial tries.
+    """
     now = now or _now()
     local = now.astimezone(LONDON)
     today, stamp = local.date().isoformat(), now.isoformat(timespec="seconds")
-    if local.hour < DAILY_FROM_HOUR or storage.drafts_on(conn, today):
+    have = storage.drafts_on(conn, today)
+    if local.hour < DAILY_FROM_HOUR or have >= DAILY_DRAFTS or (have and local.time() >= drafts.READY_BY):
         return "skipped"
     if storage.runs_on(conn, today) >= DAILY_ATTEMPTS:
         return "gave_up"
@@ -147,19 +151,25 @@ def daily(conn, env: dict, media_dir: Path, now: datetime | None = None) -> str:
             conn,
             ai,
             now,
-            count=DAILY_DRAFTS,
+            count=DAILY_DRAFTS - have,
             rules=drafts.load_rules(Path(skills).expanduser() if skills else None),
             voice=_read(env.get("INSTAGRAM_VOICE_FILE", "agents/instagram-voice.md")),
         )
-        stored = drafts.render_and_store(conn, ai, found, media_dir, now)
+        dropped: list[str] = []
+        stored = drafts.render_and_store(conn, ai, found, media_dir, now, dropped)
     except (AIError, OSError) as exc:
         error = str(exc) if isinstance(exc, AIError) else type(exc).__name__
         with conn:
             storage.record_run(conn, today, stamp, "failed", error=error)
         return "failed"
+    wanted = DAILY_DRAFTS - have
+    outcome = "ok" if stored >= wanted else "partial" if stored else "failed"
+    error = None
+    if stored < wanted:
+        error = f"{wanted - stored} of {wanted} drafts not made" + (": " + "; ".join(dropped) if dropped else "")
     with conn:
-        storage.record_run(conn, today, stamp, "ok" if stored else "failed", stored, None if stored else "no drafts")
-    return "ok" if stored else "failed"
+        storage.record_run(conn, today, stamp, outcome, stored, error[:500] if error else None)
+    return outcome
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -197,7 +207,7 @@ def main(argv: list[str] | None = None) -> int:
                     return 0  # The previous tick is still drafting.
                 outcome = daily(conn, env, args.media)
             print(outcome)
-            return 0 if outcome in ("ok", "skipped", "gave_up") else 1
+            return 0 if outcome in ("ok", "partial", "skipped", "gave_up") else 1
         token, user_id = env.get("INSTAGRAM_ACCESS_TOKEN", ""), env.get("INSTAGRAM_USER_ID", "")
         if not token or not user_id:
             print("Set INSTAGRAM_ACCESS_TOKEN and INSTAGRAM_USER_ID.", file=sys.stderr)
