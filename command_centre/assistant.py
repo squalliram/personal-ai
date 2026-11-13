@@ -24,14 +24,18 @@ Rules:
 """
 
 
-def _trim(value, depth: int = 0):
+# Progressively tighter (string length, list length) caps until the snapshot fits.
+CAPS = ((300, 40), (160, 20), (80, 10), (40, 5), (20, 3))
+
+
+def _trim(value, text_cap: int, list_cap: int, depth: int = 0):
     if isinstance(value, str):
-        return value[:300]
+        return value[:text_cap]
     if isinstance(value, list):
-        return [_trim(item, depth + 1) for item in value[:20]]
+        return [_trim(item, text_cap, list_cap, depth + 1) for item in value[:list_cap]]
     if isinstance(value, dict) and depth < 6:
-        return {str(k): _trim(v, depth + 1) for k, v in value.items()}
-    return value if isinstance(value, (int, float, bool)) or value is None else str(value)[:300]
+        return {str(k): _trim(v, text_cap, list_cap, depth + 1) for k, v in value.items()}
+    return value if isinstance(value, (int, float, bool)) or value is None else str(value)[:text_cap]
 
 
 def _last_days(rows: list[dict], days: int) -> list[dict]:
@@ -79,16 +83,17 @@ def build_context(*, now: datetime, data: dict, instagram: dict, agents: list[di
         },
         "agents": [{"name": a["name"], "summary": a["summary"], "guardrail": a["guardrail"]} for a in agents],
     }
-    text = _dump(snapshot)
-    while len(text) > MAX_CONTEXT and snapshot["energy"]["daily_last_14_days"]:
-        snapshot["energy"]["daily_last_14_days"] = snapshot["energy"]["daily_last_14_days"][2:]
-        text = _dump(snapshot)
-    return text[:MAX_CONTEXT]
+    # Shrink rather than cut, so the model always receives valid JSON.
+    for text_cap, list_cap in CAPS:
+        text = _dump(_trim(snapshot, text_cap, list_cap))
+        if len(text) <= MAX_CONTEXT:
+            return text
+    return _dump({"now": snapshot["now"], "timezone": "Europe/London", "note": "Dashboard snapshot too large to send."})
 
 
 def _dump(snapshot: dict) -> str:
     # JSON-escape "<" so data can never close the <jarvis_data> block early.
-    return json.dumps(_trim(snapshot), separators=(",", ":"), default=str).replace("<", "\\u003c")
+    return json.dumps(snapshot, separators=(",", ":"), default=str).replace("<", "\\u003c")
 
 
 def user_message(question: str, context: str) -> str:

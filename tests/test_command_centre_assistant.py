@@ -134,10 +134,27 @@ class AssistantTests(unittest.TestCase):
             now=datetime(2026, 11, 13, tzinfo=timezone.utc), data=data, instagram={"drafts": []}, agents=[]
         )
         self.assertLessEqual(len(text), assistant.MAX_CONTEXT)
+        self.assertIsInstance(json.loads(text), dict)
         message = assistant.user_message("What now?", text)
         self.assertEqual(message.count("</jarvis_data>"), 1)
         self.assertNotIn("<", text)
         self.assertTrue(message.endswith("Owner's question: What now?"))
+
+    def test_dual_fuel_history_keeps_fourteen_dates(self):
+        from datetime import datetime, timezone
+
+        daily = [
+            {"date": f"2026-11-{d:02d}", "fuel": fuel, "consumption_kwh": 1.0}
+            for d in range(1, 21)
+            for fuel in ("electricity", "gas")
+        ]
+        data = {"energy": {"daily": daily}, "briefing": {"runs": []}, "integrations": [], "automations": []}
+        text = assistant.build_context(
+            now=datetime(2026, 11, 20, tzinfo=timezone.utc), data=data, instagram={"drafts": []}, agents=[]
+        )
+        rows = json.loads(text)["energy"]["daily_last_14_days"]
+        self.assertEqual(len({row["date"] for row in rows}), 14)
+        self.assertEqual(len(rows), 28)
 
 
 if __name__ == "__main__":
