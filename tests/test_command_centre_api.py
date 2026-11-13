@@ -140,6 +140,7 @@ class LoginTests(ApiTestCase):
             ({"raw": b"{not json"}, 400),
             ({"body": {"password": PASSWORD, "admin": True}}, 400),
             ({"body": {"password": 123}}, 400),
+            ({"body": {"password": PASSWORD, "remember": "yes"}}, 400),
             ({"raw": b"{" + b" " * 5000 + b"}"}, 413),
         ]
         for kwargs, expected in cases:
@@ -187,6 +188,23 @@ class SessionLifecycleTests(ApiTestCase):
         )
         self.assertEqual(response.status, 403)
         self.assertEqual(self.client.request("GET", "/api/v1/session").status, 200)
+
+    def test_remembered_device_outlives_idle_timeout_until_thirty_days(self):
+        response = self.client.request("POST", "/api/v1/session", body={"password": PASSWORD, "remember": True})
+        self.assertEqual(response.status, 200)
+        self.assertIn("Max-Age=2592000", response.header("Set-Cookie"))
+        body = response.json()
+        self.assertTrue(body["remembered"])
+        self.assertIsNone(body["idle_timeout_seconds"])
+        self.clock.now += 7 * 24 * 60 * 60
+        self.assertEqual(self.client.request("GET", "/api/v1/session").status, 200)
+        self.clock.now += 23 * 24 * 60 * 60 + 1
+        self.assertEqual(self.client.request("GET", "/api/v1/session").status, 401)
+
+    def test_unremembered_login_reports_its_idle_timeout(self):
+        body = self.client.request("POST", "/api/v1/session", body={"password": PASSWORD, "remember": False}).json()
+        self.assertFalse(body["remembered"])
+        self.assertEqual(body["idle_timeout_seconds"], self.settings.session_idle_seconds)
 
     def test_idle_and_absolute_timeouts(self):
         self.client.login()

@@ -157,6 +157,7 @@ class Session:
     permission: Permission
     created_at: float
     last_seen_at: float
+    remember: bool = False
 
 
 def _token_hash(token: str) -> str:
@@ -171,20 +172,24 @@ class SessionStore:
         *,
         idle_seconds: int,
         absolute_seconds: int,
+        remember_seconds: int = 0,
         clock: Callable[[], float] = time.time,
         max_sessions: int = 20,
     ) -> None:
         self.idle, self.absolute, self.clock, self.max_sessions = idle_seconds, absolute_seconds, clock, max_sessions
+        self.remember = remember_seconds
         self._sessions: dict[str, Session] = {}
         self._lock = threading.Lock()
 
     def _expired(self, session: Session, now: float) -> bool:
-        return now - session.last_seen_at > self.idle or now - session.created_at > self.absolute
+        return now > self.expires_at(session)
 
-    def create(self, permission: Permission) -> tuple[str, Session]:
+    def create(self, permission: Permission, *, remember: bool = False) -> tuple[str, Session]:
         token = secrets.token_urlsafe(32)
         now = self.clock()
-        session = Session(_token_hash(token), secrets.token_urlsafe(32), permission, now, now)
+        session = Session(
+            _token_hash(token), secrets.token_urlsafe(32), permission, now, now, remember and self.remember > 0
+        )
         with self._lock:
             for key in [k for k, s in self._sessions.items() if self._expired(s, now)]:
                 del self._sessions[key]
@@ -219,6 +224,8 @@ class SessionStore:
             self._sessions.clear()
 
     def expires_at(self, session: Session) -> float:
+        if session.remember:
+            return session.created_at + self.remember
         return min(session.last_seen_at + self.idle, session.created_at + self.absolute)
 
 
@@ -228,7 +235,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   csrf_token TEXT NOT NULL,
   permission INTEGER NOT NULL,
   created_at REAL NOT NULL,
-  last_seen_at REAL NOT NULL
+  last_seen_at REAL NOT NULL,
+  remember INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS rate_limits (
   bucket TEXT NOT NULL,
@@ -315,6 +323,7 @@ class SqliteSessionStore:
         *,
         idle_seconds: int,
         absolute_seconds: int,
+        remember_seconds: int = 0,
         clock: Callable[[], float] = time.time,
         max_sessions: int = 20,
     ) -> None:
@@ -325,6 +334,7 @@ class SqliteSessionStore:
             clock,
             max_sessions,
         )
+        self.remember = remember_seconds
         self._lock = threading.Lock()
         path.parent.mkdir(parents=True, exist_ok=True)
         if path.is_symlink():
@@ -332,18 +342,28 @@ class SqliteSessionStore:
         os.close(os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600))
         with closing(sqlite3.connect(path)) as conn, conn:
             conn.executescript(SESSIONS_SCHEMA)
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
+            if "remember" not in columns:
+                try:
+                    conn.execute("ALTER TABLE sessions ADD COLUMN remember INTEGER NOT NULL DEFAULT 0")
+                except sqlite3.OperationalError as error:  # another Passenger worker migrated first
+                    if "duplicate column" not in str(error):
+                        raise
 
     def _expired(self, session: Session, now: float) -> bool:
-        return now - session.last_seen_at > self.idle or now - session.created_at > self.absolute
+        return now > self.expires_at(session)
 
-    def create(self, permission: Permission) -> tuple[str, Session]:
+    def create(self, permission: Permission, *, remember: bool = False) -> tuple[str, Session]:
         token = secrets.token_urlsafe(32)
         now = self.clock()
-        session = Session(_token_hash(token), secrets.token_urlsafe(32), permission, now, now)
+        session = Session(
+            _token_hash(token), secrets.token_urlsafe(32), permission, now, now, remember and self.remember > 0
+        )
         with self._lock, closing(sqlite3.connect(self.path, timeout=5)) as conn, conn:
             conn.execute(
-                "DELETE FROM sessions WHERE ? - last_seen_at > ? OR ? - created_at > ?",
-                (now, self.idle, now, self.absolute),
+                "DELETE FROM sessions WHERE (remember = 0 AND (? - last_seen_at > ? OR ? - created_at > ?))"
+                " OR (remember != 0 AND ? - created_at > ?)",
+                (now, self.idle, now, self.absolute, now, self.remember),
             )
             (count,) = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()
             if count >= self.max_sessions:
@@ -353,8 +373,15 @@ class SqliteSessionStore:
                     (count - self.max_sessions + 1,),
                 )
             conn.execute(
-                "INSERT INTO sessions VALUES(?,?,?,?,?)",
-                (session.token_hash, session.csrf_token, int(session.permission), session.created_at, now),
+                "INSERT INTO sessions VALUES(?,?,?,?,?,?)",
+                (
+                    session.token_hash,
+                    session.csrf_token,
+                    int(session.permission),
+                    session.created_at,
+                    now,
+                    int(session.remember),
+                ),
             )
         return token, session
 
@@ -365,11 +392,12 @@ class SqliteSessionStore:
         now = self.clock()
         with self._lock, closing(sqlite3.connect(self.path, timeout=5)) as conn, conn:
             row = conn.execute(
-                "SELECT csrf_token, permission, created_at, last_seen_at FROM sessions WHERE token_hash = ?", (key,)
+                "SELECT csrf_token, permission, created_at, last_seen_at, remember FROM sessions WHERE token_hash = ?",
+                (key,),
             ).fetchone()
             if row is None:
                 return None
-            session = Session(key, row[0], Permission(row[1]), row[2], row[3])
+            session = Session(key, row[0], Permission(row[1]), row[2], row[3], bool(row[4]))
             if self._expired(session, now):
                 conn.execute("DELETE FROM sessions WHERE token_hash = ?", (key,))
                 return None
@@ -387,4 +415,6 @@ class SqliteSessionStore:
             conn.execute("DELETE FROM sessions")
 
     def expires_at(self, session: Session) -> float:
+        if session.remember:
+            return session.created_at + self.remember
         return min(session.last_seen_at + self.idle, session.created_at + self.absolute)

@@ -121,7 +121,7 @@ Neither the passphrase nor its hash belongs in chat, command arguments or logs.
 - Startup fails on missing/invalid password hashes, missing shared sessions, or
   a permission ceiling above RECOMMEND. Phase 1 has no execute routes.
 - Cookies are Secure, HttpOnly, SameSite=Strict, and use the `__Host-` prefix.
-  Idle expiry is 30 minutes; absolute expiry is 12 hours.
+  Idle expiry is 30 minutes; absolute expiry is 12 hours. A "Remember this device" sign-in lasts 30 days from sign-in with no idle expiry.
 - Hosted sessions and rate counters share the private session database across
   Passenger workers. Login attempts reserve their rate-limit slot atomically
   before password verification.

@@ -59,7 +59,7 @@ Devin's assessment argued against a live web app and for extending the static `d
 | Control | Implementation |
 | --- | --- |
 | Authentication | Single owner passphrase, PBKDF2-SHA256 600,000 iterations, stored as `COMMAND_CENTRE_PASSWORD_HASH`. Missing hash means the server refuses to start. |
-| Sessions | 256-bit random token, only its SHA-256 kept in memory. `HttpOnly; SameSite=Strict; Path=/`, plus `Secure` and the `__Host-` prefix under TLS. 30-minute idle and 12-hour absolute expiry. |
+| Sessions | 256-bit random token, only its SHA-256 kept in memory. `HttpOnly; SameSite=Strict; Path=/`, plus `Secure` and the `__Host-` prefix under TLS. 30-minute idle and 12-hour absolute expiry, or a fixed 30 days from sign-in when "Remember this device" is ticked. |
 | CSRF | Every non-GET needs an exact `Origin` match and no cross-site `Sec-Fetch-Site`. Session routes also need `X-CSRF-Token`. Login needs `application/json`. |
 | DNS rebinding | `Host` must be in an allow-list (`127.0.0.1:PORT`, `localhost:PORT`). Otherwise 421. |
 | HTTPS | Loopback by default. Any other bind address requires `--tls-cert` and `--tls-key`, and HSTS is sent. |

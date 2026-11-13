@@ -112,12 +112,14 @@ class CommandCentreApp:
                 settings.sessions_db,
                 idle_seconds=settings.session_idle_seconds,
                 absolute_seconds=settings.session_absolute_seconds,
+                remember_seconds=settings.session_remember_seconds,
                 clock=clock,
             )
         else:
             self.sessions = SessionStore(
                 idle_seconds=settings.session_idle_seconds,
                 absolute_seconds=settings.session_absolute_seconds,
+                remember_seconds=settings.session_remember_seconds,
                 clock=clock,
             )
         self.audit = audit or AuditLog(settings.audit_db, clock=clock)
@@ -270,7 +272,8 @@ class CommandCentreApp:
         if error:
             return error
         password = body.get("password") if isinstance(body, dict) else None
-        if not isinstance(password, str) or set(body) != {"password"}:
+        remember = body.get("remember", False) if isinstance(body, dict) else None
+        if not isinstance(password, str) or not isinstance(remember, bool) or not set(body) <= {"password", "remember"}:
             return _error(400, "invalid_request")
         # Reserve attempts before expensive verification, including across Passenger workers.
         reservation = self.login_global.reserve("all")
@@ -285,9 +288,19 @@ class CommandCentreApp:
         self.login_global.release("all", reservation)
         self.login_per_client.reset(client)
         self.sessions.revoke(request.token)
-        token, session = self.sessions.create(self.settings.permission_ceiling)
-        self.audit.record("login", "success", actor="owner", client=client, permission=session.permission.label)
-        return 200, self._session_payload(session), [self._cookie(token, self.settings.session_absolute_seconds)]
+        token, session = self.sessions.create(self.settings.permission_ceiling, remember=remember)
+        self.audit.record(
+            "login",
+            "success",
+            actor="owner",
+            client=client,
+            permission=session.permission.label,
+            remembered=session.remember,
+        )
+        lifetime = (
+            self.settings.session_remember_seconds if session.remember else self.settings.session_absolute_seconds
+        )
+        return 200, self._session_payload(session), [self._cookie(token, lifetime)]
 
     def _session_payload(self, session: Session) -> dict:
         return {
@@ -296,7 +309,8 @@ class CommandCentreApp:
             "permission_levels": [p.label for p in Permission],
             "csrf_token": session.csrf_token,
             "expires_at": self._iso(self.sessions.expires_at(session)),
-            "idle_timeout_seconds": self.settings.session_idle_seconds,
+            "idle_timeout_seconds": None if session.remember else self.settings.session_idle_seconds,
+            "remembered": session.remember,
         }
 
     def session_info(self, request: Request) -> Result:

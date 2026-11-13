@@ -79,6 +79,24 @@ class SessionTests(unittest.TestCase):
         self.assertIsNone(store.get(token))
         self.assertIsNone(store.get(None))
 
+    def test_remembered_session_ignores_idle_but_not_its_own_lifetime(self):
+        clock = Clock(1000)
+        store = SessionStore(idle_seconds=60, absolute_seconds=150, remember_seconds=1000, clock=clock)
+        token, session = store.create(Permission.READ, remember=True)
+        self.assertTrue(session.remember)
+        clock.now += 500
+        self.assertIsNotNone(store.get(token))  # well past both idle and absolute limits
+        self.assertEqual(store.expires_at(session), 2000)
+        clock.now += 501
+        self.assertIsNone(store.get(token))
+        token, _ = store.create(Permission.READ, remember=True)
+        store.revoke(token)
+        self.assertIsNone(store.get(token))
+
+    def test_remember_is_refused_when_no_lifetime_is_configured(self):
+        store = SessionStore(idle_seconds=60, absolute_seconds=150, clock=Clock(0))
+        self.assertFalse(store.create(Permission.READ, remember=True)[1].remember)
+
     def test_session_count_is_bounded(self):
         store = SessionStore(idle_seconds=60, absolute_seconds=60, clock=Clock(0), max_sessions=2)
         tokens = [store.create(Permission.READ)[0] for _ in range(3)]
