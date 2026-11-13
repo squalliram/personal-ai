@@ -131,10 +131,14 @@ class CommandCentreApp:
         self.login_per_client = RateLimiter(5, 15 * 60, clock=monotonic)
         self.login_global = RateLimiter(20, 15 * 60, clock=monotonic)
         self.api_limiter = RateLimiter(240, 60, clock=monotonic)
+        self.passkey_options_limiter = RateLimiter(20, 15 * 60, clock=monotonic)
         if settings.sessions_db:
             self.login_per_client = SqliteRateLimiter(settings.sessions_db, "login_client", 5, 900, clock=clock)
             self.login_global = SqliteRateLimiter(settings.sessions_db, "login_global", 20, 900, clock=clock)
             self.api_limiter = SqliteRateLimiter(settings.sessions_db, "api", 240, 60, clock=clock)
+            self.passkey_options_limiter = SqliteRateLimiter(
+                settings.sessions_db, "passkey_options", 20, 900, clock=clock
+            )
         self.static = {
             path: ((STATIC_DIR / name).read_bytes(), content_type)
             for path, (name, content_type) in STATIC_FILES.items()
@@ -354,7 +358,11 @@ class CommandCentreApp:
     def passkey_login_options(self, request: Request) -> Result:
         if self.passkeys is None:
             return _error(503, "passkeys_unavailable")
-        if self.login_per_client.blocked(request.client) or self.login_global.blocked("all"):
+        if (
+            self.login_per_client.blocked(request.client)
+            or self.login_global.blocked("all")
+            or not self.passkey_options_limiter.hit(request.client)
+        ):
             return _error(429, "rate_limited", [("Retry-After", "900")])
         if not self.passkeys.count():
             return _error(404, "no_passkeys")

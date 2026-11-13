@@ -261,10 +261,12 @@ class PasskeyStore:
         challenge, now = secrets.token_bytes(32), self.clock()
         with closing(self._connect()) as conn, conn:
             conn.execute("DELETE FROM passkey_challenges WHERE created_at < ?", (now - CHALLENGE_SECONDS,))
+            # Evict only within the same purpose, so a flood of sign-in challenges cannot
+            # cancel a registration that is in progress (and vice versa).
             conn.execute(
-                "DELETE FROM passkey_challenges WHERE challenge NOT IN "
-                "(SELECT challenge FROM passkey_challenges ORDER BY created_at DESC LIMIT ?)",
-                (MAX_CHALLENGES - 1,),
+                "DELETE FROM passkey_challenges WHERE purpose = ? AND challenge NOT IN "
+                "(SELECT challenge FROM passkey_challenges WHERE purpose = ? ORDER BY created_at DESC LIMIT ?)",
+                (purpose, purpose, MAX_CHALLENGES - 1),
             )
             conn.execute("INSERT INTO passkey_challenges VALUES(?,?,?)", (b64url_encode(challenge), purpose, now))
         return challenge
@@ -283,11 +285,10 @@ class PasskeyStore:
 
     def add(self, credential_id: bytes, public_key: bytes, sign_count: int, label: str) -> bool:
         with closing(self._connect()) as conn, conn:
-            if conn.execute("SELECT COUNT(*) FROM passkeys").fetchone()[0] >= MAX_PASSKEYS:
-                return False
+            # One statement, so the limit check and the insert cannot interleave across workers.
             cursor = conn.execute(
-                "INSERT OR IGNORE INTO passkeys VALUES(?,?,?,?,?,NULL)",
-                (b64url_encode(credential_id), public_key, sign_count, label, self.clock()),
+                "INSERT OR IGNORE INTO passkeys SELECT ?,?,?,?,?,NULL WHERE (SELECT COUNT(*) FROM passkeys) < ?",
+                (b64url_encode(credential_id), public_key, sign_count, label, self.clock(), MAX_PASSKEYS),
             )
             return cursor.rowcount == 1
 

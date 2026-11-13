@@ -222,6 +222,25 @@ class PasskeyApiTests(unittest.TestCase):
     def sign_in_status(self, authenticator):
         return Client(self.app).request("POST", "/api/v1/passkeys/login/options", body={}).status
 
+    def test_sign_in_challenges_are_rate_limited_and_cannot_evict_a_registration(self):
+        self.register()
+        options = self.post(self.owner, "/api/v1/passkeys/register/options", {"password": PASSWORD}).json()
+        store = self.app.passkeys
+        for _ in range(passkeys.MAX_CHALLENGES + 5):
+            store.issue_challenge("login")
+        second = Authenticator().register(options["challenge"])
+        self.assertEqual(self.post(self.owner, "/api/v1/passkeys/register", second).status, 200)
+        anonymous = Client(self.app)
+        statuses = [anonymous.request("POST", "/api/v1/passkeys/login/options", body={}).status for _ in range(21)]
+        self.assertEqual(statuses[:20], [200] * 20)
+        self.assertEqual(statuses[20], 429)
+
+    def test_the_passkey_limit_holds(self):
+        store = self.app.passkeys
+        for n in range(passkeys.MAX_PASSKEYS + 2):
+            store.add(os.urandom(32), Authenticator().cose, 0, f"key {n}")
+        self.assertEqual(store.count(), passkeys.MAX_PASSKEYS)
+
     def test_passkeys_are_off_without_a_database(self):
         app = make_app(make_settings(self.root), clock=self.clock)
         client = Client(app)
