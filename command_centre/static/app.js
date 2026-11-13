@@ -203,7 +203,7 @@
   };
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   const passkeysSupported = () => Boolean(window.PublicKeyCredential && navigator.credentials);
-  const OPTIONS_MAX_AGE_MS = 4 * 60 * 1000;
+  const OPTIONS_MAX_AGE_MS = 2 * 60 * 1000;
   let loginOptions = null;
 
   // Options are fetched ahead so the passkey prompt opens straight from the tap; Safari only
@@ -241,7 +241,8 @@
     let credential;
     try {
       credential = await navigator.credentials.get({ publicKey: {
-        challenge: b64.decode(options.challenge), rpId: options.rp_id, timeout: options.timeout,
+        challenge: b64.decode(options.challenge), rpId: options.rp_id,
+        timeout: Math.max(30000, options.timeout - (Date.now() - options.fetched) - 5000),
         userVerification: options.user_verification, allowCredentials: [] } });
     } catch (error) {
       credential = null;
@@ -360,7 +361,7 @@
           ? "That passphrase was not accepted." : LOGIN_ERRORS[options.data && options.data.error] || "Passkey setup could not start.";
         return;
       }
-      pending = options.data;
+      pending = { ...options.data, fetched: Date.now() };
       finish.hidden = false;
       finish.focus();
       notice.textContent = "Passphrase accepted. Select “Create passkey” and confirm with Face ID, Touch ID or your device PIN.";
@@ -370,6 +371,8 @@
       if (!o) return;
       pending = null;
       finish.hidden = true;
+      const remaining = o.timeout - (Date.now() - o.fetched) - 5000;
+      if (remaining < 30000) { notice.textContent = "That took too long. Enter your passphrase again."; return; }
       let credential;
       try {
         credential = await navigator.credentials.create({ publicKey: {
@@ -378,7 +381,7 @@
           pubKeyCredParams: [{ type: "public-key", alg: -7 }, { type: "public-key", alg: -257 }],
           authenticatorSelection: { residentKey: "required", requireResidentKey: true, userVerification: "required" },
           excludeCredentials: o.exclude_credentials.map((id) => ({ type: "public-key", id: b64.decode(id) })),
-          attestation: "none", timeout: o.timeout } });
+          attestation: "none", timeout: remaining } });
       } catch (error) {
         notice.textContent = error && error.name === "InvalidStateError"
           ? "This device already has a Jarvis passkey." : "Passkey setup was cancelled.";
