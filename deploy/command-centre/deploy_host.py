@@ -265,9 +265,12 @@ def verify(app: Path, sha: str, deployment_id: str, *, revoke_sessions=False):
         )
         if revoke_sessions:
             application.sessions.revoke_all()
-            # A passkey added with a leaked passphrase must not outlive a credential reset.
-            if application.passkeys is not None:
-                application.passkeys.remove_all()
+            # A passkey added with a leaked passphrase must not outlive a credential reset, even
+            # while passkeys are switched off because the dependency is missing.
+            if application.settings.passkeys_db:
+                from command_centre.passkeys import PasskeyStore
+
+                PasskeyStore(application.settings.passkeys_db).remove_all()
             status, _, _ = fetch(base + "/api/v1/session", headers=cookie)
             require(status == 401, "Credential reset did not invalidate existing sessions")
         return {
