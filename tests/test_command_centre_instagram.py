@@ -1,5 +1,7 @@
+import json
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 
 from command_centre_fixtures import Client, Clock, make_app, make_settings
@@ -140,3 +142,101 @@ class InstagramQueueTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InstagramAcrossJarvisTests(unittest.TestCase):
+    NOW = datetime.fromisoformat("2026-11-12T12:00:00+00:00").timestamp()
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.db = self.root / "instagram.sqlite3"
+
+    def seed(self, *runs, pending=1):
+        conn = storage.connect(self.db)
+        with conn:
+            for n in range(pending):
+                draft = {
+                    "draft_id": f"{n:016x}",
+                    "category": "coffee",
+                    "topic": "Latte",
+                    "slides": [],
+                    "caption": "",
+                    "hashtags": [],
+                }
+                storage.insert_draft(conn, draft, "2026-11-12", "2026-11-12T10:00:00+00:00")
+            for started_at, outcome in runs:
+                storage.record_run(conn, started_at[:10], started_at, outcome, 3 if outcome == "ok" else 0)
+        conn.close()
+
+    def client(self, clock=None):
+        settings = make_settings(self.root, instagram_db=self.db)
+        client = Client(make_app(settings, clock=clock or Clock(self.NOW)))
+        client.login()
+        return client
+
+    def get(self, client, path):
+        response = client.request("GET", path)
+        self.assertEqual(response.status, 200)
+        return json.loads(response.body)
+
+    def instagram_health(self, client):
+        found = self.get(client, "/api/v1/integrations")["integrations"]
+        return next(item for item in found if item["id"] == "instagram")
+
+    def test_pending_drafts_become_an_action_on_the_overview(self):
+        self.seed(("2026-11-12T10:00:00+00:00", "ok"), ("2026-11-12T10:15:00+00:00", "skipped"), pending=2)
+        client = self.client()
+        overview = self.get(client, "/api/v1/overview")
+        action = next(a for a in overview["attention"] if a["kind"] == "action")
+        self.assertEqual(action["severity"], "action")
+        self.assertEqual(action["href"], "#instagram")
+        self.assertIn("2 Instagram drafts", action["fact"])
+        self.assertEqual(overview["instagram"]["pending_drafts"], 2)
+        # The latest real attempt is used, not the skipped tick after it.
+        self.assertEqual(overview["instagram"]["latest_attempt"]["outcome"], "ok")
+        self.assertEqual(overview["instagram"]["status"], "operational")
+        self.assertIn("instagram-daily", [job["id"] for job in overview["automations"]])
+
+    def test_health_follows_the_latest_drafting_attempt(self):
+        cases = [
+            ((("2026-11-12T10:00:00+00:00", "failed"),), "degraded"),
+            ((("2026-11-12T10:00:00+00:00", "partial"),), "degraded"),
+            ((("2026-11-12T10:00:00+00:00", "not_configured"),), "not_configured"),
+            ((("2026-11-09T10:00:00+00:00", "ok"),), "stale"),
+            ((("2026-11-12T10:00:00+00:00", "skipped"),), "unverified"),
+        ]
+        for runs, expected in cases:
+            with self.subTest(expected=expected, runs=runs):
+                self.db.unlink(missing_ok=True)
+                self.seed(*runs, pending=0)
+                self.assertEqual(self.instagram_health(self.client())["status"], expected)
+
+    def test_missing_database_is_not_configured_and_raises_no_action(self):
+        client = self.client()
+        self.assertEqual(self.instagram_health(client)["status"], "not_configured")
+        overview = self.get(client, "/api/v1/overview")
+        self.assertFalse([a for a in overview["attention"] if a["kind"] == "action"])
+        job = next(j for j in self.get(client, "/api/v1/automations")["automations"] if j["id"] == "instagram-daily")
+        self.assertEqual(job["status"], "not_configured")
+
+    def test_agents_and_automations_show_live_instagram_activity(self):
+        self.seed(("2026-11-12T10:00:00+00:00", "ok"))
+        client = self.client()
+        agents = {a["id"]: a for a in self.get(client, "/api/v1/agents")["agents"]}
+        self.assertEqual(agents["instagram"]["activity"]["pending_drafts"], 1)
+        self.assertEqual(agents["instagram"]["activity"]["latest_run"]["outcome"], "ok")
+        self.assertIsNone(agents["energy-analyst"]["activity"])
+        job = next(j for j in self.get(client, "/api/v1/automations")["automations"] if j["id"] == "instagram-daily")
+        self.assertEqual(job["status"], "operational")
+        self.assertEqual(job["execution_history"][0]["status"], "ok")
+
+    def test_malformed_slides_do_not_break_the_overview(self):
+        self.seed(("2026-11-12T10:00:00+00:00", "ok"))
+        conn = storage.connect(self.db)
+        with conn:
+            conn.execute("UPDATE drafts SET slides='1'")
+        conn.close()
+        client = self.client()
+        self.assertEqual(self.get(client, "/api/v1/overview")["instagram"]["pending_drafts"], 1)
