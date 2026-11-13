@@ -419,7 +419,7 @@ class CommandCentreApp:
         for extension, content_type in (("png", "image/png"), ("jpg", "image/jpeg")):
             path = media / draft / f"slide-{int(number)}.{extension}"
             try:
-                fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+                fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
             except OSError:
                 continue
             with os.fdopen(fd, "rb") as stream:
