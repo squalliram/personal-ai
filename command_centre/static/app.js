@@ -541,7 +541,7 @@
 
   async function render() {
     if (!session) return;
-    renders += 1;
+    const mine = ++renders;
     const id = (location.hash || "#overview").slice(1);
     const section = SECTIONS.find(([key]) => key === id) || SECTIONS[0];
     for (const link of document.querySelectorAll("#nav-list a")) {
@@ -553,6 +553,7 @@
     const view = $("view");
     view.replaceChildren();
     await (VIEWS[section[0]] ? VIEWS[section[0]](view) : placeholder(view, section[0]));
+    if (mine !== renders) return;
     if ($("view-status").textContent === "Loading…") $("view-status").textContent = "";
     if (section[0] !== "overview" && $("view-title").textContent !== section[1]) $("view-title").textContent = section[1];
     $("nav").classList.remove("open");
