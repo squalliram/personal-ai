@@ -40,6 +40,27 @@
     <p id="view-status" role="status" aria-live="polite"></p>
     <div id="view"></div>
   </main>
+  <button id="assistant-toggle" class="assistant-fab" type="button" aria-expanded="false" aria-controls="assistant" hidden>
+    <span class="fab-ring" aria-hidden="true"></span><span class="fab-label">Ask Jarvis</span>
+  </button>
+  <section id="assistant" class="assistant" role="dialog" aria-modal="false" aria-labelledby="assistant-title" hidden>
+    <header class="assistant-head">
+      <div id="assistant-orb" class="orb idle" aria-hidden="true"><span></span><span></span><span></span></div>
+      <div>
+        <h2 id="assistant-title">Ask Jarvis</h2>
+        <p id="assistant-state" class="muted" role="status" aria-live="polite">Ask about your energy, automations, Instagram drafts or what needs attention.</p>
+      </div>
+      <button id="assistant-close" type="button" aria-label="Close Ask Jarvis">Close</button>
+    </header>
+    <ol id="assistant-log" class="assistant-log" aria-live="polite" aria-label="Conversation"></ol>
+    <form id="assistant-form" class="assistant-form">
+      <label for="assistant-input" class="sr-only">Your question</label>
+      <input id="assistant-input" type="text" maxlength="500" autocomplete="off" placeholder="What needs my attention today?">
+      <button id="assistant-mic" type="button" class="mic" aria-pressed="false" aria-label="Ask by voice" hidden>Speak</button>
+      <button type="submit" class="primary">Ask</button>
+    </form>
+    <p class="muted assistant-note">Answers come from OpenAI using only your Jarvis data. Jarvis is read-only and cannot take actions.</p>
+  </section>
 </div>
 <div id="vault" class="vault" hidden aria-hidden="true">
   <svg class="vault-dial" viewBox="0 0 400 400" focusable="false">

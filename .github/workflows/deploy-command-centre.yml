@@ -62,6 +62,8 @@ jobs:
           CPANEL_SSH_KNOWN_HOSTS: ${{ secrets.CPANEL_SSH_KNOWN_HOSTS }}
           CPANEL_APP_PATH: ${{ secrets.CPANEL_APP_PATH }}
           COMMAND_CENTRE_PASSWORD_HASH: ${{ secrets.COMMAND_CENTRE_PASSWORD_HASH }}
+          # Optional: without it, Ask Jarvis stays off.
+          COMMAND_CENTRE_OPENAI_API_KEY: ${{ secrets.COMMAND_CENTRE_OPENAI_API_KEY }}
         shell: bash
         run: |
           set -euo pipefail
