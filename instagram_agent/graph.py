@@ -80,6 +80,7 @@ class GraphClient:
 
     def paginated(self, path: str, params: dict[str, str] | None = None, *, limit: int = 100) -> Iterator[dict]:
         page = self.get(path, params)
+        seen: set[str] = set()
         count = 0
         while True:
             for item in page.get("data", []):
@@ -90,6 +91,9 @@ class GraphClient:
             next_url = (page.get("paging") or {}).get("next")
             if not next_url:
                 return
+            if next_url in seen:
+                raise GraphAPIError("Graph API pagination repeated a page")
+            seen.add(next_url)
             page = self.get(next_url)
 
     def own_media(self, limit: int = 100) -> list[dict]:

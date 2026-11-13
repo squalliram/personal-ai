@@ -90,6 +90,20 @@ class GraphClientTests(unittest.TestCase):
         self.assertNotIn(TOKEN, str(caught.exception))
         self.assertIn("HTTP 400", str(caught.exception))
 
+    def test_repeated_paging_link_stops(self):
+        loop = {"data": [], "paging": {"next": "https://graph.facebook.com/v27.0/x?after=1"}}
+        client = FakeGraph({f"{USER}/media": loop, loop["paging"]["next"]: loop})
+        with self.assertRaises(GraphAPIError):
+            client.own_media()
+
+    def test_partial_insights_keep_earlier_values(self):
+        conn = storage.connect(Path(tempfile.mkdtemp()) / "i.sqlite3")
+        storage.upsert_post(conn, media("1", "2026-11-10T10:00:00+0000", 1, 1), "s")
+        storage.upsert_metrics(conn, "1", "2026-11-12", {"reach": 100, "saved": 5})
+        storage.upsert_metrics(conn, "1", "2026-11-12", {"saved": 7})
+        self.assertEqual(tuple(conn.execute("SELECT reach, saved FROM post_metrics").fetchone()), (100, 7))
+        conn.close()
+
     def test_paging_cannot_leave_the_graph_origin(self):
         client = GraphClient(TOKEN, USER)
         with self.assertRaises(GraphAPIError):
@@ -220,8 +234,8 @@ class SyncAndAnalysisTests(unittest.TestCase):
 
     def test_best_hours_use_audience_then_own_reach(self):
         cli.sync(self.conn, self.graph(), now=NOW)
-        self.assertEqual(analysis.best_hours(self.conn, top=2, audience_tz="UTC")[0], 17)
-        self.assertEqual(analysis.best_hours(self.conn, top=1, min_posts=1), [17])
+        self.assertEqual(analysis.best_hours(self.conn, top=2, audience_tz="UTC", now=NOW)[0], 17)
+        self.assertEqual(analysis.best_hours(self.conn, top=1, min_posts=1, now=NOW), [17])
 
     def test_learned_examples_weight_approved_posts_by_performance(self):
         cli.sync(self.conn, self.graph(), now=NOW)

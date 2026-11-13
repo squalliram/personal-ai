@@ -125,11 +125,13 @@ def post_performance(conn: sqlite3.Connection) -> list[dict]:
     return results
 
 
-def best_hours(conn: sqlite3.Connection, *, top: int = 3, audience_tz: str = "UTC", min_posts: int = 5) -> list[int]:
+def best_hours(
+    conn: sqlite3.Connection, *, top: int = 3, audience_tz: str = "UTC", min_posts: int = 5, now: datetime | None = None
+) -> list[int]:
     """London hours to publish: followers online, blended with own reach by hour once there are enough posts."""
     audience = {}
     zone = ZoneInfo(audience_tz)
-    today = datetime.now(LONDON).date()
+    today = (now or datetime.now(timezone.utc)).astimezone(LONDON).date()
     for row in conn.execute("SELECT hour, followers_online FROM audience_hours"):
         local = datetime(today.year, today.month, today.day, row[0], tzinfo=zone).astimezone(LONDON).hour
         audience[local] = row[1]
