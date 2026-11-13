@@ -3,7 +3,7 @@
   const SECTIONS = [
     ["overview", "Overview"], ["my-day", "My Day"], ["tasks", "Tasks"], ["calendar", "Calendar"],
     ["energy", "Energy"], ["career", "Career"], ["finance", "Finance"], ["family", "Family"],
-    ["health", "Health"], ["agents", "AI Agents"], ["automations", "Automations"],
+    ["health", "Health"], ["agents", "AI Agents"], ["instagram", "Instagram"], ["automations", "Automations"],
     ["integrations", "Integrations"], ["settings", "Settings"],
   ];
   const STATUS_LABELS = {
@@ -453,7 +453,88 @@
       table([["Source", (r) => r.id.replace(/_/g, " ")], ["Status", (r) => status(r.status)]], module.sources, "No data sources.")));
   }
 
-  const VIEWS = { overview, energy, integrations, automations: automationsView, settings };
+  const DRAFT_STATUS = {
+    pending: "Awaiting review", approved: "Approved", rejected: "Rejected", published: "Published", failed: "Failed",
+  };
+
+  async function decide(draft, decision, buttons) {
+    for (const button of buttons) button.disabled = true;
+    const result = await api("api/v1/instagram/decision", { method: "POST", body: { draft_id: draft.draft_id, decision } });
+    if (result.status === 401) { showLogin("Your session has ended. Sign in again."); return; }
+    if (!result.ok) {
+      $("view-status").textContent = `Could not save the decision (${(result.data && result.data.error) || result.status}).`;
+      for (const button of buttons) button.disabled = false;
+      return;
+    }
+    render();
+  }
+
+  const slideUrl = (draft, n) => `api/v1/instagram/slide?draft=${encodeURIComponent(draft.draft_id)}&n=${n}`;
+
+  function postKit(draft) {
+    const copy = el("button", { type: "button", class: "primary" }, "Copy caption + hashtags");
+    copy.addEventListener("click", async () => {
+      const text = draft.hashtags.length ? `${draft.caption}\n\n${draft.hashtags.join(" ")}` : draft.caption;
+      try {
+        await navigator.clipboard.writeText(text);
+        $("view-status").textContent = "Caption and hashtags copied.";
+      } catch {
+        $("view-status").textContent = "Couldn't copy automatically; select the caption above and copy it.";
+      }
+    });
+    const downloads = draft.slides.map((slide, i) =>
+      el("a", { href: slideUrl(draft, i + 1), download: `instafoodielove-${draft.created_on}-${i + 1}.${slide.format}` }, `Slide ${i + 1}`));
+    return el("div", { class: "ig-actions" }, copy, el("span", { class: "ig-downloads" }, "Download: ", downloads));
+  }
+
+  function draftCard(draft, canDecide) {
+    const slides = el("div", { class: "ig-slides" }, draft.slides.map((slide, i) => el("figure", {},
+      el("img", {
+        src: slideUrl(draft, i + 1),
+        alt: slide.text, width: "200", height: "250", loading: "lazy",
+      }),
+      el("figcaption", {}, `${i + 1}. ${slide.text}`))));
+    const children = [
+      slides,
+      el("p", { class: "ig-caption" }, draft.caption),
+      el("p", { class: "muted" }, draft.hashtags.length ? `${draft.hashtags.length} hashtags: ${draft.hashtags.join(" ")}` : "No hashtags"),
+      keyValues([
+        ["Status", DRAFT_STATUS[draft.status] || draft.status],
+        ["Category", draft.category],
+        ["Review score (suggestion)", draft.review_score === null ? "Not scored" : `${draft.review_score}/100`],
+        ["Reviewer notes", draft.review_notes || "None"],
+        ["Suggested publish time", when(draft.scheduled_for)],
+      ]),
+    ];
+    if (draft.status === "pending" && canDecide) {
+      const approve = el("button", { type: "button", class: "primary" }, "Approve");
+      const reject = el("button", { type: "button" }, "Reject");
+      approve.addEventListener("click", () => decide(draft, "approve", [approve, reject]));
+      reject.addEventListener("click", () => decide(draft, "reject", [approve, reject]));
+      children.push(el("div", { class: "ig-actions" }, approve, reject));
+    } else if (draft.status === "pending") {
+      children.push(muted("Approving or rejecting needs RECOMMEND permission."));
+    } else if (draft.status === "approved") {
+      children.push(muted("Approved and saved as an example. Post it yourself: download the slides in order and copy the caption."));
+      children.push(postKit(draft));
+    }
+    return card(`${draft.created_on} · ${draft.topic}`, ...children);
+  }
+
+  async function instagram(view) {
+    const data = await load("api/v1/instagram/drafts");
+    if (!data) return;
+    const canDecide = Boolean(session) && ["recommend", "execute"].includes(session.permission);
+    const last = data.runs[0];
+    view.append(card("Daily drafts",
+      muted("Three carousel drafts for @instafoodielove are ready by 12:00 London time. Nothing is posted to Instagram from here: approve the ones you like, then post them yourself."),
+      last ? keyValues([["Last run", when(last.started_at)], ["Result", last.outcome], ["Drafts made", last.drafts],
+        ...(last.error ? [["Error", last.error]] : [])])
+        : muted(data.state === "not_configured" ? "Not connected: there is no Instagram database on this server yet." : "No daily run recorded yet.")));
+    for (const draft of data.drafts) view.append(draftCard(draft, canDecide));
+  }
+
+  const VIEWS = { overview, energy, integrations, automations: automationsView, settings, instagram };
 
   async function render() {
     if (!session) return;

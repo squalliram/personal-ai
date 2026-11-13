@@ -5,6 +5,7 @@ from __future__ import annotations
 import hmac
 import json
 import re
+import sqlite3
 import sys
 import time
 from collections.abc import Callable, Iterable
@@ -15,6 +16,8 @@ from http.cookies import CookieError, SimpleCookie
 from pathlib import Path
 from urllib.parse import parse_qs
 from zoneinfo import ZoneInfo
+
+from instagram_agent import storage as instagram_storage
 
 from . import sources
 from .audit import AuditLog
@@ -72,6 +75,21 @@ def _error(status: int, code: str, headers: list[tuple[str, str]] | None = None)
     return status, {"error": code}, headers or []
 
 
+def _json_body(environ: dict) -> tuple[object, Result | None]:
+    if not environ.get("CONTENT_TYPE", "").split(";")[0].strip() == "application/json":
+        return None, _error(415, "json_required")
+    try:
+        length = int(environ.get("CONTENT_LENGTH") or 0)
+    except ValueError:
+        return None, _error(400, "invalid_request")
+    if not 0 < length <= MAX_BODY_BYTES:
+        return None, _error(413 if length > MAX_BODY_BYTES else 400, "invalid_request")
+    try:
+        return json.loads(environ["wsgi.input"].read(length)), None
+    except (ValueError, UnicodeDecodeError):
+        return None, _error(400, "invalid_request")
+
+
 class CommandCentreApp:
     def __init__(
         self,
@@ -124,6 +142,9 @@ class CommandCentreApp:
             ("GET", "/api/v1/energy"): Route(self.energy, Permission.READ),
             ("GET", "/api/v1/briefing/runs"): Route(self.briefing_runs, Permission.READ),
             ("GET", "/api/v1/audit"): Route(self.audit_log, Permission.READ),
+            ("GET", "/api/v1/instagram/drafts"): Route(self.instagram_drafts, Permission.READ),
+            ("GET", "/api/v1/instagram/slide"): Route(self.instagram_slide, Permission.READ),
+            ("POST", "/api/v1/instagram/decision"): Route(self.instagram_decision, Permission.RECOMMEND, csrf=True),
         }
 
     # WSGI -------------------------------------------------------------------------------------
@@ -242,18 +263,9 @@ class CommandCentreApp:
         if self.login_per_client.blocked(client) or self.login_global.blocked("all"):
             self.audit.record("login", "rate_limited", client=client)
             return _error(429, "rate_limited", [("Retry-After", "900")])
-        if not environ.get("CONTENT_TYPE", "").split(";")[0].strip() == "application/json":
-            return _error(415, "json_required")
-        try:
-            length = int(environ.get("CONTENT_LENGTH") or 0)
-        except ValueError:
-            return _error(400, "invalid_request")
-        if not 0 < length <= MAX_BODY_BYTES:
-            return _error(413 if length > MAX_BODY_BYTES else 400, "invalid_request")
-        try:
-            body = json.loads(environ["wsgi.input"].read(length))
-        except (ValueError, UnicodeDecodeError):
-            return _error(400, "invalid_request")
+        body, error = _json_body(environ)
+        if error:
+            return error
         password = body.get("password") if isinstance(body, dict) else None
         if not isinstance(password, str) or set(body) != {"password"}:
             return _error(400, "invalid_request")
@@ -391,3 +403,52 @@ class CommandCentreApp:
 
     def audit_log(self, request: Request) -> Result:
         return 200, {"entries": self.audit.recent(50)}, []
+
+    def instagram_drafts(self, request: Request) -> Result:
+        return 200, sources.instagram_drafts(self.settings), []
+
+    def instagram_slide(self, request: Request) -> Result:
+        draft, number = request.query("draft") or "", request.query("n") or ""
+        if not sources.DRAFT_ID.fullmatch(draft) or not number.isdigit() or not 1 <= int(number) <= 10:
+            return _error(400, "invalid_parameters")
+        media = self.settings.instagram_media
+        if media is None or media.is_symlink() or (media / draft).is_symlink():
+            return _error(404, "not_found")
+        for extension, content_type in (("png", "image/png"), ("jpg", "image/jpeg")):
+            path = media / draft / f"slide-{int(number)}.{extension}"
+            if path.is_file() and not path.is_symlink():
+                return 200, (path.read_bytes(), content_type), []
+        return _error(404, "not_found")
+
+    def instagram_decision(self, request: Request) -> Result:
+        """Approve or reject a pending draft. This only records the decision; it never posts to Instagram."""
+        body, error = _json_body(request.environ)
+        if error:
+            return error
+        if (
+            not isinstance(body, dict)
+            or set(body) != {"draft_id", "decision"}
+            or not isinstance(body["draft_id"], str)
+            or not sources.DRAFT_ID.fullmatch(body["draft_id"])
+            or body["decision"] not in ("approve", "reject")
+        ):
+            return _error(400, "invalid_request")
+        path = self.settings.instagram_db
+        if path is None or path.is_symlink() or not path.is_file():
+            return _error(404, "not_found")
+        draft_id, decision = body["draft_id"], "approved" if body["decision"] == "approve" else "rejected"
+        conn = sqlite3.connect(path, timeout=5)
+        try:
+            changed = instagram_storage.decide_draft(
+                conn, draft_id, decision, self._now().isoformat(timespec="seconds")
+            )
+            exists = changed or conn.execute("SELECT 1 FROM drafts WHERE draft_id=?", (draft_id,)).fetchone()
+        finally:
+            conn.close()
+        if not exists:
+            return _error(404, "not_found")
+        if not changed:
+            self.audit.record("instagram_decision", "already_decided", actor="owner", draft=draft_id)
+            return _error(409, "already_decided")
+        self.audit.record("instagram_decision", decision, actor="owner", draft=draft_id, client=request.client)
+        return 200, {"draft_id": draft_id, "status": decision}, []
