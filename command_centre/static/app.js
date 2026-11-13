@@ -74,6 +74,8 @@
 
   function showLogin(message) {
     session = null; csrf = null;
+    assistantGeneration += 1;
+    asking = false;
     closeAssistant(false);
     $("assistant-toggle").hidden = true;
     $("assistant-log").replaceChildren();
@@ -222,6 +224,7 @@
   };
   let questionListener = null;
   let asking = false;
+  let assistantGeneration = 0;
 
   async function setupAssistant() {
     const result = await api("api/v1/assistant");
@@ -260,10 +263,13 @@
     question = question.trim();
     if (!question || asking) return;
     asking = true;
+    const generation = assistantGeneration;
     $("assistant-input").value = "";
     addTurn("you", question);
     orb("thinking", "Searching your Jarvis data…");
     const result = await api("api/v1/assistant", { method: "POST", body: { question } });
+    // Signed out (or timed out) while waiting: never show or speak a private answer.
+    if (generation !== assistantGeneration || !session) return;
     asking = false;
     if (result.status === 401) { showLogin("Your session has ended. Sign in again."); return; }
     if (!result.ok) {
