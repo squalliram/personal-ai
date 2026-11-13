@@ -41,7 +41,14 @@ button:focus-visible,a:focus-visible,input:focus-visible{outline:2px solid var(-
 .login-card>*{animation:login-rise .45s cubic-bezier(.2,.8,.2,1) backwards}
 .login-card>:nth-child(1){animation-delay:.55s}.login-card>:nth-child(2){animation-delay:.62s}.login-card>:nth-child(3){animation-delay:.7s}
 .login-card>:nth-child(4){animation-delay:.76s}.login-card>:nth-child(5){animation-delay:.82s}.login-card>:nth-child(6){animation-delay:.88s}
-.login-card>:nth-child(7){animation-delay:.94s}.login-card>:nth-child(8){animation-delay:1s}
+.login-card>:nth-child(7){animation-delay:.94s}.login-card>:nth-child(8){animation-delay:1s}.login-card>:nth-child(9){animation-delay:1.06s}
+.login-alt{display:flex;gap:.6rem}
+.login-alt button{flex:1;font-family:var(--mono);letter-spacing:.12em;text-transform:uppercase;font-size:.72rem}
+.mic.listening{border-color:var(--interface);color:var(--interface);animation:mic-pulse 1.2s ease-out infinite}
+@keyframes mic-pulse{0%{box-shadow:0 0 0 0 rgba(0,229,255,.55)}100%{box-shadow:0 0 0 14px rgba(0,229,255,0)}}
+@media (prefers-reduced-motion:reduce){.mic.listening{animation:none;box-shadow:0 0 0 2px var(--interface)}}
+.passkey-add{display:grid;gap:.5rem;max-width:420px;margin-top:1rem}
+.passkey-add input{padding:10px 14px;border-radius:2px;border:1px solid var(--line);background:rgba(0,229,255,.04);color:var(--ink);min-height:44px;font-family:var(--mono)}
 .login-card::after{content:"";position:absolute;left:0;right:0;top:0;height:2px;pointer-events:none;opacity:0;background:#bff9ff;
   box-shadow:0 0 12px 2px rgba(0,229,255,.8);animation:login-scan .7s .3s ease-in-out backwards}
 .card.login-card{background:linear-gradient(160deg,rgba(0,229,255,.08),rgba(0,229,255,.02)),rgba(1,10,18,.86)}
@@ -98,6 +105,8 @@ main>h1{margin:0;font-size:1.65rem;font-weight:600;text-transform:uppercase;lett
 .widget-head p{margin:.15rem 0 0;font-size:.8rem}
 .widget p{margin:0}
 .widget>a,.card>a{align-self:flex-start;display:inline-flex;align-items:center;min-height:44px}
+.alert a{display:inline-flex;align-items:center;min-height:44px;vertical-align:middle}
+.widgets+.card,.card+.widgets{margin-top:1rem}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:1rem}
 .grid .card{margin:0}
 .grid+.card{margin-top:1rem}
@@ -139,6 +148,8 @@ tbody tr:hover td{background:rgba(0,229,255,.04)}
 .alert-critical{border-color:var(--bad);background:linear-gradient(90deg,rgba(255,107,107,.12),rgba(0,0,0,.28) 60%)}.alert-critical strong{color:var(--bad)}
 .alert-warning{border-color:var(--warn);background:linear-gradient(90deg,rgba(255,181,71,.1),rgba(0,0,0,.28) 60%)}.alert-warning strong{color:var(--warn)}
 .alert-info{border-color:var(--info)}.alert-info strong{color:var(--info)}
+.alert-action{border-color:var(--ok);background:linear-gradient(90deg,rgba(90,255,200,.1),rgba(0,0,0,.28) 60%)}.alert-action strong{color:var(--ok)}
+.big-number{font-size:2rem;margin:.2rem 0;font-variant-numeric:tabular-nums}.big-number .muted{font-size:.85rem;margin-left:.3rem}
 
 /* Thin glowing progress bar; width comes from the --v custom property (0–1). */
 .hud-bar{position:relative;width:100%;height:2px;background:rgba(0,229,255,.18);background:color-mix(in srgb,var(--accent) 18%,transparent);overflow:hidden}

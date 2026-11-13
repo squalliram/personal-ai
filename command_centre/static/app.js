@@ -84,6 +84,7 @@
     $("login-status").textContent = message || "";
     $("password").value = "";
     $("password").focus();
+    refreshPasskeyOptions();
   }
 
   function showApp(info) {
@@ -183,12 +184,226 @@
     await pendingLogout;
     const result = await api("api/v1/session", { method: "POST", body: { password, remember: $("remember").checked } });
     $("password").value = "";
-    if (result.ok) {
-      playVault("unlock");
-      speak(VAULT.unlock.caption, reducedMotion() ? 0 : VAULT_GRANTED_MS);
-      showApp(result.data);
-    }
+    if (result.ok) granted(result.data);
     else $("login-status").textContent = LOGIN_ERRORS[result.data && result.data.error] || "Sign-in failed.";
+  }
+
+  function granted(data) {
+    stopListening();
+    playVault("unlock");
+    speak(VAULT.unlock.caption, reducedMotion() ? 0 : VAULT_GRANTED_MS);
+    showApp(data);
+  }
+
+  // Passkeys ---------------------------------------------------------------------------------
+  const b64 = {
+    encode(buffer) {
+      let text = "";
+      for (const byte of new Uint8Array(buffer)) text += String.fromCharCode(byte);
+      return btoa(text).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    },
+    decode(text) {
+      const raw = atob(text.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((text.length + 3) % 4));
+      return Uint8Array.from(raw, (c) => c.charCodeAt(0));
+    },
+  };
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const passkeysSupported = () => Boolean(window.PublicKeyCredential && navigator.credentials);
+  const OPTIONS_MAX_AGE_MS = 2 * 60 * 1000;
+  let loginOptions = null;
+
+  // Options are fetched ahead so the passkey prompt opens straight from the tap; Safari only
+  // shows it while the tap still counts as a user gesture.
+  async function prefetchLoginOptions() {
+    const result = await api("api/v1/passkeys/login/options", { method: "POST", body: {} });
+    loginOptions = result.ok ? { ...result.data, fetched: Date.now() } : null;
+    return result;
+  }
+
+  async function refreshPasskeyOptions() {
+    $("passkey-options").hidden = true;
+    if (!passkeysSupported()) return;
+    const result = await api("api/v1/passkeys/status");
+    if (!result.ok || !result.data.available || !result.data.registered || session) return;
+    $("passkey-options").hidden = false;
+    $("hello-jarvis").hidden = !SpeechRecognition;
+    await prefetchLoginOptions();
+  }
+
+  async function passkeySignIn() {
+    stopListening();
+    let options = loginOptions;
+    loginOptions = null;
+    if (!options || Date.now() - options.fetched > OPTIONS_MAX_AGE_MS) {
+      const result = await prefetchLoginOptions();
+      if (!result.ok) {
+        $("login-status").textContent = LOGIN_ERRORS[result.data && result.data.error] || "Passkey sign-in is unavailable.";
+        return;
+      }
+      options = loginOptions;
+      loginOptions = null;
+    }
+    $("login-status").textContent = "Confirm it's you with your passkey…";
+    let credential;
+    try {
+      credential = await navigator.credentials.get({ publicKey: {
+        challenge: b64.decode(options.challenge), rpId: options.rp_id,
+        timeout: Math.max(30000, options.timeout - (Date.now() - options.fetched) - 5000),
+        userVerification: options.user_verification, allowCredentials: [] } });
+    } catch (error) {
+      credential = null;
+      $("login-status").textContent = error && error.name === "NotAllowedError"
+        ? "Passkey sign-in was cancelled. Tap “Sign in with passkey” to try again."
+        : "This device could not use a passkey.";
+    }
+    prefetchLoginOptions();
+    if (!credential) return;
+    await pendingLogout;
+    const response = credential.response;
+    const result = await api("api/v1/passkeys/login", { method: "POST", body: {
+      credential_id: b64.encode(credential.rawId), client_data_json: b64.encode(response.clientDataJSON),
+      authenticator_data: b64.encode(response.authenticatorData), signature: b64.encode(response.signature),
+      remember: $("remember").checked } });
+    if (result.ok) granted(result.data);
+    else if (result.data && result.data.error === "invalid_credentials") $("login-status").textContent = "That passkey was not accepted.";
+    else $("login-status").textContent = LOGIN_ERRORS[result.data && result.data.error] || "Passkey sign-in failed.";
+  }
+
+  // "Hello Jarvis" only starts the passkey prompt: the device's Face ID, Touch ID or PIN is
+  // what signs you in, so a recording or cloned voice cannot.
+  const WAKE_PHRASE = /\b(hello|hey|hi)\W*jarvis\b/i;
+  let recognition = null;
+  function stopListening() {
+    if (recognition) {
+      const active = recognition;
+      recognition = null;
+      active.abort();
+    }
+    $("hello-jarvis").setAttribute("aria-pressed", "false");
+    $("hello-jarvis").classList.remove("listening");
+  }
+
+  function helloJarvis() {
+    if (recognition) { stopListening(); $("login-status").textContent = ""; return; }
+    const listener = new SpeechRecognition();
+    listener.lang = "en-GB";
+    listener.interimResults = true;
+    listener.maxAlternatives = 3;
+    let heard = false;
+    listener.onresult = (event) => {
+      if (recognition !== listener || heard) return;
+      heard = Array.from(event.results).some((result) => Array.from(result).some((alt) => WAKE_PHRASE.test(alt.transcript)));
+      if (!heard) return;
+      stopListening();
+      speak("Hello. Confirm it's you.");
+      passkeySignIn();
+    };
+    listener.onerror = (event) => {
+      if (recognition !== listener) return;
+      stopListening();
+      $("login-status").textContent = ["not-allowed", "service-not-allowed"].includes(event.error)
+        ? "Microphone access is blocked for this site." : "Jarvis could not hear you. Try again.";
+    };
+    listener.onend = () => {
+      if (recognition !== listener) return;
+      stopListening();
+      $("login-status").textContent = "Jarvis did not hear “Hello Jarvis”. Try again.";
+    };
+    recognition = listener;
+    $("hello-jarvis").setAttribute("aria-pressed", "true");
+    $("hello-jarvis").classList.add("listening");
+    $("login-status").textContent = "Listening… say “Hello Jarvis”.";
+    try { listener.start(); } catch {
+      stopListening();
+      $("login-status").textContent = "Voice sign-in is unavailable in this browser.";
+    }
+  }
+
+  function deviceName() {
+    const agent = navigator.userAgent;
+    if (/iPhone/.test(agent)) return "iPhone";
+    if (/iPad/.test(agent)) return "iPad";
+    if (/Android/.test(agent)) return "Android phone";
+    if (/Macintosh|Mac OS X/.test(agent)) return navigator.maxTouchPoints > 1 ? "iPad" : "Mac";
+    if (/Windows/.test(agent)) return "Windows PC";
+    return "This device";
+  }
+
+  async function passkeyCard() {
+    const result = await api("api/v1/passkeys");
+    if (!result.ok) return null;
+    if (!result.data.available) return card("Passkeys", muted("Passkeys are not available on this server yet, so sign in with your passphrase."));
+    const notice = el("p", { role: "status", "aria-live": "polite" });
+    const removeButton = (item) => {
+      const button = el("button", { type: "button", "aria-label": `Remove passkey ${item.label}` }, "Remove");
+      button.addEventListener("click", async () => {
+        button.disabled = true;
+        const removed = await api("api/v1/passkeys/remove", { method: "POST", body: { credential_id: item.id } });
+        if (removed.ok) render(); else { button.disabled = false; notice.textContent = "The passkey could not be removed."; }
+      });
+      return button;
+    };
+    const finish = el("button", { type: "button", class: "primary", hidden: "" }, "Create passkey");
+    // Keep references: render() may detach the form while a passkey prompt is open.
+    const passwordInput = el("input", { id: "passkey-password", type: "password", autocomplete: "current-password", required: "", maxlength: "1024" });
+    const labelInput = el("input", { id: "passkey-label", type: "text", maxlength: "60", value: deviceName() });
+    const form = el("form", { class: "passkey-add" },
+      el("input", { type: "text", name: "username", autocomplete: "username", value: "jarvis", hidden: "" }),
+      el("label", { for: "passkey-password" }, "Passphrase"), passwordInput,
+      el("label", { for: "passkey-label" }, "Name this device"), labelInput,
+      el("button", { type: "submit" }, "Add a passkey on this device"), finish);
+    let pending = null;
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      finish.hidden = true;
+      if (!passkeysSupported()) { notice.textContent = "This browser does not support passkeys."; return; }
+      const password = passwordInput.value;
+      if (!password) { notice.textContent = "Enter your passphrase first."; return; }
+      notice.textContent = "Checking your passphrase…";
+      const options = await api("api/v1/passkeys/register/options", { method: "POST", body: { password } });
+      passwordInput.value = "";
+      if (!options.ok) {
+        notice.textContent = options.data && options.data.error === "invalid_credentials"
+          ? "That passphrase was not accepted." : LOGIN_ERRORS[options.data && options.data.error] || "Passkey setup could not start.";
+        return;
+      }
+      pending = { ...options.data, fetched: Date.now() };
+      finish.hidden = false;
+      finish.focus();
+      notice.textContent = "Passphrase accepted. Select “Create passkey” and confirm with Face ID, Touch ID or your device PIN.";
+    });
+    finish.addEventListener("click", async () => {
+      const o = pending;
+      if (!o) return;
+      pending = null;
+      finish.hidden = true;
+      const remaining = o.timeout - (Date.now() - o.fetched) - 5000;
+      if (remaining < 30000) { notice.textContent = "That took too long. Enter your passphrase again."; return; }
+      let credential;
+      try {
+        credential = await navigator.credentials.create({ publicKey: {
+          challenge: b64.decode(o.challenge), rp: { id: o.rp_id, name: o.rp_name },
+          user: { id: b64.decode(o.user_id), name: o.user_name, displayName: o.user_display_name },
+          pubKeyCredParams: [{ type: "public-key", alg: -7 }, { type: "public-key", alg: -257 }],
+          authenticatorSelection: { residentKey: "required", requireResidentKey: true, userVerification: "required" },
+          excludeCredentials: o.exclude_credentials.map((id) => ({ type: "public-key", id: b64.decode(id) })),
+          attestation: "none", timeout: remaining } });
+      } catch (error) {
+        notice.textContent = error && error.name === "InvalidStateError"
+          ? "This device already has a Jarvis passkey." : "Passkey setup was cancelled.";
+        return;
+      }
+      const saved = await api("api/v1/passkeys/register", { method: "POST", body: {
+        client_data_json: b64.encode(credential.response.clientDataJSON),
+        attestation_object: b64.encode(credential.response.attestationObject), label: labelInput.value } });
+      if (saved.ok) render();
+      else notice.textContent = "The passkey could not be saved.";
+    });
+    return card("Passkeys",
+      muted("Sign in with Face ID, Touch ID, Windows Hello or your phone instead of the passphrase. Passkeys saved to iCloud Keychain or Google Password Manager work on your other devices, and on any other computer you can scan a QR code with your phone. On the sign-in screen, say “Hello Jarvis” to open the passkey prompt."),
+      table([["Passkey", (r) => r.label], ["Added", (r) => when(r.created_at)],
+        ["Last used", (r) => (r.last_used_at ? when(r.last_used_at) : "Never")], ["", removeButton]], result.data.passkeys, "No passkeys yet."),
+      result.data.passkeys.length < result.data.limit ? form : muted("The passkey limit has been reached."), notice);
   }
 
   const LOGOUT_DEADLINE_MS = 10000;
@@ -458,6 +673,39 @@
       el("p", { class: "reactor-detail" }, `${HEALTH[state].detail} ${ratio}.`));
   }
 
+  function alertItem(a) {
+    return el("li", { class: `alert alert-${a.severity}` },
+      el("strong", {}, a.severity === "action" ? "ACT NOW" : a.severity.toUpperCase()), " ", a.fact,
+      a.href ? [" ", el("a", { href: a.href }, "Open")] : null);
+  }
+
+  function instagramWidget(ig) {
+    const latest = ig.latest_attempt;
+    return widget("Instagram", "Daily drafts", {},
+      el("p", {}, status(ig.status)),
+      el("p", { class: "big-number" }, String(ig.pending_drafts), el("span", { class: "muted" }, ` draft${ig.pending_drafts === 1 ? "" : "s"} awaiting review`)),
+      latest ? keyValues([["Last drafting run", when(latest.started_at)], ["Result", latest.outcome]]) : muted(ig.summary),
+      el("a", { href: "#instagram" }, ig.pending_drafts ? "Review drafts" : "Open Instagram"));
+  }
+
+  async function myDay(view) {
+    const data = await load("api/v1/overview");
+    if (!data) return;
+    const now = new Date(data.generated_at);
+    $("view-status").textContent = new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/London", weekday: "long", day: "numeric", month: "long" }).format(now);
+    const actions = data.attention.filter((a) => a.severity === "action");
+    const issues = data.attention.filter((a) => a.severity === "critical" || a.severity === "warning");
+    view.append(
+      card("Act on now", actions.length || issues.length ?
+        el("ul", { class: "alerts" }, [...actions, ...issues].map(alertItem)) :
+        muted("Nothing needs your action right now.")),
+      el("div", { class: "widgets" }, instagramWidget(data.instagram),
+        widget("Automations", "Today's state", {},
+          el("ul", { class: "plain" }, data.automations.map((j) => el("li", {}, status(j.status), ` ${j.name}`))),
+          el("a", { href: "#automations" }, "View automations"))));
+    await placeholder(view, "my-day");
+  }
+
   async function overview(view) {
     const data = await load("api/v1/overview");
     if (!data) return;
@@ -471,8 +719,7 @@
       reactor(data),
       widget("Needs attention", "Facts from source health checks", { span: 2 },
         data.attention.length === 0 ? muted("Nothing needs attention.") :
-          el("ul", { class: "alerts" }, data.attention.slice(0, 6).map((a) => el("li", { class: `alert alert-${a.severity}` },
-            el("strong", {}, a.severity.toUpperCase()), " ", a.fact))),
+          el("ul", { class: "alerts" }, data.attention.slice(0, 6).map(alertItem)),
         data.attention.length > 6 ? el("a", { href: "#integrations" }, `View all ${data.attention.length}`) : null),
       widget("Monthly grid", "This month", {}, monthGrid(data.date),
         muted("No calendar source is connected yet, so no events are marked.")),
@@ -484,6 +731,7 @@
         energyBars(data.energy.recent_days),
         muted(data.energy.actual_bills.reason),
         el("a", { href: "#energy" }, "Open energy")),
+      instagramWidget(data.instagram),
       widget("Daily briefing", "Latest run", {},
         latestRun ? keyValues([["Date", latestRun.report_date], ["Events", String(latestRun.calendar_events)],
           ["Tasks", String(latestRun.tasks_processed)], ["Connector errors", String(latestRun.error_count)]]) :
@@ -557,8 +805,10 @@
   }
 
   async function settings(view) {
-    const data = await load("api/v1/audit");
-    if (!data || !session) return;
+    const [data, jobs, agentData] = await Promise.all([load("api/v1/audit"), load("api/v1/automations"), load("api/v1/agents")]);
+    if (!data || !jobs || !agentData || !session) return;
+    const canDecide = ["recommend", "execute"].includes(session.permission);
+    const passkeys = await passkeyCard();
     view.append(
       card("Session", keyValues([["Permission", session.permission.toUpperCase()], ["Session expires", when(session.expires_at)],
         session.remembered ? ["Remembered device", "Yes, until the session expires or you sign out"]
@@ -566,6 +816,12 @@
       el("ul", {}, el("li", {}, "READ: retrieve and analyse data."),
         el("li", {}, "RECOMMEND: suggest changes and prepare drafts."),
         el("li", {}, "EXECUTE: perform explicitly approved operations. No execute operations exist yet."))),
+      passkeys,
+      card("Agents and automations",
+        muted("These settings are read-only here. Schedules and agent definitions change through the repository; enable, disable and run-now controls arrive in Phase 5."),
+        table([["Automation", (r) => r.name], ["Status", (r) => status(r.status)], ["Trigger", (r) => r.trigger]], jobs.automations, "No automations."),
+        table([["Agent", (r) => r.name], ["Guardrail", (r) => r.guardrail], ["Definition", (r) => el("code", {}, r.definition)]], agentData.agents, "No agents."),
+        keyValues([["Instagram draft approvals", canDecide ? "You can approve or reject drafts on the Instagram page." : "Read-only: your permission cannot approve drafts."]])),
       card("Audit log", muted("Operational metadata only. Content and secrets are never recorded."),
         table([["When", (r) => when(r.at)], ["Actor", (r) => r.actor], ["Action", (r) => r.action], ["Outcome", (r) => r.outcome]],
           data.entries, "No audit entries.")));
@@ -585,7 +841,12 @@
     const data = await load("api/v1/agents");
     if (!data) return;
     for (const agent of data.agents) {
+      const activity = agent.activity;
       view.append(card(agent.name, el("p", {}, status(agent.status), " ", agent.summary),
+        activity ? [el("h3", {}, "Live activity"), el("p", {}, status(activity.status), " ", activity.summary),
+          keyValues([["Awaiting review", String(activity.pending_drafts)],
+            ["Last drafting run", activity.latest_run ? `${when(activity.latest_run.started_at)} · ${activity.latest_run.outcome}` : "None recorded"]]),
+          el("a", { href: activity.href }, activity.pending_drafts ? "Review drafts" : "Open Instagram")] : null,
         keyValues([["Runs in", agent.runs_in], ["Definition", agent.definition], ["Guardrail", agent.guardrail]]),
         agent.commands.length ? [el("h3", {}, "Commands"),
           table([["Command", (r) => el("code", {}, r.command)], ["What it does", (r) => r.purpose]], agent.commands)] : null));
@@ -674,7 +935,7 @@
   }
 
 
-  const VIEWS = { overview, energy, agents: agentsView, integrations, automations: automationsView, settings, instagram };
+  const VIEWS = { overview, "my-day": myDay, energy, agents: agentsView, integrations, automations: automationsView, settings, instagram };
 
   let renderCount = 0;
   async function render() {
@@ -709,6 +970,8 @@
     $("assistant-mic").addEventListener("click", listenForQuestion);
     $("assistant-form").addEventListener("submit", (event) => { event.preventDefault(); askJarvis($("assistant-input").value); });
     $("assistant").addEventListener("keydown", (event) => { if (event.key === "Escape") closeAssistant(); });
+    $("passkey-signin").addEventListener("click", passkeySignIn);
+    $("hello-jarvis").addEventListener("click", helloJarvis);
     $("menu-toggle").addEventListener("click", () => {
       const open = $("nav").classList.toggle("open");
       $("menu-toggle").setAttribute("aria-expanded", String(open));

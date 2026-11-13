@@ -39,6 +39,38 @@ def run(args, *, cwd=None, umask=0o077):
     return result.stdout
 
 
+def vendor(release: Path) -> bool:
+    """Install the hash-pinned passkey dependencies into <release>/vendor; passkeys stay off on failure."""
+    target = release / "vendor"
+    try:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "--quiet",
+                "--disable-pip-version-check",
+                "--no-cache-dir",
+                "--no-deps",
+                "--only-binary=:all:",
+                "--require-hashes",
+                "--target",
+                str(target),
+                "-r",
+                str(release / "deploy/command-centre/requirements.txt"),
+            ],
+            capture_output=True,
+            timeout=300,
+        )
+    except (OSError, subprocess.SubprocessError):
+        result = None
+    if result is None or result.returncode:
+        shutil.rmtree(target, ignore_errors=True)
+        return False
+    return True
+
+
 def atomic_write(path: Path, data: bytes, *, mode=0o600):
     if path.is_symlink():
         raise ReleaseError("Refusing a symlink at a managed file")
@@ -233,6 +265,12 @@ def verify(app: Path, sha: str, deployment_id: str, *, revoke_sessions=False):
         )
         if revoke_sessions:
             application.sessions.revoke_all()
+            # A passkey added with a leaked passphrase must not outlive a credential reset, even
+            # while passkeys are switched off because the dependency is missing.
+            if application.settings.passkeys_db:
+                from command_centre.passkeys import PasskeyStore
+
+                PasskeyStore(application.settings.passkeys_db).remove_all()
             status, _, _ = fetch(base + "/api/v1/session", headers=cookie)
             require(status == 401, "Credential reset did not invalidate existing sessions")
         return {
@@ -243,6 +281,7 @@ def verify(app: Path, sha: str, deployment_id: str, *, revoke_sessions=False):
             "owner_passphrase_sign_in_tested": False,
             "existing_sessions_revoked": revoke_sessions,
             "assistant_configured": bool(application.settings.openai_api_key),
+            "passkeys_available": application.passkeys is not None,
         }
     finally:
         application.sessions.revoke(token)
@@ -299,6 +338,7 @@ def install(checkout: Path, sha: str, password_hash: str, *, home: Path | None =
                 archive = run(["git", "archive", "--format=tar", sha], cwd=checkout)
                 with tarfile.open(fileobj=io.BytesIO(archive)) as source:
                     source.extractall(staging, filter="data")
+                vendor(staging)
                 atomic_write(staging / ".complete", sha.encode())
                 os.replace(staging, release)
             finally:
@@ -314,6 +354,7 @@ def install(checkout: Path, sha: str, password_hash: str, *, home: Path | None =
             "ALLOWED_HOSTS": DOMAIN,
             "AUDIT_DB": str(app / "data/audit.sqlite3"),
             "SESSIONS_DB": str(app / "data/sessions.sqlite3"),
+            "PASSKEYS_DB": str(app / "data/passkeys.sqlite3"),
             "ENERGY_DB": str(checkout / "data/octopus_energy.sqlite3"),
             "ENERGY_STATUS": str(checkout / "reports/energy/dashboard/status.json"),
             "BRIEFING_DB": str(checkout / "data/daily_briefing.sqlite3"),

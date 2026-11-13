@@ -76,6 +76,7 @@ class ReleaseTests(unittest.TestCase):
         self.run = self.enterContext(patch.object(HOST, "run", side_effect=self.command))
         self.selector = self.enterContext(patch.object(HOST, "selector", side_effect=self.selection))
         self.verify = self.enterContext(patch.object(HOST, "verify", side_effect=self.verification))
+        self.vendor = self.enterContext(patch.object(HOST, "vendor", return_value=True))
         self.registered = False
 
     def locked(self):
