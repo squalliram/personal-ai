@@ -40,7 +40,7 @@ def upsert_metrics(conn: sqlite3.Connection, media_id: str, captured_on: str, va
     columns = ("reach", "likes", "comments", "saved", "shares", "views", "total_interactions")
     conn.execute(
         f"INSERT INTO post_metrics(media_id,captured_on,{','.join(columns)}) VALUES(?,?,{','.join('?' * len(columns))}) "
-        f"ON CONFLICT(media_id,captured_on) DO UPDATE SET {','.join(f'{c}=excluded.{c}' for c in columns)}",
+        f"ON CONFLICT(media_id,captured_on) DO UPDATE SET {','.join(f'{c}=COALESCE(excluded.{c},{c})' for c in columns)}",
         (media_id, captured_on, *(values.get(c) for c in columns)),
     )
 
