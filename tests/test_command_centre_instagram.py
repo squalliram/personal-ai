@@ -231,3 +231,12 @@ class InstagramAcrossJarvisTests(unittest.TestCase):
         job = next(j for j in self.get(client, "/api/v1/automations")["automations"] if j["id"] == "instagram-daily")
         self.assertEqual(job["status"], "operational")
         self.assertEqual(job["execution_history"][0]["status"], "ok")
+
+    def test_malformed_slides_do_not_break_the_overview(self):
+        self.seed(("2026-11-12T10:00:00+00:00", "ok"))
+        conn = storage.connect(self.db)
+        with conn:
+            conn.execute("UPDATE drafts SET slides='1'")
+        conn.close()
+        client = self.client()
+        self.assertEqual(self.get(client, "/api/v1/overview")["instagram"]["pending_drafts"], 1)

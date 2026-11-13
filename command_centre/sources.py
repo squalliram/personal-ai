@@ -460,6 +460,8 @@ def instagram_drafts(settings: Settings, limit: int = 30) -> dict:
             slides = json.loads(row["slides"])
         except (TypeError, ValueError):
             slides = []
+        if not isinstance(slides, list):
+            slides = []
         result["drafts"].append(
             {
                 **dict(row),
