@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import time
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -15,6 +16,15 @@ IMAGE_SIZE = "1024x1280"  # 4:5, Instagram's tallest feed ratio; both sides divi
 
 class OpenAIError(RuntimeError):
     """A safe API error: it never includes the key, prompts or response bodies."""
+
+
+def _error_code(exc: HTTPError) -> str | None:
+    """OpenAI's machine-readable error code (e.g. insufficient_quota), never its message."""
+    try:
+        code = json.loads(exc.read(4096) or b"{}").get("error", {}).get("code")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return code if isinstance(code, str) and re.fullmatch(r"[a-z_]{1,40}", code) else None
 
 
 class OpenAIClient:
@@ -42,8 +52,13 @@ class OpenAIClient:
                 with urlopen(Request(API_BASE + path, body, headers), timeout=self.timeout) as response:
                     return json.loads(response.read().decode("utf-8"))
             except HTTPError as exc:
-                if not (exc.code == 429 or 500 <= exc.code < 600) or attempt == self.retries:
-                    raise OpenAIError(f"OpenAI request failed (HTTP {exc.code})") from None
+                code = _error_code(exc)
+                if (
+                    code == "insufficient_quota"
+                    or not (exc.code == 429 or 500 <= exc.code < 600)
+                    or attempt == self.retries
+                ):
+                    raise OpenAIError(f"OpenAI request failed (HTTP {exc.code}{', ' + code if code else ''})") from None
             except (URLError, TimeoutError, json.JSONDecodeError) as exc:
                 if attempt == self.retries:
                     raise OpenAIError(f"OpenAI request failed ({type(exc).__name__})") from None

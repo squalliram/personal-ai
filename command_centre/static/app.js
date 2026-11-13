@@ -509,7 +509,8 @@
     const last = data.runs[0];
     view.append(card("Daily drafts",
       muted("Three carousel drafts for @instafoodielove are ready by 12:00 London time. Nothing is posted to Instagram from here."),
-      last ? keyValues([["Last run", when(last.started_at)], ["Result", last.outcome], ["Drafts made", last.drafts]])
+      last ? keyValues([["Last run", when(last.started_at)], ["Result", last.outcome], ["Drafts made", last.drafts],
+        ...(last.error ? [["Error", last.error]] : [])])
         : muted(data.state === "not_configured" ? "Not connected: there is no Instagram database on this server yet." : "No daily run recorded yet.")));
     for (const draft of data.drafts) view.append(draftCard(draft, canDecide));
   }

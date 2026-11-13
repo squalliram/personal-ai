@@ -1,3 +1,4 @@
+import io
 import json
 import stat
 import tempfile
@@ -5,6 +6,7 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
+from urllib.error import HTTPError
 
 from instagram_agent import cli, cron_install, drafts, storage
 from instagram_agent.openai_client import OpenAIClient, OpenAIError
@@ -168,6 +170,35 @@ class DailyTickTests(unittest.TestCase):
         ai = FakeAI([[raw_draft("a"), raw_draft("b"), raw_draft("c")]], [[90, 80, 70]])
         self.tick(MORNING, ai)
         self.assertIn("Manchester slang", ai.calls[0][0])
+
+
+class OpenAIClientTests(unittest.TestCase):
+    def error(self, status, body):
+        return HTTPError("https://api.openai.com/v1/chat/completions", status, "x", {}, io.BytesIO(body))
+
+    def test_no_credit_fails_fast_with_the_code_but_not_the_message(self):
+        body = json.dumps({"error": {"code": "insufficient_quota", "message": "You have no credits sk-test"}}).encode()
+        client = OpenAIClient("sk-test-secret", retries=2)
+        with (
+            patch("instagram_agent.openai_client.urlopen", side_effect=self.error(429, body)) as call,
+            patch("instagram_agent.openai_client.time.sleep") as sleep,
+            self.assertRaises(OpenAIError) as caught,
+        ):
+            client.chat_json("s", "u")
+        self.assertEqual(str(caught.exception), "OpenAI request failed (HTTP 429, insufficient_quota)")
+        self.assertEqual((call.call_count, sleep.call_count), (1, 0))
+
+    def test_rate_limits_are_retried_and_odd_codes_dropped(self):
+        body = json.dumps({"error": {"code": "Rate limit <script>"}}).encode()
+        client = OpenAIClient("sk-test-secret", retries=1)
+        with (
+            patch("instagram_agent.openai_client.urlopen", side_effect=self.error(429, body)) as call,
+            patch("instagram_agent.openai_client.time.sleep"),
+            self.assertRaises(OpenAIError) as caught,
+        ):
+            client.chat_json("s", "u")
+        self.assertEqual(str(caught.exception), "OpenAI request failed (HTTP 429)")
+        self.assertEqual(call.call_count, 2)
 
 
 class CronInstallTests(unittest.TestCase):
