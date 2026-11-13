@@ -272,6 +272,31 @@ class CloudflareClientTests(unittest.TestCase):
         self.assertEqual(str(caught.exception), "Workers AI request failed (HTTP 401)")
 
 
+class ProviderTransportTests(unittest.TestCase):
+    def test_redirects_are_refused_so_the_token_stays_put(self):
+        from urllib.request import Request
+
+        from instagram_agent.openai_client import NoRedirects
+
+        request = Request("https://api.openai.com/v1/x", headers={"Authorization": "Bearer sk-test"})
+        with self.assertRaises(HTTPError):
+            NoRedirects().redirect_request(request, io.BytesIO(), 302, "Found", {}, "https://evil.example/")
+
+    def test_truncated_replies_become_provider_errors(self):
+        from http.client import IncompleteRead
+
+        with (
+            patch("instagram_agent.openai_client.urlopen", side_effect=IncompleteRead(b"")),
+            self.assertRaises(OpenAIError),
+        ):
+            OpenAIClient("sk-test-secret", retries=0).chat_json("s", "u")
+        with (
+            patch("instagram_agent.cloudflare_client.urlopen", side_effect=IncompleteRead(b"")),
+            self.assertRaises(CloudflareError),
+        ):
+            CloudflareAI("0123456789abcdef0123456789abcdef", "cf", retries=0).chat_json("s", "u")
+
+
 class CronInstallTests(unittest.TestCase):
     def test_keeps_unrelated_entries_and_replaces_only_its_own(self):
         previous = (

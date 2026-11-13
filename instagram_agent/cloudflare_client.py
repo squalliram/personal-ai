@@ -5,11 +5,12 @@ import json
 import re
 import time
 import uuid
+from http.client import HTTPException
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.request import Request, build_opener
 
-from .openai_client import AIError, image_extension
+from .openai_client import AIError, NoRedirects, image_extension
 
 API_BASE = "https://api.cloudflare.com/client/v4/accounts/{account}/ai/run/"
 TEXT_MODEL = "@cf/meta/llama-4-scout-17b-16e-instruct"
@@ -17,6 +18,7 @@ IMAGE_MODEL = "@cf/black-forest-labs/flux-2-klein-4b"
 IMAGE_SIZE = "1024x1280"
 MULTIPART_MODELS = ("@cf/black-forest-labs/flux-2-",)
 NO_RETRY_STATUS = {400, 401, 403, 404}
+urlopen = build_opener(NoRedirects()).open
 
 
 class CloudflareError(AIError):
@@ -73,7 +75,7 @@ class CloudflareAI:
             except HTTPError as exc:
                 if exc.code in NO_RETRY_STATUS or attempt == self.retries:
                     raise CloudflareError(f"Workers AI request failed (HTTP {exc.code})") from None
-            except (URLError, TimeoutError, json.JSONDecodeError) as exc:
+            except (URLError, HTTPException, OSError, json.JSONDecodeError) as exc:
                 if attempt == self.retries:
                     raise CloudflareError(f"Workers AI request failed ({type(exc).__name__})") from None
             time.sleep(min(30, 5 * 2**attempt))

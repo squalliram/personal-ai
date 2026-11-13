@@ -4,9 +4,10 @@ import base64
 import json
 import re
 import time
+from http.client import HTTPException
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 API_BASE = "https://api.openai.com/v1/"
 TEXT_MODEL = "gpt-5-mini"
@@ -21,6 +22,16 @@ class AIError(RuntimeError):
 
 class OpenAIError(AIError):
     pass
+
+
+class NoRedirects(HTTPRedirectHandler):
+    """Model APIs never redirect; following one could send the bearer token to another host."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise HTTPError(req.full_url, code, "redirect refused", headers, fp)
+
+
+urlopen = build_opener(NoRedirects()).open
 
 
 IMAGE_TYPES = {b"\x89PNG\r\n\x1a\n": "png", b"\xff\xd8\xff": "jpg"}
@@ -73,7 +84,7 @@ class OpenAIClient:
                     or attempt == self.retries
                 ):
                     raise OpenAIError(f"OpenAI request failed (HTTP {exc.code}{', ' + code if code else ''})") from None
-            except (URLError, TimeoutError, json.JSONDecodeError) as exc:
+            except (URLError, HTTPException, OSError, json.JSONDecodeError) as exc:
                 if attempt == self.retries:
                     raise OpenAIError(f"OpenAI request failed ({type(exc).__name__})") from None
             time.sleep(min(30, 5 * 2**attempt))
