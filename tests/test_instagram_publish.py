@@ -158,6 +158,49 @@ class PublishTests(unittest.TestCase):
         self.assertIn("outcome unknown", last["error"])
         self.assertEqual(self.tick(FakeGraph()), "published 0, failed 0")
 
+    def test_a_reject_during_preparation_stops_the_post(self):
+        draft_id = self.add()
+        other = storage.connect(self.root / "instagram.sqlite3")
+        self.addCleanup(other.close)
+
+        def reject_while_checking(url, size):
+            if not self.checked:
+                storage.decide_draft(other, draft_id, "rejected", "2026-11-12T18:04:00+00:00")
+            self.checked.append(url)
+
+        graph = FakeGraph()
+        result = publish.tick(
+            self.conn, self.env, self.media, DUE, graph, check=reject_while_checking, sleep=lambda s: None
+        )
+        self.assertEqual(result, "published 0, failed 1")
+        self.assertEqual(self.status()["status"], "rejected")
+        self.assertFalse(any(p[0].endswith("media_publish") for p in graph.posts))
+
+    def test_no_decision_once_publishing_has_started(self):
+        draft_id = self.add()
+        with self.conn:
+            publish._record(self.conn, draft_id, "2026-11-12T18:00:00+00:00", "started")
+        self.assertFalse(storage.decide_draft(self.conn, draft_id, "rejected", "2026-11-12T18:01:00+00:00"))
+
+    def test_sync_links_the_published_post_to_its_approved_example(self):
+        self.test_an_approved_weak_draft_is_posted()
+        with self.conn:
+            storage.upsert_post(
+                self.conn,
+                {"id": "9001", "timestamp": "2026-11-12T18:05:00+0000", "media_type": "CAROUSEL_ALBUM"},
+                "2026-11-13T09:00:00Z",
+            )
+            storage.link_published_drafts(self.conn)
+        self.assertEqual(self.conn.execute("SELECT media_id FROM examples").fetchone()[0], "9001")
+
+    def test_png_slides_fail_with_a_clear_reason(self):
+        draft_id = self.add()
+        for n in range(1, 4):
+            (self.media / draft_id / f"slide-{n}.jpg").rename(self.media / draft_id / f"slide-{n}.png")
+        self.assertEqual(self.tick(FakeGraph()), "published 0, failed 1")
+        error = self.conn.execute("SELECT error FROM publish_runs").fetchone()[0]
+        self.assertEqual(error, "Instagram only accepts JPEG slides")
+
     def test_a_crash_mid_publish_is_never_retried(self):
         draft_id = self.add()
         with self.conn:

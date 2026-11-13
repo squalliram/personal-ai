@@ -127,8 +127,10 @@ def publish_draft(
     images = []
     for number in range(1, len(slides) + 1):
         path = folder_in / f"slide-{number}.jpg"
+        if not path.exists() and (folder_in / f"slide-{number}.png").exists():
+            raise PublishError("Instagram only accepts JPEG slides")
         if path.is_symlink() or not path.is_file():
-            raise PublishError("a slide image is missing or not a JPEG")
+            raise PublishError("a slide image is missing")
         data = path.read_bytes()
         if not _is_jpeg(data):
             raise PublishError("Instagram only accepts JPEG slides")
@@ -196,8 +198,19 @@ def tick(conn, env: dict, media_dir: Path, now: datetime, client: GraphClient | 
         sent = []
 
         def started(draft_id=row["draft_id"], stamp=stamp, sent=sent):
-            with conn:
+            # Re-check under a write lock: a Reject during preparation must win.
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                now_row = conn.execute(
+                    "SELECT status, review_score FROM drafts WHERE draft_id=?", (draft_id,)
+                ).fetchone()
+                if not will_post(now_row["status"], now_row["review_score"]):
+                    raise PublishError("rejected before posting")
                 _record(conn, draft_id, stamp, "started")
+            except BaseException:
+                conn.rollback()
+                raise
+            conn.commit()
             sent.append(True)
 
         try:

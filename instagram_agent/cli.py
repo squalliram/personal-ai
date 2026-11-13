@@ -70,6 +70,7 @@ def sync(conn, client: GraphClient, *, benchmarks: int = 50, now: datetime | Non
         except GraphAPIError:
             # Accounts under 100 followers have no audience insights; keep the rest of the run.
             counts["audience_errors"] += 1
+        storage.link_published_drafts(conn)
     due = conn.execute(
         "SELECT username FROM benchmark_accounts ORDER BY synced_at IS NOT NULL, synced_at LIMIT ?", (benchmarks,)
     ).fetchall()
