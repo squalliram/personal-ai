@@ -533,10 +533,18 @@ class CommandCentreApp:
         now = self._now()
         energy = sources.energy_snapshot(self.settings, now)
         briefing = sources.briefing_snapshot(self.settings)
-        found = sources.integrations(self.settings, now, energy, briefing)
+        instagram = sources.instagram_drafts(self.settings)
+        found = [*sources.integrations(self.settings, now, energy, briefing), sources.instagram_health(instagram, now)]
         health = {item["id"]: item for item in found}
-        jobs = list_automations(self.settings, now, self.cron_reader, energy, briefing, health)
-        return {"now": now, "energy": energy, "briefing": briefing, "integrations": found, "automations": jobs}
+        jobs = list_automations(self.settings, now, self.cron_reader, energy, briefing, health, instagram)
+        return {
+            "now": now,
+            "energy": energy,
+            "briefing": briefing,
+            "instagram": instagram,
+            "integrations": found,
+            "automations": jobs,
+        }
 
     def overview(self, request: Request) -> Result:
         data = self._collect()
@@ -561,9 +569,22 @@ class CommandCentreApp:
                 "evidence": {"alerts": job["alerts"], "last_execution": job["last_execution"]},
             }
             for job in data["automations"]
-            if job["status"] not in ("operational",) and job["id"] != "daily-briefing"
+            if job["status"] not in ("operational",) and job["id"] not in ("daily-briefing", "instagram-daily")
         ]
-        order = {"critical": 0, "warning": 1, "info": 2}
+        instagram = next(item for item in data["integrations"] if item["id"] == "instagram")
+        pending = instagram["evidence"]["pending_drafts"]
+        if pending:
+            alerts.append(
+                {
+                    "severity": "action",
+                    "kind": "action",
+                    "source": "instagram",
+                    "fact": f"Review {pending} Instagram draft{'s' if pending != 1 else ''} awaiting your approval.",
+                    "href": "#instagram",
+                    "evidence": {"pending_drafts": pending},
+                }
+            )
+        order = {"critical": 0, "warning": 1, "action": 2, "info": 3}
         alerts.sort(key=lambda alert: order[alert["severity"]])
         counts: dict[str, int] = {}
         for item in data["integrations"]:
@@ -594,6 +615,12 @@ class CommandCentreApp:
                     "actual_bills": energy["actual_bills"],
                 },
                 "automations": [{"id": j["id"], "name": j["name"], "status": j["status"]} for j in data["automations"]],
+                "instagram": {
+                    "status": instagram["status"],
+                    "summary": instagram["summary"],
+                    "pending_drafts": pending,
+                    "latest_attempt": instagram["evidence"]["latest_attempt"],
+                },
                 "not_yet_available": [
                     {"item": "Today's calendar, tasks and priorities", "phase": 2},
                     {"item": "AI recommendations with evidence", "phase": 4},
@@ -607,7 +634,18 @@ class CommandCentreApp:
         return 200, {"modules": sources.modules(data["integrations"])}, []
 
     def agents(self, request: Request) -> Result:
-        return 200, {"agents": sources.agents()}, []
+        now = self._now()
+        instagram = sources.instagram_health(sources.instagram_drafts(self.settings), now)
+        activity = {
+            "instagram": {
+                "status": instagram["status"],
+                "summary": instagram["summary"],
+                "pending_drafts": instagram["evidence"]["pending_drafts"],
+                "latest_run": instagram["evidence"]["latest_attempt"],
+                "href": "#instagram",
+            }
+        }
+        return 200, {"agents": [{**agent, "activity": activity.get(agent["id"])} for agent in sources.agents()]}, []
 
     def integrations(self, request: Request) -> Result:
         data = self._collect()
