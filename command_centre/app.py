@@ -112,12 +112,14 @@ class CommandCentreApp:
                 settings.sessions_db,
                 idle_seconds=settings.session_idle_seconds,
                 absolute_seconds=settings.session_absolute_seconds,
+                remember_seconds=settings.session_remember_seconds,
                 clock=clock,
             )
         else:
             self.sessions = SessionStore(
                 idle_seconds=settings.session_idle_seconds,
                 absolute_seconds=settings.session_absolute_seconds,
+                remember_seconds=settings.session_remember_seconds,
                 clock=clock,
             )
         self.audit = audit or AuditLog(settings.audit_db, clock=clock)
@@ -270,7 +272,8 @@ class CommandCentreApp:
         if error:
             return error
         password = body.get("password") if isinstance(body, dict) else None
-        if not isinstance(password, str) or set(body) != {"password"}:
+        remember = body.get("remember", False) if isinstance(body, dict) else None
+        if not isinstance(password, str) or not isinstance(remember, bool) or not set(body) <= {"password", "remember"}:
             return _error(400, "invalid_request")
         # Reserve attempts before expensive verification, including across Passenger workers.
         reservation = self.login_global.reserve("all")
@@ -285,9 +288,19 @@ class CommandCentreApp:
         self.login_global.release("all", reservation)
         self.login_per_client.reset(client)
         self.sessions.revoke(request.token)
-        token, session = self.sessions.create(self.settings.permission_ceiling)
-        self.audit.record("login", "success", actor="owner", client=client, permission=session.permission.label)
-        return 200, self._session_payload(session), [self._cookie(token, self.settings.session_absolute_seconds)]
+        token, session = self.sessions.create(self.settings.permission_ceiling, remember=remember)
+        self.audit.record(
+            "login",
+            "success",
+            actor="owner",
+            client=client,
+            permission=session.permission.label,
+            remembered=session.remember,
+        )
+        lifetime = (
+            self.settings.session_remember_seconds if session.remember else self.settings.session_absolute_seconds
+        )
+        return 200, self._session_payload(session), [self._cookie(token, lifetime)]
 
     def _session_payload(self, session: Session) -> dict:
         return {
@@ -296,7 +309,8 @@ class CommandCentreApp:
             "permission_levels": [p.label for p in Permission],
             "csrf_token": session.csrf_token,
             "expires_at": self._iso(self.sessions.expires_at(session)),
-            "idle_timeout_seconds": self.settings.session_idle_seconds,
+            "idle_timeout_seconds": None if session.remember else self.settings.session_idle_seconds,
+            "remembered": session.remember,
         }
 
     def session_info(self, request: Request) -> Result:
@@ -311,10 +325,18 @@ class CommandCentreApp:
         now = self._now()
         energy = sources.energy_snapshot(self.settings, now)
         briefing = sources.briefing_snapshot(self.settings)
-        found = sources.integrations(self.settings, now, energy, briefing)
+        instagram = sources.instagram_drafts(self.settings)
+        found = [*sources.integrations(self.settings, now, energy, briefing), sources.instagram_health(instagram, now)]
         health = {item["id"]: item for item in found}
-        jobs = list_automations(self.settings, now, self.cron_reader, energy, briefing, health)
-        return {"now": now, "energy": energy, "briefing": briefing, "integrations": found, "automations": jobs}
+        jobs = list_automations(self.settings, now, self.cron_reader, energy, briefing, health, instagram)
+        return {
+            "now": now,
+            "energy": energy,
+            "briefing": briefing,
+            "instagram": instagram,
+            "integrations": found,
+            "automations": jobs,
+        }
 
     def overview(self, request: Request) -> Result:
         data = self._collect()
@@ -339,9 +361,22 @@ class CommandCentreApp:
                 "evidence": {"alerts": job["alerts"], "last_execution": job["last_execution"]},
             }
             for job in data["automations"]
-            if job["status"] not in ("operational",) and job["id"] != "daily-briefing"
+            if job["status"] not in ("operational",) and job["id"] not in ("daily-briefing", "instagram-daily")
         ]
-        order = {"critical": 0, "warning": 1, "info": 2}
+        instagram = next(item for item in data["integrations"] if item["id"] == "instagram")
+        pending = instagram["evidence"]["pending_drafts"]
+        if pending:
+            alerts.append(
+                {
+                    "severity": "action",
+                    "kind": "action",
+                    "source": "instagram",
+                    "fact": f"Review {pending} Instagram draft{'s' if pending != 1 else ''} awaiting your approval.",
+                    "href": "#instagram",
+                    "evidence": {"pending_drafts": pending},
+                }
+            )
+        order = {"critical": 0, "warning": 1, "action": 2, "info": 3}
         alerts.sort(key=lambda alert: order[alert["severity"]])
         counts: dict[str, int] = {}
         for item in data["integrations"]:
@@ -372,6 +407,12 @@ class CommandCentreApp:
                     "actual_bills": energy["actual_bills"],
                 },
                 "automations": [{"id": j["id"], "name": j["name"], "status": j["status"]} for j in data["automations"]],
+                "instagram": {
+                    "status": instagram["status"],
+                    "summary": instagram["summary"],
+                    "pending_drafts": pending,
+                    "latest_attempt": instagram["evidence"]["latest_attempt"],
+                },
                 "not_yet_available": [
                     {"item": "Today's calendar, tasks and priorities", "phase": 2},
                     {"item": "AI recommendations with evidence", "phase": 4},
@@ -385,7 +426,18 @@ class CommandCentreApp:
         return 200, {"modules": sources.modules(data["integrations"])}, []
 
     def agents(self, request: Request) -> Result:
-        return 200, {"agents": sources.agents()}, []
+        now = self._now()
+        instagram = sources.instagram_health(sources.instagram_drafts(self.settings), now)
+        activity = {
+            "instagram": {
+                "status": instagram["status"],
+                "summary": instagram["summary"],
+                "pending_drafts": instagram["evidence"]["pending_drafts"],
+                "latest_run": instagram["evidence"]["latest_attempt"],
+                "href": "#instagram",
+            }
+        }
+        return 200, {"agents": [{**agent, "activity": activity.get(agent["id"])} for agent in sources.agents()]}, []
 
     def integrations(self, request: Request) -> Result:
         data = self._collect()
@@ -432,7 +484,7 @@ class CommandCentreApp:
         return _error(404, "not_found")
 
     def instagram_decision(self, request: Request) -> Result:
-        """Approve or reject a pending draft. This only records the decision; it never posts to Instagram."""
+        """Approve or reject a pending draft. Reject stops it posting; Approve lets a weaker draft post at its slot."""
         body, error = _json_body(request.environ)
         if error:
             return error

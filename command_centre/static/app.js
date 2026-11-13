@@ -175,7 +175,7 @@
     if (!password) { $("login-status").textContent = "Enter your passphrase."; return; }
     $("login-status").textContent = "Signing in…";
     await pendingLogout;
-    const result = await api("api/v1/session", { method: "POST", body: { password } });
+    const result = await api("api/v1/session", { method: "POST", body: { password, remember: $("remember").checked } });
     $("password").value = "";
     if (result.ok) {
       playVault("unlock");
@@ -332,6 +332,39 @@
       el("p", { class: "reactor-detail" }, `${HEALTH[state].detail} ${ratio}.`));
   }
 
+  function alertItem(a) {
+    return el("li", { class: `alert alert-${a.severity}` },
+      el("strong", {}, a.severity === "action" ? "ACT NOW" : a.severity.toUpperCase()), " ", a.fact,
+      a.href ? [" ", el("a", { href: a.href }, "Open")] : null);
+  }
+
+  function instagramWidget(ig) {
+    const latest = ig.latest_attempt;
+    return widget("Instagram", "Daily drafts", {},
+      el("p", {}, status(ig.status)),
+      el("p", { class: "big-number" }, String(ig.pending_drafts), el("span", { class: "muted" }, ` draft${ig.pending_drafts === 1 ? "" : "s"} awaiting review`)),
+      latest ? keyValues([["Last drafting run", when(latest.started_at)], ["Result", latest.outcome]]) : muted(ig.summary),
+      el("a", { href: "#instagram" }, ig.pending_drafts ? "Review drafts" : "Open Instagram"));
+  }
+
+  async function myDay(view) {
+    const data = await load("api/v1/overview");
+    if (!data) return;
+    const now = new Date(data.generated_at);
+    $("view-status").textContent = new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/London", weekday: "long", day: "numeric", month: "long" }).format(now);
+    const actions = data.attention.filter((a) => a.severity === "action");
+    const issues = data.attention.filter((a) => a.severity === "critical" || a.severity === "warning");
+    view.append(
+      card("Act on now", actions.length || issues.length ?
+        el("ul", { class: "alerts" }, [...actions, ...issues].map(alertItem)) :
+        muted("Nothing needs your action right now.")),
+      el("div", { class: "widgets" }, instagramWidget(data.instagram),
+        widget("Automations", "Today's state", {},
+          el("ul", { class: "plain" }, data.automations.map((j) => el("li", {}, status(j.status), ` ${j.name}`))),
+          el("a", { href: "#automations" }, "View automations"))));
+    await placeholder(view, "my-day");
+  }
+
   async function overview(view) {
     const data = await load("api/v1/overview");
     if (!data) return;
@@ -345,8 +378,7 @@
       reactor(data),
       widget("Needs attention", "Facts from source health checks", { span: 2 },
         data.attention.length === 0 ? muted("Nothing needs attention.") :
-          el("ul", { class: "alerts" }, data.attention.slice(0, 6).map((a) => el("li", { class: `alert alert-${a.severity}` },
-            el("strong", {}, a.severity.toUpperCase()), " ", a.fact))),
+          el("ul", { class: "alerts" }, data.attention.slice(0, 6).map(alertItem)),
         data.attention.length > 6 ? el("a", { href: "#integrations" }, `View all ${data.attention.length}`) : null),
       widget("Monthly grid", "This month", {}, monthGrid(data.date),
         muted("No calendar source is connected yet, so no events are marked.")),
@@ -358,6 +390,7 @@
         energyBars(data.energy.recent_days),
         muted(data.energy.actual_bills.reason),
         el("a", { href: "#energy" }, "Open energy")),
+      instagramWidget(data.instagram),
       widget("Daily briefing", "Latest run", {},
         latestRun ? keyValues([["Date", latestRun.report_date], ["Events", String(latestRun.calendar_events)],
           ["Tasks", String(latestRun.tasks_processed)], ["Connector errors", String(latestRun.error_count)]]) :
@@ -431,14 +464,21 @@
   }
 
   async function settings(view) {
-    const data = await load("api/v1/audit");
-    if (!data || !session) return;
+    const [data, jobs, agentData] = await Promise.all([load("api/v1/audit"), load("api/v1/automations"), load("api/v1/agents")]);
+    if (!data || !jobs || !agentData || !session) return;
+    const canDecide = ["recommend", "execute"].includes(session.permission);
     view.append(
       card("Session", keyValues([["Permission", session.permission.toUpperCase()], ["Session expires", when(session.expires_at)],
-        ["Idle timeout", `${Math.round(session.idle_timeout_seconds / 60)} minutes`]]),
+        session.remembered ? ["Remembered device", "Yes, until the session expires or you sign out"]
+          : ["Idle timeout", `${Math.round(session.idle_timeout_seconds / 60)} minutes`]]),
       el("ul", {}, el("li", {}, "READ: retrieve and analyse data."),
         el("li", {}, "RECOMMEND: suggest changes and prepare drafts."),
         el("li", {}, "EXECUTE: perform explicitly approved operations. No execute operations exist yet."))),
+      card("Agents and automations",
+        muted("These settings are read-only here. Schedules and agent definitions change through the repository; enable, disable and run-now controls arrive in Phase 5."),
+        table([["Automation", (r) => r.name], ["Status", (r) => status(r.status)], ["Trigger", (r) => r.trigger]], jobs.automations, "No automations."),
+        table([["Agent", (r) => r.name], ["Guardrail", (r) => r.guardrail], ["Definition", (r) => el("code", {}, r.definition)]], agentData.agents, "No agents."),
+        keyValues([["Instagram draft approvals", canDecide ? "You can approve or reject drafts on the Instagram page." : "Read-only: your permission cannot approve drafts."]])),
       card("Audit log", muted("Operational metadata only. Content and secrets are never recorded."),
         table([["When", (r) => when(r.at)], ["Actor", (r) => r.actor], ["Action", (r) => r.action], ["Outcome", (r) => r.outcome]],
           data.entries, "No audit entries.")));
@@ -458,7 +498,12 @@
     const data = await load("api/v1/agents");
     if (!data) return;
     for (const agent of data.agents) {
+      const activity = agent.activity;
       view.append(card(agent.name, el("p", {}, status(agent.status), " ", agent.summary),
+        activity ? [el("h3", {}, "Live activity"), el("p", {}, status(activity.status), " ", activity.summary),
+          keyValues([["Awaiting review", String(activity.pending_drafts)],
+            ["Last drafting run", activity.latest_run ? `${when(activity.latest_run.started_at)} · ${activity.latest_run.outcome}` : "None recorded"]]),
+          el("a", { href: activity.href }, activity.pending_drafts ? "Review drafts" : "Open Instagram")] : null,
         keyValues([["Runs in", agent.runs_in], ["Definition", agent.definition], ["Guardrail", agent.guardrail]]),
         agent.commands.length ? [el("h3", {}, "Commands"),
           table([["Command", (r) => el("code", {}, r.command)], ["What it does", (r) => r.purpose]], agent.commands)] : null));
@@ -561,7 +606,7 @@
   }
 
 
-  const VIEWS = { overview, energy, agents: agentsView, integrations, automations: automationsView, settings, instagram };
+  const VIEWS = { overview, "my-day": myDay, energy, agents: agentsView, integrations, automations: automationsView, settings, instagram };
 
   let renderCount = 0;
   async function render() {

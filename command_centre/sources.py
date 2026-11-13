@@ -455,6 +455,7 @@ def instagram_drafts(settings: Settings, limit: int = 30) -> dict:
         "auto_publish": False,
         "drafts": [],
         "runs": [],
+        "latest_attempt": None,
     }
     path = settings.instagram_db
     if path is None or path.is_symlink() or not path.is_file():
@@ -473,6 +474,11 @@ def instagram_drafts(settings: Settings, limit: int = 30) -> dict:
                 "SELECT run_on,started_at,outcome,drafts,error FROM daily_runs ORDER BY id DESC LIMIT 10"
             ).fetchall()
             publishing = _publishing(conn)
+            # Ticks every 15 minutes mostly skip, so find the latest real attempt separately.
+            attempt = conn.execute(
+                "SELECT run_on,started_at,outcome,drafts,error FROM daily_runs WHERE outcome!='skipped' "
+                "ORDER BY id DESC LIMIT 1"
+            ).fetchone()
     except (OSError, sqlite3.Error):
         result["state"] = "unavailable"
         return result
@@ -480,6 +486,8 @@ def instagram_drafts(settings: Settings, limit: int = 30) -> dict:
         try:
             slides = json.loads(row["slides"])
         except (TypeError, ValueError):
+            slides = []
+        if not isinstance(slides, list):
             slides = []
         result["drafts"].append(
             {
@@ -500,5 +508,47 @@ def instagram_drafts(settings: Settings, limit: int = 30) -> dict:
         )
     result["auto_publish"] = publishing["on"]
     result["runs"] = [dict(run) for run in runs]
+    result["latest_attempt"] = dict(attempt) if attempt else None
     result["state"] = "available"
     return result
+
+
+def instagram_health(snapshot: dict, now: datetime) -> dict:
+    pending = sum(1 for draft in snapshot["drafts"] if draft.get("status") == "pending")
+    latest = snapshot.get("latest_attempt")
+    started = _instant(latest.get("started_at")) if latest else None
+    if snapshot["state"] == "not_configured":
+        status, summary = "not_configured", "No Instagram drafts database is configured on this host."
+    elif snapshot["state"] == "unavailable":
+        status, summary = "failed", "The Instagram drafts database could not be read."
+    elif latest is None:
+        status, summary = "unverified", "No daily drafting run has been recorded yet."
+    elif latest.get("outcome") == "not_configured":
+        status, summary = "not_configured", "The daily drafting run has no AI credentials configured."
+    elif started is None or now - started > timedelta(hours=48):
+        status, summary = "stale", "No drafting run in the last 48 hours."
+    elif latest.get("outcome") in ("failed", "gave_up"):
+        status, summary = "degraded", f"The latest drafting run on {latest.get('run_on')} failed."
+    elif latest.get("outcome") == "partial":
+        status, summary = (
+            "degraded",
+            f"The latest drafting run on {latest.get('run_on')} made fewer drafts than planned.",
+        )
+    else:
+        status, summary = (
+            "operational",
+            f"Latest drafting run on {latest.get('run_on')} made {latest.get('drafts')} draft(s).",
+        )
+    if pending:
+        summary += f" {pending} draft{'s' if pending != 1 else ''} awaiting your review."
+    return _health(
+        "instagram",
+        "Instagram drafts",
+        "social",
+        "local_database",
+        status,
+        summary,
+        now,
+        pending_drafts=pending,
+        latest_attempt=latest,
+    )

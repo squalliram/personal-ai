@@ -1,10 +1,12 @@
 import shutil
+import sqlite3
 import stat
 import subprocess
 import sys
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from pathlib import Path
 
 from command_centre_fixtures import HOST, PASSWORD_HASH, Client, Clock, make_app, make_settings
@@ -111,6 +113,32 @@ class SqliteSessionStoreTests(unittest.TestCase):
         token, _ = self.store.create(Permission.READ)
         self.clock.now += 121
         self.assertIsNone(self.store.get(token))  # absolute expiry
+
+    def test_remembered_sessions_outlive_idle_expiry_until_their_lifetime(self):
+        store = SqliteSessionStore(
+            self.path, idle_seconds=30, absolute_seconds=120, remember_seconds=1000, clock=self.clock
+        )
+        token, _ = store.create(Permission.READ, remember=True)
+        short, _ = store.create(Permission.READ)
+        self.clock.now += 500
+        store.create(Permission.READ)  # the cleanup pass must keep the remembered session
+        self.assertTrue(store.get(token).remember)
+        self.assertIsNone(store.get(short))
+        self.clock.now += 501
+        self.assertIsNone(store.get(token))
+
+    def test_schema_stays_compatible_with_the_previous_release(self):
+        store = SqliteSessionStore(
+            self.path, idle_seconds=30, absolute_seconds=120, remember_seconds=1000, clock=self.clock
+        )
+        remembered, _ = store.create(Permission.READ, remember=True)
+        with closing(sqlite3.connect(self.path)) as conn, conn:
+            # The insert the previous release makes must keep working after a rollback.
+            conn.execute("INSERT INTO sessions VALUES('old','csrf',1,?,?)", (self.clock.now, self.clock.now))
+        self.assertTrue(store.get(remembered).remember)
+        store.revoke(remembered)
+        with closing(sqlite3.connect(self.path)) as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM remembered_sessions").fetchone(), (0,))
 
     def test_max_sessions_evicts_least_recently_used(self):
         store = SqliteSessionStore(self.path, idle_seconds=300, absolute_seconds=3600, clock=self.clock, max_sessions=2)

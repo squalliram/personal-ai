@@ -36,7 +36,7 @@ See the [Command Centre architecture](docs/command-centre/architecture.md) and [
 
 ### 4. Instagram agent: "Draft this week's posts in my voice"
 
-An agent that writes Instagram content: reel scripts with scored hooks, captions, carousels, stories, DM replies, weekly plans and post audits. It is the 13 `/ig-*` skills from [instagram-agent-skill](https://github.com/squalliram/instagram-agent-skill), run through Jarvis or Claude Code. **It drafts only. Nothing is posted automatically.** Fill in `~/.claude/instagram/voice.md` first. See [agents/instagram.md](agents/instagram.md).
+An agent that writes Instagram content: reel scripts with scored hooks, captions, carousels, stories, DM replies, weekly plans and post audits. It is the 13 `/ig-*` skills from [instagram-agent-skill](https://github.com/squalliram/instagram-agent-skill), run through Jarvis or Claude Code. The skills draft only; the daily pipeline below is what posts. Fill in `~/.claude/instagram/voice.md` first. See [agents/instagram.md](agents/instagram.md).
 
 ## Quick start
 
@@ -75,7 +75,7 @@ The briefing is written to `reports/daily/YYYY-MM-DD.md`. A small run log goes t
 
 ### 4. Instagram pipeline: "What should @instafoodielove post today?"
 
-Collects my Instagram analytics and benchmarks the food and coffee accounts I follow: their best recent posts, the hashtags doing best and the hours my followers are online. It also remembers which drafts I approved and how they then performed. Every day it writes three AI-generated carousel drafts, ready by 12:00, and puts them on the Command Centre's Instagram page with Approve and Reject buttons. Nothing is posted automatically: I download the approved slides, copy the caption and post them myself. See the [Instagram pipeline guide](docs/instagram-pipeline.md).
+Collects my Instagram analytics and benchmarks the food and coffee accounts I follow: their best recent posts, the hashtags doing best and the hours my followers are online. It also remembers which drafts I approved and how they then performed. Every day it writes three AI-generated carousel drafts, ready by 12:00, and puts them on the Command Centre's Instagram page with Approve and Reject buttons. Once the Meta token is set, drafts that passed review post automatically at their slot unless I reject them first; until then I post approved ones myself. See the [Instagram pipeline guide](docs/instagram-pipeline.md).
 
 ## What's in the repo
 
