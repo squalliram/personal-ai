@@ -264,8 +264,8 @@ tbody tr:hover td{background:rgba(0,229,255,.04)}
   .widget.span-2{grid-column:auto}
 }
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{transition:none!important;animation:none!important}.vault{display:none!important}}
-.ig-slides{display:flex;gap:.75rem;overflow-x:auto;padding-bottom:.5rem}.ig-slides figure{margin:0;flex:0 0 auto;width:200px}
-.ig-slides img{display:block;width:200px;height:250px;object-fit:cover;border:1px solid var(--line)}.ig-slides figcaption{margin-top:.3rem;font-size:.8rem;color:var(--muted)}
+.ig-slides{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:.75rem}.ig-slides figure{margin:0;min-width:0}
+.ig-slides img{display:block;width:100%;height:auto;aspect-ratio:4/5;object-fit:cover;border:1px solid var(--line)}.ig-slides figcaption{margin-top:.3rem;font-size:.8rem;color:var(--muted)}
 .ig-caption{white-space:pre-wrap}.ig-actions{display:flex;gap:.6rem;margin-top:.8rem}
 .ig-actions{align-items:center;flex-wrap:wrap}.ig-downloads a{margin-left:.5rem}
 .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
