@@ -885,6 +885,7 @@
   // A port of initializeDashboard() from octopus_energy/dashboard.js, drawn with DOM nodes in the HUD theme.
   const energyChoice = { fuel: "electricity", period: "day" }; // kept when a background refresh rebuilds the view
   let energyInstances = 0;
+  let energyRefreshing = false; // a Fetch latest data request is being tracked; background rebuilds would lose it
   function energyDashboard(root, published, generation) {
     let data = null, { fuel, period } = energyChoice, busy = false, loadError = false;
     let refreshBusy = false, lastRefreshStatus = null, stopped = false, attached = false;
@@ -1159,7 +1160,9 @@
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 10000);
       try {
+        const epoch = cacheEpoch;
         const result = await api("api/v1/energy/dashboard", { signal: controller.signal });
+        if (epoch !== cacheEpoch) { stop(); return false; } // signed out (or in again) meanwhile
         if (result.status === 401) { stop(); showLogin("Your session has ended. Sign in again."); return false; }
         if (!result.ok) throw new Error("unavailable");
         accept(result.data);
@@ -1179,7 +1182,9 @@
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 10000);
       try {
+        const epoch = cacheEpoch;
         const result = await api(path, { ...options, signal: controller.signal });
+        if (epoch !== cacheEpoch) { stop(); throw new Error("signed_out"); }
         if (result.status === 401) { stop(); showLogin("Your session has ended. Sign in again."); throw new Error("signed_out"); }
         return result;
       } finally { clearTimeout(timeout); }
@@ -1193,11 +1198,11 @@
 
     async function requestRefresh() {
       if (refreshBusy || busy || !canRefresh) return;
-      refreshBusy = true;
+      refreshBusy = energyRefreshing = true;
       refreshButton.disabled = true;
       const message = (state, text) => { refreshStatus.dataset.state = state; refreshStatus.textContent = text; };
       const finish = (state, text) => {
-        refreshBusy = false;
+        refreshBusy = energyRefreshing = false;
         refreshButton.disabled = busy || !canRefresh;
         message(state, text);
       };
@@ -1249,7 +1254,7 @@
         message(joining ? "running" : "requested", joining ? "Already running: fetching from Octopus." : "Requested. Waiting for the background runner.");
         let observedSuccess = baseline.last_success_at;
         const poll = async () => {
-          if (stopped || !live()) { refreshBusy = false; return; }
+          if (stopped || !live()) { refreshBusy = energyRefreshing = false; return; }
           if (Date.now() >= deadline) {
             finish("warning", "Unable to confirm this request’s outcome. It may still be queued or delayed. The existing snapshot is kept; check Data as of or try again later."); return;
           }
@@ -1322,6 +1327,7 @@
     function stop() {
       if (stopped) return;
       stopped = true;
+      if (refreshBusy) energyRefreshing = false;
       clearInterval(timer);
       observer?.disconnect();
       document.removeEventListener("visibilitychange", onVisible);
@@ -1572,6 +1578,7 @@
       if (link.dataset.section === section[0]) link.setAttribute("aria-current", "page");
       else link.removeAttribute("aria-current");
     }
+    if (background && section[0] === "energy" && energyRefreshing) return;
     const current = ++renderCount;
     renderUses = new Map();
     const uses = renderUses;
