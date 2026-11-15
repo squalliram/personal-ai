@@ -143,8 +143,9 @@ class EnergyHealthTests(SourceTestCase):
         jobs = self.by_id(self.get(client, "/api/v1/automations")["automations"])
         self.assertNotIn("operational", {job["status"] for job in jobs.values()})
         overview = self.get(client, "/api/v1/overview")
-        self.assertEqual(len(overview["missing_integrations"]), 5)
         self.assertEqual(overview["energy"]["state"], "not_configured")
+        self.assertEqual((overview["energy"]["fuels"], overview["insights"]), ({}, []))
+        self.assertEqual(overview["status"]["state"], "standby")
 
     def test_recent_success_is_operational_with_labelled_measured_and_estimated_values(self):
         seed_energy(self.settings.energy_db)

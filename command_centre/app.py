@@ -26,7 +26,7 @@ from zoneinfo import ZoneInfo
 from instagram_agent import cloudflare_client, openai_client
 from instagram_agent import storage as instagram_storage
 
-from . import assistant, energy_refresh, passkeys, sources
+from . import assistant, energy_refresh, insights, passkeys, sources
 from .audit import AuditLog
 from .automations import CronReader, list_automations, read_crontab
 from .config import Settings
@@ -628,6 +628,7 @@ class CommandCentreApp:
             settings.energy_status,
             settings.briefing_db,
             settings.briefing_reports,
+            settings.energy_status.with_name("data.json"),
             settings.instagram_db,
         ):
             for candidate in (path, path.with_name(path.name + "-wal")) if path else ():
@@ -657,9 +658,12 @@ class CommandCentreApp:
         found = [*sources.integrations(self.settings, now, energy, briefing), sources.instagram_health(instagram, now)]
         health = {item["id"]: item for item in found}
         jobs = list_automations(self.settings, now, self.cron_reader, energy, briefing, health, instagram)
+        history = sources.energy_history(self.settings, now, energy, insights.HISTORY_DAYS)
+        published = sources.energy_dashboard(self.settings)["dashboard"] if history else None
         return {
             "now": now,
             "energy": energy,
+            "energy_fuels": insights.energy_fuels(energy, history, published, now),
             "briefing": briefing,
             "instagram": instagram,
             "integrations": found,
@@ -668,61 +672,18 @@ class CommandCentreApp:
 
     def overview(self, request: Request) -> Result:
         data = self._collect()
-        severity = {"failed": "critical", "degraded": "warning", "stale": "warning", "refresh_required": "warning"}
-        alerts = [
-            {
-                "severity": severity.get(item["status"], "info"),
-                "kind": "fact",
-                "source": item["id"],
-                "fact": f"{item['name']}: {item['summary']}",
-                "evidence": item["evidence"],
-            }
-            for item in data["integrations"]
-            if item["status"] not in ("operational", "not_implemented")
-        ]
-        alerts += [
-            {
-                "severity": severity.get(job["status"], "info"),
-                "kind": "fact",
-                "source": job["id"],
-                "fact": f"{job['name']}: {job['summary']}",
-                "evidence": {"alerts": job["alerts"], "last_execution": job["last_execution"]},
-            }
-            for job in data["automations"]
-            if job["status"] not in ("operational",) and job["id"] not in ("daily-briefing", "instagram-daily")
-        ]
+        alerts = insights.attention(data, data["now"])
         instagram = next(item for item in data["integrations"] if item["id"] == "instagram")
-        pending = instagram["evidence"]["pending_drafts"]
-        if pending:
-            alerts.append(
-                {
-                    "severity": "action",
-                    "kind": "action",
-                    "source": "instagram",
-                    "fact": f"Review {pending} Instagram draft{'s' if pending != 1 else ''} awaiting your approval.",
-                    "href": "#instagram",
-                    "evidence": {"pending_drafts": pending},
-                }
-            )
-        order = {"critical": 0, "warning": 1, "action": 2, "info": 3}
-        alerts.sort(key=lambda alert: order[alert["severity"]])
-        counts: dict[str, int] = {}
-        for item in data["integrations"]:
-            counts[item["status"]] = counts.get(item["status"], 0) + 1
-        energy = data["energy"]
+        energy, fuels = data["energy"], data["energy_fuels"]
         return (
             200,
             {
                 "generated_at": data["now"].isoformat(timespec="seconds"),
                 "date": data["now"].date().isoformat(),
                 "timezone": "Europe/London",
+                "status": insights.system_status(alerts, data["automations"]),
                 "attention": alerts,
-                "integration_counts": counts,
-                "missing_integrations": [
-                    {"id": item["id"], "name": item["name"], "summary": item["summary"]}
-                    for item in data["integrations"]
-                    if item["status"] == "not_implemented"
-                ],
+                "insights": insights.energy_insights(energy, fuels),
                 "briefing": {
                     "latest_run": data["briefing"]["runs"][0] if data["briefing"]["runs"] else None,
                     "latest_report_date": data["briefing"]["latest_report_date"],
@@ -730,7 +691,7 @@ class CommandCentreApp:
                 "energy": {
                     "state": energy["state"],
                     "basis": energy["basis"],
-                    "recent_days": energy["daily"][-14:],
+                    "fuels": insights.public_fuels(fuels),
                     "last_successful_sync_at": energy["last_successful_sync_at"],
                     "actual_bills": energy["actual_bills"],
                 },
@@ -738,13 +699,10 @@ class CommandCentreApp:
                 "instagram": {
                     "status": instagram["status"],
                     "summary": instagram["summary"],
-                    "pending_drafts": pending,
+                    "pending_drafts": instagram["evidence"]["pending_drafts"],
                     "latest_attempt": instagram["evidence"]["latest_attempt"],
+                    **insights.instagram_schedule(data["instagram"], data["now"]),
                 },
-                "not_yet_available": [
-                    {"item": "Today's calendar, tasks and priorities", "phase": 2},
-                    {"item": "AI recommendations with evidence", "phase": 4},
-                ],
             },
             [],
         )
