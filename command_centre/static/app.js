@@ -591,7 +591,9 @@
       renderUses.set(path, entry);
       return JSON.parse(entry.json);
     }
+    const epoch = cacheEpoch;
     const result = await fetchData(path);
+    if (epoch !== cacheEpoch) return null;
     if (result.status === 401) { showLogin("Your session has ended. Sign in again."); return null; }
     if (!result.ok) {
       $("view-status").textContent = `Could not load data (${(result.data && result.data.error) || result.status}).`;
@@ -624,7 +626,10 @@
       if (epoch !== cacheEpoch || !session) return;
       const entry = cache.get(path);
       if (entry && Date.now() - entry.at < CACHE_FRESH_MS) continue;
-      if (!(await fetchData(path)).ok) return;
+      const result = await fetchData(path);
+      if (epoch !== cacheEpoch || !session) return;
+      if (result.status === 401) { showLogin("Your session has ended. Sign in again."); return; }
+      if (!result.ok) return;
     }
   }
 
