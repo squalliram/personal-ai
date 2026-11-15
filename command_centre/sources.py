@@ -7,6 +7,7 @@ or CLI writers from here: on a legacy database they rebuild derived tables.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import sqlite3
@@ -189,6 +190,17 @@ DASHBOARD_KEYS = (
 DASHBOARD_MAX_BYTES = 8 * 1024 * 1024
 
 
+def _non_finite(token: str):
+    raise ValueError(f"non-finite number {token}")
+
+
+def _finite(token: str) -> float:
+    value = float(token)
+    if not math.isfinite(value):
+        raise ValueError("non-finite number")
+    return value
+
+
 def energy_dashboard(settings: Settings) -> dict:
     """Read the snapshot the energy runner publishes for /energy-usage (``data.json`` beside the status).
 
@@ -208,7 +220,11 @@ def energy_dashboard(settings: Settings) -> dict:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
         with os.fdopen(fd, "rb") as source:
             raw = source.read(DASHBOARD_MAX_BYTES + 1)
-        data = json.loads(raw) if len(raw) <= DASHBOARD_MAX_BYTES else None
+        data = (
+            json.loads(raw, parse_constant=_non_finite, parse_float=_finite)
+            if len(raw) <= DASHBOARD_MAX_BYTES
+            else None
+        )
     except (OSError, ValueError):
         return {"state": "invalid", "dashboard": None}
     if (

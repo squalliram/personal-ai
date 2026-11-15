@@ -87,7 +87,15 @@ class DashboardSnapshotTests(EnergyTestCase):
     def test_missing_invalid_and_symlinked_snapshots_are_explicit(self):
         target = self.settings.energy_status.with_name("data.json")
         self.assertEqual(self.client.request("GET", "/api/v1/energy/dashboard").json()["state"], "not_published")
-        for raw in ("{", "[]", json.dumps({"generated_at": "yesterday", "daily": [], "hourly": []})):
+        valid = '{"generated_at": "%s", "daily": [{"kwh": %s}], "hourly": []}'
+        for raw in (
+            "{",
+            "[]",
+            json.dumps({"generated_at": "yesterday", "daily": [], "hourly": []}),
+            valid % (iso(self.now), "NaN"),
+            valid % (iso(self.now), "-Infinity"),
+            valid % (iso(self.now), "1e999"),
+        ):
             target.write_text(raw, encoding="utf-8")
             body = self.client.request("GET", "/api/v1/energy/dashboard").json()
             self.assertEqual((body["state"], body["dashboard"]), ("invalid", None))
