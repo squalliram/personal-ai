@@ -53,7 +53,7 @@ From 09:00 London time, the first tick of the day:
 2. **Create** writes carousels in the voice from `INSTAGRAM_VOICE_FILE` (default `agents/instagram-voice.md`), following the `ig-carousel`, `ig-caption` and `ig-human` rules from `INSTAGRAM_SKILLS_DIR` when the skill pack is installed. Topics are limited to food, coffee and restaurants. Approved examples that performed well count for more; rejected topics and the last 14 days' topics are avoided.
 3. **Tags** adds up to 20 hashtags per draft.
 4. **Review** scores each draft 0-100. Drafts under 70 go back to Create with the reviewer's notes, up to 3 rounds. If fewer than 3 pass, the best of the rest still go in the queue, labelled with their score.
-5. The image model draws every slide at 1024×1280 (4:5 portrait). OpenAI's image model also draws the slide's short text onto it. Cloudflare's FLUX.2 klein garbles lettering, so with Cloudflare the slides are clean photos and the caption carries the words. A slide image that fails gets one more try; if it still fails, that draft is dropped and the reason is recorded. Cloudflare returns JPEGs and OpenAI returns PNGs; each is saved in the format it arrives in.
+5. The image model draws every slide at 1024×1280 (4:5 portrait). OpenAI's image model also draws the slide's short text onto it. Cloudflare's FLUX.2 klein garbles lettering, so with Cloudflare the slides are clean photos and the caption carries the words. A slide image that fails gets one more try; if it still fails, that draft is dropped and the reason is recorded. Cloudflare normally returns JPEGs and OpenAI is requested with `output_format=jpeg`; each image is saved in the format it arrives in, and the publisher accepts only JPEG as Meta requires.
 6. Each draft gets a suggested publish slot: the best hours from `best_hours`, from 12:00 onwards (18:00, 12:00 and 20:00 until there's data).
 
 If a run makes fewer than 3 drafts, later ticks before 12:00 top the day up to 3, avoiding the slots already suggested; after 12:00 a day with drafts is left as it is. A day gives up after 3 failed or partial attempts, so a broken key can't run up costs. Runs are recorded in `daily_runs` and shown on the Instagram page.
@@ -77,6 +77,25 @@ The **Instagram** page shows each draft's slides, caption, hashtags, review scor
 - **Approve** saves the draft as an approved example and posts it at its slot even if it scored under 70. While automatic posting is off, it shows **Copy caption + hashtags** and a download link per slide for posting by hand. The published post's performance sets how much it counts for in future drafts.
 
 Both need a RECOMMEND session, CSRF and same-origin, and both are written to the audit log. A draft can only be decided once.
+
+## First real post preflight
+
+Use the read-only preflight before enabling the first automatic post:
+
+```bash
+python3 -m instagram_agent preflight --draft DRAFT_ID
+```
+
+It checks the configured token and numeric user ID, then makes one official API `GET` for the account's `id,username` and requires @instafoodielove. It also checks the selected draft's approval/review eligibility, publish window, caption length and JPEG slides, the HTTPS public-media configuration, and that no other non-stale draft is eligible. The result is JSON with one `ok` value and a check list; no token, request URL or response body is included. It never calls a Graph `POST`, creates a public file, changes a setting or publishes. A successful account read does not prove content-publish permission; the normal publisher remains the only write path and performs the actual random-slide URL checks before creating containers.
+
+For the controlled first post:
+
+1. Set the repository variable `INSTAGRAM_AUTO_PUBLISH=0` before adding token credentials. Add the Instagram token and numeric user ID through the private deployment flow and deploy.
+2. Run read-only `sync` and `preflight` on the server. Confirm the account is @instafoodielove. Never paste the token into chat or command arguments.
+3. While automatic posting is off, approve one suitable future draft and reject every other draft that could become eligible. Do not edit SQLite to force a post.
+4. Re-run preflight for the selected draft and require exactly one eligible candidate. Make sure the next cron tick can reach its slot and that the slot is not more than three hours old.
+5. Only with explicit approval for that post, set `INSTAGRAM_AUTO_PUBLISH=1`, deploy, and let normal cron call `publish.tick`. Never call `media_publish` manually and never retry an unknown-outcome publish.
+6. Check `publish_runs` and the Instagram profile. If the outcome is unknown after `media_publish` started, inspect Instagram manually rather than retrying. On success, let normal read-only sync collect the media and later insights before resuming routine automatic posting.
 
 ## Automatic publishing
 

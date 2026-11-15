@@ -287,6 +287,24 @@ class OpenAIClientTests(unittest.TestCase):
         self.assertEqual(str(caught.exception), "OpenAI request failed (HTTP 429)")
         self.assertEqual(call.call_count, 2)
 
+    def test_images_request_and_require_jpeg(self):
+        client = OpenAIClient("sk-test-secret")
+        jpeg = b"\xff\xd8\xff" + b"0" * 16
+        reply = {"data": [{"b64_json": base64.b64encode(jpeg).decode()}]}
+        with patch.object(client, "_post", return_value=reply) as post:
+            self.assertEqual(client.image("a flat white"), jpeg)
+        payload = post.call_args.args[1]
+        self.assertEqual(payload["output_format"], "jpeg")
+        self.assertEqual((payload["size"], payload["quality"]), ("1024x1280", "medium"))
+
+    def test_images_reject_png_instead_of_passing_it_to_publisher(self):
+        client = OpenAIClient("sk-test-secret")
+        png = b"\x89PNG\r\n\x1a\n" + b"0" * 16
+        reply = {"data": [{"b64_json": base64.b64encode(png).decode()}]}
+        with patch.object(client, "_post", return_value=reply), self.assertRaises(OpenAIError) as caught:
+            client.image("a flat white")
+        self.assertEqual(str(caught.exception), "OpenAI returned an image that is not a JPEG")
+
 
 class CloudflareClientTests(unittest.TestCase):
     def reply(self, body):

@@ -123,12 +123,19 @@ class OpenAIClient:
     def image(self, prompt: str) -> bytes:
         reply = self._post(
             "images/generations",
-            {"model": self.image_model, "prompt": prompt, "size": self.image_size, "quality": "medium", "n": 1},
+            {
+                "model": self.image_model,
+                "prompt": prompt,
+                "size": self.image_size,
+                "quality": "medium",
+                "n": 1,
+                "output_format": "jpeg",
+            },
         )
         try:
             data = base64.b64decode(reply["data"][0]["b64_json"], validate=True)
         except (KeyError, IndexError, TypeError, ValueError):
             raise OpenAIError("OpenAI returned no image") from None
-        if not data.startswith(b"\x89PNG\r\n\x1a\n"):
-            raise OpenAIError("OpenAI returned an image that is not a PNG")
+        if not data.startswith(b"\xff\xd8\xff"):
+            raise OpenAIError("OpenAI returned an image that is not a JPEG")
         return data

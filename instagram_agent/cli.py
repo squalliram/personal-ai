@@ -12,7 +12,7 @@ from pathlib import Path
 
 from octopus_energy.cli import load_env
 
-from . import analysis, cloudflare_client, drafts, following, publish, storage
+from . import analysis, cloudflare_client, drafts, following, preflight, publish, storage
 from .analysis import LONDON
 from .cloudflare_client import CloudflareAI
 from .graph import GRAPH_HOST, GRAPH_VERSION, INSTAGRAM_HOST, GraphAPIError, GraphClient
@@ -190,6 +190,9 @@ def main(argv: list[str] | None = None) -> int:
     imported = commands.add_parser("import-following", help="Add accounts from Instagram's following.json export")
     imported.add_argument("path", type=Path)
     commands.add_parser("report", help="Print rankings, hashtags, best hours and learned examples as JSON")
+    check = commands.add_parser("preflight", help="Read-only account and draft checks for one controlled first post")
+    check.add_argument("--draft", required=True, help="Draft ID to check")
+    check.add_argument("--media", type=Path, default=DEFAULT_MEDIA)
     tick = commands.add_parser("daily", help="Cron tick: make today's drafts once, from 09:00 London")
     tick.add_argument("--media", type=Path, default=DEFAULT_MEDIA)
     args = parser.parse_args(argv)
@@ -206,6 +209,10 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(report(conn), indent=2, ensure_ascii=False))
             return 0
         env = {**load_env(Path(args.env_file)), **os.environ}
+        if args.command == "preflight":
+            result = preflight.run(conn, env, args.media, _now(), draft_id=args.draft)
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+            return 0 if result["ok"] else 1
         if args.command == "daily":
             args.media.mkdir(mode=0o700, parents=True, exist_ok=True)
             with open(args.media / ".daily.lock", "w") as lock:
