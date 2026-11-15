@@ -762,7 +762,7 @@
     : value > 0 && value < 0.005 ? "Under £0.01 estimated cost" : `£${value.toFixed(2)} estimated cost`);
   const energyTime = (value) => (value ? new Date(value).toLocaleString("en-GB", { timeZone: "Europe/London" }) : "unavailable");
   const newest = (...values) => values.filter((value) => value && !Number.isNaN(Date.parse(value)))
-    .reduce((a, b) => (Date.parse(b) > Date.parse(a) ? b : a), null);
+    .reduce((a, b) => (a === null || Date.parse(b) > Date.parse(a) ? b : a), null);
   const emptyRefreshStatus = () => ({ schema_version: 1, last_attempt_at: null, last_success_at: null, result: null,
     latest_reading_at: { electricity: null, gas: null }, request_state: null, request_id: null, error_category: null });
 
