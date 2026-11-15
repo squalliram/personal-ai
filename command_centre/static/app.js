@@ -916,7 +916,9 @@
   const SIGN_IN_METHODS = { passphrase: "Passphrase", passkey: "Passkey" };
 
   async function sessionsCard() {
+    const epoch = cacheEpoch;
     const result = await api("api/v1/sessions");
+    if (epoch !== cacheEpoch) return null;
     if (result.status === 401) { showLogin("Your session has ended. Sign in again."); return null; }
     if (!result.ok) {
       const retry = el("button", { type: "button" }, "Try again");
@@ -928,7 +930,9 @@
     const notice = el("p", { role: "status", "aria-live": "polite" });
     const revoke = async (body, button) => {
       button.disabled = true;
+      const sent = cacheEpoch;
       const done = await api("api/v1/sessions/revoke", { method: "POST", body });
+      if (sent !== cacheEpoch) return;
       if (done.status === 401) { showLogin("Your session has ended. Sign in again."); return; }
       if (done.ok) { clearCache(); auditView.page = 1; render(); }
       else { button.disabled = false; notice.textContent = "That device could not be signed out."; }
@@ -1007,7 +1011,9 @@
     };
     async function show() {
       const ticket = ++generation;
+      const epoch = cacheEpoch;
       const result = await api(`api/v1/audit?${query({ page: state.page, per_page: perPage })}`);
+      if (epoch !== cacheEpoch) return false;
       if (ticket !== generation) return true;
       if (result.status === 401) { showLogin("Your session has ended. Sign in again."); return false; }
       if (!result.ok) { body.replaceChildren(muted(`The audit log could not be loaded (${(result.data && result.data.error) || result.status}).`)); return true; }
