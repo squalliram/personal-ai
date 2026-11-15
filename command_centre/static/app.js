@@ -761,6 +761,8 @@
   const energyMoney = (value) => (value === null ? "Cost unavailable"
     : value > 0 && value < 0.005 ? "Under £0.01 estimated cost" : `£${value.toFixed(2)} estimated cost`);
   const energyTime = (value) => (value ? new Date(value).toLocaleString("en-GB", { timeZone: "Europe/London" }) : "unavailable");
+  const newest = (...values) => values.filter((value) => value && !Number.isNaN(Date.parse(value)))
+    .reduce((a, b) => (Date.parse(b) > Date.parse(a) ? b : a), null);
   const emptyRefreshStatus = () => ({ schema_version: 1, last_attempt_at: null, last_success_at: null, result: null,
     latest_reading_at: { electricity: null, gas: null }, request_state: null, request_id: null, error_category: null });
 
@@ -1013,7 +1015,7 @@
       else if (last.kwh === null) setStatus("warning", "Usage unavailable: source units are unverified. Do not treat raw gas volume as kWh.");
       else if (last.cost === null && freshness.state === "ready") setStatus("warning", "Usage is available, but costs are unavailable because source pricing is incomplete.");
       else setStatus(freshness.state, freshness.text);
-      updated.textContent = `Data as of · Latest electricity reading ${energyTime(data.latest_reading_at?.electricity)} · Latest gas reading ${energyTime(data.latest_reading_at?.gas)} · Last successful sync ${energyTime(lastRefreshStatus?.last_success_at || data.last_successful_sync_at)} · Snapshot exported ${energyTime(data.generated_at)} · Europe/London`;
+      updated.textContent = `Data as of · Latest electricity reading ${energyTime(data.latest_reading_at?.electricity)} · Latest gas reading ${energyTime(data.latest_reading_at?.gas)} · Last successful sync ${energyTime(newest(lastRefreshStatus?.last_success_at, data.last_successful_sync_at))} · Snapshot exported ${energyTime(data.generated_at)} · Europe/London`;
       notice.textContent = data.notice || "Whole-home meter data cannot identify individual appliances.";
       cards.replaceChildren(
         metric(`${fuel} ${period === "latest-day" ? "latest available day" : period}${period === "week" ? " (Monday start)" : ""}`,
@@ -1240,10 +1242,12 @@
 
   async function energy(view) {
     const [data, published] = await Promise.all([load("api/v1/energy"), load("api/v1/energy/dashboard")]);
-    if (!data || !published) return;
+    if (!data) return;
     const h = data.health;
     const dashboard = el("div", { class: "energy-dashboard" });
-    energyDashboard(dashboard, published);
+    if (published) energyDashboard(dashboard, published);
+    else dashboard.append(card("Energy dashboard", el("p", { class: "energy-status", "data-state": "error" },
+      "The published dashboard snapshot could not be loaded. Source records below are still shown; reload to retry.")));
     view.append(dashboard,
       el("h2", { class: "energy-section-title" }, "Source records"),
       card("Source status", el("p", {}, status(h.status), " ", h.summary),
