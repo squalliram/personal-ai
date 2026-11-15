@@ -886,7 +886,7 @@
 
   const energyMoney = (value) => (value === null ? "Cost unavailable"
     : value > 0 && value < 0.005 ? "Under £0.01 estimated cost" : `£${value.toFixed(2)} estimated cost`);
-  const energyTime = (value) => (value ? new Date(value).toLocaleString("en-GB", { timeZone: "Europe/London" }) : "unavailable");
+  const energyTime = (value) => (value && !Number.isNaN(Date.parse(value)) ? londonTime.format(new Date(value)) : "unavailable");
   const newest = (...values) => values.filter((value) => value && !Number.isNaN(Date.parse(value)))
     .reduce((a, b) => (a === null || Date.parse(b) > Date.parse(a) ? b : a), null);
   const emptyRefreshStatus = () => ({ schema_version: 1, last_attempt_at: null, last_success_at: null, result: null,
@@ -931,7 +931,9 @@
     const canRefresh = Boolean(session) && ["recommend", "execute"].includes(session.permission);
 
     const statusLine = el("p", { class: "energy-status", role: "status", "aria-live": "polite", "data-state": "loading" }, "Loading dashboard data…");
-    const updated = el("p", { class: "muted energy-updated" }, "Data as of: electricity unavailable · gas unavailable · last successful sync unavailable.");
+    const updated = el("p", { class: "energy-updated" }, "Last updated unavailable*");
+    const footnote = el("p", { class: "muted energy-footnote" }, "* Fetch latest data requests a protected background sync; "
+      + "meter readings can lag by 1–2 days. This page also reloads every 5 minutes; neither is a live meter feed.");
     const refreshButton = el("button", { type: "button", class: "primary" }, "Fetch latest data");
     const refreshStatus = el("p", { class: "energy-refresh-status", role: "status", "aria-live": "polite" });
     const choice = (kind, value, label, active) => el("button", { type: "button", [`data-${kind}`]: value,
@@ -949,29 +951,26 @@
     const scroller = el("div", { class: "chart-scroll" }, chart);
     const stage = el("div", { class: "chart-stage" }, scroller, tooltip);
     const action = el("p", { class: "energy-action" });
-    const notice = muted("");
 
     const setStatus = (state, message) => { statusLine.dataset.state = state; statusLine.textContent = message; };
 
     root.append(
       el("section", { class: "card energy-head", "aria-label": "Energy data status" },
-        el("div", { class: "energy-head-row" },
-          el("div", {}, el("p", { class: "energy-eyebrow" }, "Read-only Octopus intelligence"), statusLine, updated),
-          el("div", { class: "energy-refresh" }, refreshButton, canRefresh ? null
-            : muted(`Fetch latest data needs RECOMMEND permission; this session is ${session ? session.permission.toUpperCase() : "signed out"}.`))),
-        refreshStatus,
-        muted("Fetch latest data requests a protected background sync. Meter readings can lag by 1–2 days. "
-          + "This snapshot also reloads every 5 minutes; neither mode is a live meter feed.")),
+        el("div", { class: "energy-head-row" }, refreshButton, updated),
+        canRefresh ? null
+          : muted(`Fetch latest data needs RECOMMEND permission; this session is ${session ? session.permission.toUpperCase() : "signed out"}.`),
+        statusLine, refreshStatus, footnote),
       el("section", { class: "card energy-filters", "aria-label": "Chart filters" },
         el("div", { class: "energy-filter" }, el("h3", {}, "Fuel"), el("div", { class: "segmented" }, fuelButtons)),
         el("div", { class: "energy-filter" }, el("h3", {}, "Period"), el("div", { class: "segmented" }, periodButtons))),
       cards,
       el("section", { class: "card energy-chart-card" }, title, range,
-        el("p", { id: "energy-chart-help", class: "muted energy-small" }, "Hover or tap a point for its recorded period. "
-          + "Keyboard: Tab to a point, arrows to move, Home/End for endpoints, Enter/Space to show, Escape to dismiss. "
-          + "Ringed points are unusually high; gaps mean usage is unavailable. Scroll the chart horizontally on small screens."),
         stage,
-        el("p", { id: "energy-chart-method", class: "muted energy-small" }, "High-point rule: strictly above mean + 2 × population standard deviation, "
+        el("details", { class: "energy-method" }, el("summary", {}, "How this chart works"),
+          el("p", { id: "energy-chart-help", class: "muted energy-small" }, "Hover or tap a point for its recorded period. "
+            + "Keyboard: Tab to a point, arrows to move, Home/End for endpoints, Enter/Space to show, Escape to dismiss. "
+            + "Ringed points are unusually high; gaps mean usage is unavailable. Scroll the chart horizontally on small screens."),
+          el("p", { id: "energy-chart-method", class: "muted energy-small" }, "High-point rule: strictly above mean + 2 × population standard deviation, "
           + "reusing the energy analytics rule. Calculated separately for each fuel and selected period in kWh per period, "
           + "using at least 7 complete past numeric periods from the latest 90 plotted periods (including the candidate). "
           + "Null, missing-date and ongoing periods are excluded. Equal values produce no high points. "
@@ -981,15 +980,14 @@
         muted("Latest day shows the most recent complete past Europe/London day for each fuel, with 23, 24 or 25 actual "
           + "hourly buckets. Repeated autumn hours retain their BST/GMT offsets. Coverage is checked for every supply point observed "
           + "that day; replacement meters are combined. Readings crossing hourly boundaries are split by duration. "
-          + "Hourly costs cover usage only and exclude standing charge; missing unit rates remain unavailable.")),
+          + "Hourly costs cover usage only and exclude standing charge; missing unit rates remain unavailable."))),
       el("div", { class: "grid energy-guidance" },
         el("section", { class: "card" }, el("h2", {}, "Suggested next action"), action),
         el("section", { class: "card" }, el("h2", {}, "Confirmed Octopus events only"),
           muted("No live event feed is connected. For an invited Power Down session, delay flexible demand such as laundry or EV charging. "
             + "For Power Up or Happy Hour, move flexible demand into the exact window confirmed in your Octopus account. "
             + "Never turn off medical, frost-protection or essential devices. Do not increase usage just to chase a reward."),
-          el("a", { href: "https://octopus.energy/saving-sessions/", target: "_blank", rel: "noopener noreferrer" }, "Octopus event guidance")),
-        el("section", { class: "card" }, el("h2", {}, "Device insight"), notice)),
+          el("a", { href: "https://octopus.energy/saving-sessions/", target: "_blank", rel: "noopener noreferrer" }, "Octopus event guidance"))),
     );
 
     function draw(groups) {
@@ -1149,8 +1147,10 @@
       else if (last.kwh === null) setStatus("warning", "Usage unavailable: source units are unverified. Do not treat raw gas volume as kWh.");
       else if (last.cost === null && freshness.state === "ready") setStatus("warning", "Usage is available, but costs are unavailable because source pricing is incomplete.");
       else setStatus(freshness.state, freshness.text);
-      updated.textContent = `Data as of · Latest electricity reading ${energyTime(data.latest_reading_at?.electricity)} · Latest gas reading ${energyTime(data.latest_reading_at?.gas)} · Last successful sync ${energyTime(newest(lastRefreshStatus?.last_success_at, data.last_successful_sync_at))} · Snapshot exported ${energyTime(data.generated_at)} · Europe/London`;
-      notice.textContent = data.notice || "Whole-home meter data cannot identify individual appliances.";
+      updated.textContent = `Last updated ${energyTime(newest(lastRefreshStatus?.last_success_at, data.last_successful_sync_at))}*`;
+      footnote.textContent = "* Last successful sync, Europe/London. Fetch latest data requests a protected background sync; "
+        + `meter readings can lag by 1–2 days (latest: electricity ${energyTime(data.latest_reading_at?.electricity)}, `
+        + `gas ${energyTime(data.latest_reading_at?.gas)}). The page also reloads every 5 minutes; neither is a live meter feed.`;
       cards.replaceChildren(
         metric(`${fuel} ${period === "latest-day" ? "latest available day" : period}${period === "week" ? " (Monday start)" : ""}`,
           last ? last.kwh === null ? "Usage unavailable" : `${last.kwh.toFixed(1)} kWh` : "No data",
@@ -1384,6 +1384,89 @@
     try { accept(published); } catch (error) { failed(error.message); }
   }
 
+  // Source records: one card per fuel, never a combined table.
+  const FUELS = [["electricity", "Electricity"], ["gas", "Gas"]];
+  const fuelDay = (iso, options) => (typeof iso === "string" && /^\d{4}-\d{2}-\d{2}$/.test(iso)
+    ? new Intl.DateTimeFormat("en-GB", { timeZone: "UTC", day: "numeric", month: "short", year: "numeric", ...options })
+      .format(new Date(`${iso}T00:00:00Z`)) : "Unavailable");
+  const fuelKwh = (v) => (typeof v === "number" ? `${v.toLocaleString("en-GB", { maximumFractionDigits: 1 })} kWh` : "Unavailable");
+  const fuelMoney = (v) => (typeof v === "number" ? `£${v.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "Unavailable");
+  const sumOf = (rows, key) => (rows.length && rows.every((row) => typeof row[key] === "number")
+    ? rows.reduce((total, row) => total + row[key], 0) : null);
+  const dayNumber = (iso) => Date.parse(`${iso}T00:00:00Z`) / 86400000;
+  const londonDate = new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/London", dateStyle: "medium" });
+  const fuelSince = (value) => (Number.isNaN(Date.parse(value)) ? String(value) : londonDate.format(new Date(value)));
+  const londonToday = () => new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/London" }).format(new Date());
+
+  function fuelStat(label, value, ...notes) {
+    return el("div", { class: "fuel-stat" }, el("dt", {}, label), el("dd", {}, el("strong", {}, value),
+      notes.filter(Boolean).map((note) => el("span", {}, note))));
+  }
+
+  function energyFuelCard(data, fuel, name) {
+    const mine = (rows) => (rows || []).filter((row) => row.fuel === fuel);
+    const total = mine(data.totals)[0] || null;
+    const span = mine(data.coverage)[0] || null;
+    const daily = mine(data.daily).slice().sort((a, b) => b.date.localeCompare(a.date)).slice(0, 14);
+    const monthly = mine(data.monthly).slice(0, 12);
+    const unusual = mine(data.anomalies);
+    const unusualDays = new Set(unusual.map((row) => row.date));
+    const tariff = mine(data.tariffs).sort((a, b) => (a.valid_to === null) - (b.valid_to === null)
+      || String(a.valid_from || "").localeCompare(String(b.valid_from || ""))).at(-1) || null;
+
+    let period = "No stored days";
+    if (span) {
+      const calendar = dayNumber(span.last_date) - dayNumber(span.first_date) + 1;
+      period = `${fuelDay(span.first_date)} – ${fuelDay(span.last_date)} · ${calendar} day${calendar === 1 ? "" : "s"}`
+        + (span.days < calendar ? ` (${span.days} with data)` : "");
+    }
+    const recentKwh = sumOf(daily, "consumption_kwh"), recentCost = sumOf(daily, "total_cost_gbp");
+    const recentRange = daily.length ? `${fuelDay(daily.at(-1).date, { year: undefined })} – ${fuelDay(daily[0].date, { year: undefined })}` : "No recent days";
+    let trend = null;
+    const latestWeek = daily.slice(0, 7), priorWeek = daily.slice(7, 14);
+    const consecutive = daily.length === 14 && daily.every((row, index) => index === 0 || dayNumber(daily[index - 1].date) - dayNumber(row.date) === 1);
+    const latestKwh = sumOf(latestWeek, "consumption_kwh"), priorKwh = sumOf(priorWeek, "consumption_kwh");
+    if (consecutive && latestKwh !== null && priorKwh) trend = (latestKwh - priorKwh) / priorKwh * 100;
+
+    const peak = daily.filter((row) => typeof row.consumption_kwh === "number")
+      .reduce((best, row) => (best === null || row.consumption_kwh > best.consumption_kwh ? row : best), null);
+    const today = londonToday();
+    const monthLabel = (row) => {
+      const label = new Intl.DateTimeFormat("en-GB", { timeZone: "UTC", month: "short", year: "numeric" }).format(new Date(`${row.month}-01T00:00:00Z`));
+      if (span && row.month === span.last_date.slice(0, 7) && row.month === today.slice(0, 7)) return `${label} (to ${fuelDay(span.last_date, { year: undefined })})`;
+      if (span && row.month === span.first_date.slice(0, 7) && !span.first_date.endsWith("-01")) return `${label} (from ${fuelDay(span.first_date, { year: undefined })})`;
+      return label;
+    };
+    const dayCell = (row) => (unusualDays.has(row.date)
+      ? el("span", {}, fuelDay(row.date, { weekday: "short", year: undefined }), " ", el("span", { class: "fuel-flag" }, "Unusual"))
+      : fuelDay(row.date, { weekday: "short", year: undefined }));
+    const dailyTable = table([["Day", dayCell], ["Usage", (r) => fuelKwh(r.consumption_kwh)], ["Est. cost", (r) => fuelMoney(r.total_cost_gbp)]],
+      daily, "No daily data in the last 14 days.");
+    dailyTable.querySelectorAll("tbody tr").forEach((row, index) => { if (unusualDays.has(daily[index].date)) row.classList.add("fuel-unusual"); });
+
+    return el("section", { class: "card fuel-card", "data-fuel": fuel, "aria-label": `${name} records` },
+      el("header", { class: "fuel-head" }, el("h2", {}, name),
+        el("p", { class: "fuel-tariff" }, tariff
+          ? [el("span", { class: "muted" }, "Tariff "), el("strong", {}, tariff.tariff_code || "Unavailable"),
+            el("span", { class: "muted" }, tariff.valid_from ? ` · since ${fuelSince(tariff.valid_from)}` : "")]
+          : el("span", { class: "muted" }, "No tariff stored"))),
+      el("dl", { class: "fuel-stats" },
+        fuelStat("Total, all stored days", fuelKwh(total?.consumption_kwh ?? null), fuelMoney(total?.total_cost_gbp ?? null), period),
+        fuelStat("Last 14 days", fuelKwh(recentKwh), recentCost === null ? "Cost unavailable"
+          : `${fuelMoney(recentCost)} · ${fuelMoney(recentCost / daily.length)}/day`, recentRange),
+        fuelStat("Last 7 days vs previous 7", trend === null ? "Not comparable" : `${trend >= 0 ? "+" : ""}${trend.toFixed(1)}%`,
+          trend === null ? "Needs 14 consecutive days of usage" : `${fuelKwh(latestKwh)} vs ${fuelKwh(priorKwh)}`),
+        fuelStat("Highest day, last 14 days", peak ? fuelKwh(peak.consumption_kwh) : "Unavailable",
+          peak ? `${fuelDay(peak.date, { weekday: "short", year: undefined })} · ${fuelMoney(peak.total_cost_gbp)}` : "No numeric usage")),
+      el("div", { class: "fuel-tables" },
+        el("div", {}, el("h3", {}, "Daily"), dailyTable),
+        el("div", {}, el("h3", {}, "Monthly estimates"), table([["Month", monthLabel], ["Usage", (r) => fuelKwh(r.consumption_kwh)],
+          ["Est. cost", (r) => fuelMoney(r.total_cost_gbp)]], monthly, "No monthly data."))),
+      unusual.length ? el("div", { class: "fuel-unusual-list" }, el("h3", {}, "Unusual days"),
+        el("ul", {}, unusual.map((row) => el("li", {}, el("strong", {}, fuelDay(row.date, { weekday: "short" })),
+          ` · ${fuelKwh(row.consumption_kwh)}, above the ${fuelKwh(row.threshold_kwh)} threshold`)))) : null);
+  }
+
   async function energy(view, options) {
     const generation = renderCount; // the render this view belongs to, read before awaiting
     const [data, published] = await Promise.all([load("api/v1/energy"), load("api/v1/energy/dashboard")]);
@@ -1391,38 +1474,22 @@
     const dashboard = el("div", { class: "energy-dashboard" });
     if (published) energyDashboard(dashboard, published, generation);
     else dashboard.append(card("Energy dashboard", el("p", { class: "energy-status", "data-state": "error" },
-      "The published dashboard snapshot could not be loaded. Source records below are still shown; reload to retry.")));
-    view.append(dashboard, el("h2", { class: "energy-section-title" }, "Source records"));
+      "The published dashboard snapshot could not be loaded. Electricity and gas records below are still shown; reload to retry.")));
+    const legend = el("p", { class: "energy-legend", "aria-label": "How to read these numbers" },
+      el("span", {}, basis("measured"), " Usage from smart-meter readings"),
+      el("span", {}, basis("estimated"), " Costs from stored tariff rates, not bills"),
+      el("span", {}, basis("inferred"), " Unusual: above mean + 2 standard deviations"));
+    view.append(dashboard, el("div", { class: "energy-records-head" }, el("h2", { class: "energy-section-title" }, "Usage, costs and tariffs"), legend));
     if (!data) {
-      view.append(card("Source status", el("p", { class: "energy-status", "data-state": "error" },
-        "The source records could not be loaded. The dashboard above is still shown; reload to retry.")));
+      view.append(el("p", { class: "energy-status", "data-state": "error" },
+        "Electricity and gas records could not be loaded. The dashboard above is still shown; reload to retry."));
       return;
     }
     const h = data.health;
-    view.append(
-      card("Source status", el("p", {}, status(h.status), " ", h.summary),
-        keyValues([["Last successful sync", when(data.last_successful_sync_at)],
-          ["Latest sync result", h.evidence.latest_sync_status], ["Latest daily data", h.evidence.latest_daily_date]])),
-      card("How to read these numbers",
-        el("ul", {}, el("li", {}, basis("measured"), " Consumption comes from smart-meter readings."),
-          el("li", {}, basis("estimated"), " Costs apply stored tariff rates. They are not bills."),
-          el("li", {}, basis("inferred"), " Anomalies use a statistical rule (mean + 2 standard deviations)."),
-          el("li", {}, "Actual bills: ", data.actual_bills.reason)),
-        muted(data.notice)),
-      card("Available-period totals", table([["Fuel", (r) => r.fuel], ["Usage", (r) => kwh(r.consumption_kwh)],
-        ["Estimated cost", (r) => money(r.total_cost_gbp)]], data.totals, "No totals available.")),
-      card("Daily, last 14 days", table([["Date", (r) => r.date], ["Fuel", (r) => r.fuel],
-        ["Usage", (r) => kwh(r.consumption_kwh)], ["Estimated cost", (r) => money(r.total_cost_gbp)]],
-      data.daily.slice().reverse(), "No daily data available.")),
-      card("Monthly estimates (not bills)", table([["Month", (r) => r.month], ["Fuel", (r) => r.fuel],
-        ["Usage", (r) => kwh(r.consumption_kwh)], ["Estimated cost", (r) => money(r.total_cost_gbp)]],
-      data.monthly, "No monthly data available.")),
-      card("Stored tariffs", table([["Fuel", (r) => r.fuel], ["Tariff code", (r) => r.tariff_code || "Unavailable"],
-        ["Valid from", (r) => when(r.valid_from)]], data.tariffs, "No tariff records.")),
-      card("Unusual days", el("p", {}, basis("inferred")), table([["Date", (r) => r.date], ["Fuel", (r) => r.fuel],
-        ["Usage", (r) => kwh(r.consumption_kwh)], ["Threshold", (r) => kwh(r.threshold_kwh)]],
-      data.anomalies, "No unusual days detected.")),
-    );
+    if (h.status !== "operational") {
+      view.append(el("p", { class: "energy-status", "data-state": h.status === "failed" ? "error" : "warning" }, status(h.status), " ", h.summary));
+    }
+    if (data.state === "available") view.append(...FUELS.map(([fuel, name]) => energyFuelCard(data, fuel, name)));
   }
 
   async function integrations(view) {

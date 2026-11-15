@@ -97,6 +97,7 @@ def energy_snapshot(settings: Settings, now: datetime) -> dict:
         "monthly": [],
         "tariffs": [],
         "anomalies": [],
+        "coverage": [],
         "sync_history": [],
         "last_successful_sync_at": None,
     }
@@ -126,11 +127,20 @@ def energy_snapshot(settings: Settings, now: datetime) -> dict:
             {"start": (today - timedelta(days=14)).isoformat(), "end": (today + timedelta(days=1)).isoformat()},
             path,
         )
-        result["monthly"] = dispatch("get_monthly_bill_comparison", {}, path)[:12]
+        result["monthly"] = dispatch("get_monthly_bill_comparison", {}, path)[:24]
         result["tariffs"] = dispatch("get_tariff_details", {}, path)
         result["anomalies"] = sorted(
             dispatch("detect_energy_anomalies", {}, path), key=lambda row: row["date"], reverse=True
         )[:10]
+        with closing(connect_read_only(path)) as conn:
+            # The exact dates behind the available-period totals (all stored daily rows).
+            result["coverage"] = [
+                dict(row)
+                for row in conn.execute(
+                    "SELECT fuel,MIN(date) first_date,MAX(date) last_date,COUNT(*) days "
+                    "FROM daily_costs GROUP BY fuel ORDER BY fuel"
+                )
+            ]
         result["state"] = "available"
     except RefreshRequiredError:
         result["state"] = "refresh_required"

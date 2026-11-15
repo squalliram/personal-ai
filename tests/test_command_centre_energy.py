@@ -263,6 +263,48 @@ class EnergyViewWiringTests(unittest.TestCase):
             view, r"await Promise\.all\(.*\);\s*if \(\(!data && !published\) \|\| generation !== renderCount"
         )
 
+    def test_records_are_one_card_per_fuel_with_a_legend_not_combined_tables(self):
+        script = (ROOT / "command_centre/static/app.js").read_text(encoding="utf-8")
+        view = script[script.index("async function energy(view") : script.index("async function integrations(view")]
+        self.assertIn('const FUELS = [["electricity", "Electricity"], ["gas", "Gas"]];', script)
+        self.assertIn("FUELS.map(([fuel, name]) => energyFuelCard(data, fuel, name))", view)
+        card = script[script.index("function energyFuelCard(") : script.index("async function energy(view")]
+        self.assertIn("const mine = (rows) => (rows || []).filter((row) => row.fuel === fuel);", card)
+        for source in ("data.totals", "data.coverage", "data.daily", "data.monthly", "data.tariffs", "data.anomalies"):
+            self.assertIn(f"mine({source})", card)
+        # No table mixes fuels: the old Fuel column and combined cards are gone.
+        self.assertNotIn('["Fuel", (r) => r.fuel]', view)
+        for removed in (
+            "Available-period totals",
+            "Stored tariffs",
+            "Device insight",
+            "Read-only Octopus intelligence",
+            '"Source records")',
+        ):
+            self.assertNotIn(removed, script, removed)
+        for kind in ("measured", "estimated", "inferred"):
+            self.assertIn(f'basis("{kind}")', view)
+        # Both failure states still render a message instead of the cards.
+        self.assertIn("The published dashboard snapshot could not be loaded.", view)
+        self.assertIn("Electricity and gas records could not be loaded.", view)
+        self.assertIn('if (data.state === "available")', view)
+
+    def test_header_is_the_fetch_button_last_updated_and_footnote(self):
+        script = (ROOT / "command_centre/static/app.js").read_text(encoding="utf-8")
+        dashboard = script[
+            script.index("function energyDashboard(") : script.index("// Source records: one card per fuel")
+        ]
+        self.assertIn('el("div", { class: "energy-head-row" }, refreshButton, updated)', dashboard)
+        self.assertIn("updated.textContent = `Last updated ${energyTime(", dashboard)
+        self.assertIn("meter readings can lag by 1–2 days", dashboard)
+        self.assertIn("every 5 minutes", dashboard)
+        self.assertIn("Fetch latest data needs RECOMMEND permission", dashboard)
+        # Chart explanations stay on the page, folded into a disclosure that still describes the chart.
+        details = dashboard[dashboard.index('el("details", { class: "energy-method" }') :]
+        for node in ('id: "energy-chart-help"', 'id: "energy-chart-method"', "Latest day shows"):
+            self.assertIn(node, details[:3000])
+        self.assertIn('"aria-describedby": "energy-chart-help energy-chart-method"', dashboard)
+
     def test_refresh_module_never_runs_the_sync(self):
         source = (ROOT / "command_centre/energy_refresh.py").read_text(encoding="utf-8")
         imports = re.findall(r"^(?:from|import) (\S+)", source, re.M)

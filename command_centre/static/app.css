@@ -321,18 +321,19 @@ tbody tr:hover td{background:rgba(0,229,255,.04)}
 /* Energy: the /energy-usage dashboard in the HUD theme ------------------------------------ */
 .energy-dashboard{display:grid;gap:1rem;margin-bottom:1.5rem}
 .energy-dashboard .card,.energy-dashboard .grid{margin:0}
-.energy-head-row{display:flex;justify-content:space-between;align-items:flex-start;gap:1rem;flex-wrap:wrap}
-.energy-eyebrow{margin:0 0 .35rem;font-family:var(--mono);font-size:.68rem;letter-spacing:.22em;text-transform:uppercase;color:var(--interface);text-shadow:0 0 8px rgba(0,229,255,.6)}
+.energy-head{display:grid;gap:.5rem}
+.energy-head-row{display:flex;align-items:center;gap:1rem;flex-wrap:wrap}
+.energy-head .muted,.energy-head p{margin:0}
+.energy-status[data-state=ready]{display:none}
+.energy-footnote{font-size:.76rem}
 .energy-status,.energy-refresh-status{margin:.2rem 0;border-left:2px solid var(--muted);padding:.35rem .7rem;background:rgba(0,0,0,.28)}
 .energy-refresh-status:empty{display:none}
 .energy-status[data-state=ready],.energy-refresh-status[data-state=ready]{border-color:var(--ok)}
 .energy-status[data-state=warning],.energy-refresh-status[data-state=warning]{border-color:var(--warn);background:linear-gradient(90deg,rgba(255,181,71,.1),rgba(0,0,0,.28) 60%)}
 .energy-status[data-state=error],.energy-refresh-status[data-state=error]{border-color:var(--bad);background:linear-gradient(90deg,rgba(255,107,107,.12),rgba(0,0,0,.28) 60%)}
 .energy-refresh-status[data-state=requested],.energy-refresh-status[data-state=running]{border-color:var(--interface)}
-.energy-updated{margin:.3rem 0 0;font-size:.82rem}
-.energy-refresh{display:grid;gap:.35rem;justify-items:end;max-width:22rem}
-.energy-refresh .muted{font-size:.78rem;text-align:right}
-.energy-refresh button:disabled{opacity:.45;cursor:not-allowed;box-shadow:none}
+.energy-updated{font-family:var(--mono);font-size:.8rem;letter-spacing:.08em;color:var(--ink)}
+.energy-head button:disabled{opacity:.45;cursor:not-allowed;box-shadow:none}
 .energy-filters{display:flex;gap:1.5rem;flex-wrap:wrap}
 .energy-filter h3{margin:0 0 .45rem}
 .segmented{display:flex;flex-wrap:wrap;gap:.4rem}
@@ -370,4 +371,30 @@ tbody tr:hover td{background:rgba(0,229,255,.04)}
 .high-point h4{margin:.7rem 0 .3rem;font-family:var(--mono);font-size:.7rem;letter-spacing:.16em;text-transform:uppercase;color:var(--amber)}
 .energy-action{border-left:2px solid var(--ok);padding:.45rem .75rem;background:linear-gradient(90deg,rgba(90,255,200,.1),rgba(0,0,0,.28) 60%)}
 .energy-section-title{font-family:var(--mono);font-size:.78rem;font-weight:600;letter-spacing:.2em;text-transform:uppercase;color:var(--muted);margin:0 0 .75rem}
-@media (max-width:760px){.energy-refresh{justify-items:start;max-width:none}.energy-refresh .muted{text-align:left}.chart-tooltip{font-size:.8rem}.energy-filters{gap:1rem}}
+.energy-method{margin-top:.6rem}
+.energy-method summary{cursor:pointer;font-family:var(--mono);font-size:.72rem;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+.energy-method summary:hover,.energy-method summary:focus-visible{color:var(--interface)}
+.energy-records-head{display:flex;justify-content:space-between;align-items:baseline;gap:.5rem 1.5rem;flex-wrap:wrap;margin:0 0 .75rem}
+.energy-records-head .energy-section-title{margin:0}
+.energy-legend{display:flex;flex-wrap:wrap;gap:.35rem 1.1rem;margin:0;font-size:.78rem;color:var(--muted)}
+.energy-records-head+.energy-status{margin:0 0 1rem}
+.fuel-card{--fuel:var(--interface)}
+.fuel-card[data-fuel=gas]{--fuel:var(--amber)}
+.fuel-card h2{color:var(--fuel);margin:0}
+.fuel-head{display:flex;justify-content:space-between;align-items:baseline;gap:.4rem 1rem;flex-wrap:wrap;margin-bottom:.9rem}
+.fuel-tariff{margin:0;font-size:.85rem}.fuel-tariff strong{font-family:var(--mono);font-size:.8rem;letter-spacing:.06em}
+.fuel-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:.75rem;margin:0 0 1rem}
+.fuel-stat{border-left:2px solid var(--fuel);padding:.35rem .75rem;background:rgba(0,0,0,.22)}
+.fuel-stat dt{font-family:var(--mono);font-size:.66rem;letter-spacing:.16em;text-transform:uppercase;color:var(--muted)}
+.fuel-stat dd{margin:.25rem 0 0;display:grid;gap:.1rem}
+.fuel-stat strong{font-size:1.25rem;color:var(--ink)}
+.fuel-stat span{font-size:.78rem;color:var(--muted)}
+.fuel-tables{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1.25rem}
+.fuel-tables h3,.fuel-unusual-list h3{margin:0 0 .35rem}
+.fuel-card table{font-size:.84rem}.fuel-card td,.fuel-card th{padding-top:.3rem;padding-bottom:.3rem}
+.fuel-card td:not(:first-child),.fuel-card th:not(:first-child){text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.fuel-unusual td{color:var(--ink)}
+.fuel-flag{display:inline-block;padding:0 6px;border:1px solid var(--info);color:var(--info);font-family:var(--mono);font-size:.6rem;letter-spacing:.12em;text-transform:uppercase;vertical-align:1px}
+.fuel-unusual-list{margin-top:1rem}.fuel-unusual-list ul{margin:0;padding-left:1.1rem;font-size:.85rem}.fuel-unusual-list li{margin:.2rem 0}
+@media (max-width:1000px){.fuel-stats{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:760px){.chart-tooltip{font-size:.8rem}.energy-filters{gap:1rem}.fuel-tables{grid-template-columns:1fr}.fuel-stats{gap:.5rem}.fuel-stat{padding:.3rem .55rem}.fuel-stat strong{font-size:1.05rem}.fuel-card td,.fuel-card th{padding-left:.35rem;padding-right:.35rem}}
