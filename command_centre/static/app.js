@@ -914,7 +914,13 @@
 
   async function sessionsCard() {
     const result = await api("api/v1/sessions");
-    if (!result.ok) return null;
+    if (result.status === 401) { showLogin("Your session has ended. Sign in again."); return null; }
+    if (!result.ok) {
+      const retry = el("button", { type: "button" }, "Try again");
+      retry.addEventListener("click", () => render());
+      return card("Signed-in devices", muted(`Signed-in devices could not be loaded (${(result.data && result.data.error) || result.status}).`),
+        el("div", { class: "settings-actions" }, retry));
+    }
     const { sessions, sign_in_activity: activity } = result.data;
     const notice = el("p", { role: "status", "aria-live": "polite" });
     const revoke = async (body, button) => {
@@ -989,6 +995,7 @@
     const body = el("div", {});
     const section = card("Audit log", muted("Operational metadata only. Content and secrets are never recorded."), body);
     const state = { page: 1, action: "", perPage: prefs().auditPageSize };
+    let generation = 0;
     resizeAudit = (size) => { state.perPage = size; state.page = 1; show(); };
     const query = (extra) => {
       const params = new URLSearchParams(extra);
@@ -996,7 +1003,9 @@
       return params.toString();
     };
     async function show() {
+      const ticket = ++generation;
       const result = await api(`api/v1/audit?${query({ page: state.page, per_page: state.perPage })}`);
+      if (ticket !== generation) return true;
       if (result.status === 401) { showLogin("Your session has ended. Sign in again."); return false; }
       if (!result.ok) { body.replaceChildren(muted(`The audit log could not be loaded (${(result.data && result.data.error) || result.status}).`)); return true; }
       const data = result.data;
@@ -1030,7 +1039,8 @@
   async function settings(view) {
     const [jobs, agentData, instagramData, sessionsSection, passkeys, audit] = await Promise.all([
       load("api/v1/automations"), load("api/v1/agents"), load("api/v1/instagram/drafts"), sessionsCard(), passkeyCard(), auditCard()]);
-    if (!jobs || !agentData || !instagramData || !session) return;
+    if (!session) return;
+    const unavailable = "Could not be loaded right now.";
     const canDecide = ["recommend", "execute"].includes(session.permission);
     view.append(
       card("Session", keyValues([["Permission", session.permission.toUpperCase()], ["Session expires", when(session.expires_at)],
@@ -1044,10 +1054,12 @@
       preferencesCard(),
       card("Agents and automations",
         muted("These settings are read-only here. Schedules and agent definitions change through the repository; enable, disable and run-now controls arrive in Phase 5."),
-        table([["Automation", (r) => r.name], ["Status", (r) => status(r.status)], ["Trigger", (r) => r.trigger]], jobs.automations, "No automations."),
-        table([["Agent", (r) => r.name], ["Guardrail", (r) => r.guardrail], ["Definition", (r) => el("code", {}, r.definition)]], agentData.agents, "No agents."),
+        jobs ? table([["Automation", (r) => r.name], ["Status", (r) => status(r.status)], ["Trigger", (r) => r.trigger]], jobs.automations, "No automations.")
+          : muted(`Automations: ${unavailable}`),
+        agentData ? table([["Agent", (r) => r.name], ["Guardrail", (r) => r.guardrail], ["Definition", (r) => el("code", {}, r.definition)]], agentData.agents, "No agents.")
+          : muted(`Agents: ${unavailable}`),
         keyValues([["Instagram draft approvals", canDecide ? "You can approve or reject drafts on the Instagram page." : "Read-only: your permission cannot approve drafts."],
-          ["Instagram automatic posting", instagramData.state !== "available" ? "Unknown: no Instagram database on this server"
+          ["Instagram automatic posting", !instagramData ? unavailable : instagramData.state !== "available" ? "Unknown: no Instagram database on this server"
             : instagramData.auto_publish ? "On: drafts that pass review post at their publish time" : "Off: nothing posts automatically"],
           ["Posting kill switch", "Repository variable INSTAGRAM_AUTO_PUBLISH (0 stops posting); applies on the next deploy"]])),
       audit);
