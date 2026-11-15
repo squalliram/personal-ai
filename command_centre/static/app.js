@@ -272,6 +272,15 @@
   // "Hello Jarvis" only starts the passkey prompt: the device's Face ID, Touch ID or PIN is
   // what signs you in, so a recording or cloned voice cannot.
   const WAKE_PHRASE = /\b(hello|hey|hi)\W*jarvis\b/i;
+  const VOICE_ERRORS = {
+    "not-allowed": "Microphone access is blocked for this site. Allow it from the padlock in the address bar.",
+    "service-not-allowed": "Microphone access is blocked for this site. Allow it from the padlock in the address bar.",
+    "audio-capture": "No microphone was found on this device.",
+    "network": "Speech recognition needs an internet connection. Try again.",
+    "no-speech": "Jarvis did not hear anything. Try again, closer to the microphone.",
+  };
+  const VOICE_UNSUPPORTED = "Voice needs Chrome, Edge or Safari. Firefox has no speech recognition.";
+  const voiceError = (code, fallback) => VOICE_ERRORS[code] || fallback;
   let recognition = null;
   function stopListening() {
     if (recognition) {
@@ -301,8 +310,7 @@
     listener.onerror = (event) => {
       if (recognition !== listener) return;
       stopListening();
-      $("login-status").textContent = ["not-allowed", "service-not-allowed"].includes(event.error)
-        ? "Microphone access is blocked for this site." : "Jarvis could not hear you. Try again.";
+      $("login-status").textContent = voiceError(event.error, "Jarvis could not hear you. Try again.");
     };
     listener.onend = () => {
       if (recognition !== listener) return;
@@ -315,7 +323,7 @@
     $("login-status").textContent = "Listening… say “Hello Jarvis”.";
     try { listener.start(); } catch {
       stopListening();
-      $("login-status").textContent = "Voice sign-in is unavailable in this browser.";
+      $("login-status").textContent = VOICE_UNSUPPORTED;
     }
   }
 
@@ -432,8 +440,8 @@
   // Ask Jarvis ------------------------------------------------------------------------------
   const QuestionRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   const ASSISTANT_ERRORS = {
-    assistant_not_configured: "Ask Jarvis needs an OpenAI key on the server.",
-    assistant_unavailable: "Jarvis could not reach OpenAI. Try again in a moment.",
+    assistant_not_configured: "Ask Jarvis has no AI provider configured on the server.",
+    assistant_unavailable: "Jarvis could not reach its AI provider. Try again in a moment.",
     rate_limited: "That's the hourly question limit. Try again later.",
     network_error: "The server could not be reached.",
   };
@@ -445,7 +453,6 @@
     const result = await api("api/v1/assistant");
     const available = Boolean(result.ok && result.data.available && session);
     $("assistant-toggle").hidden = !available;
-    $("assistant-mic").hidden = !QuestionRecognition;
   }
 
   function orb(state, message) {
@@ -518,6 +525,7 @@
   function listenForQuestion() {
     if (questionListener) { stopQuestionListening(); orb("idle", "Stopped listening."); return; }
     if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+    if (!QuestionRecognition) { orb("error", `${VOICE_UNSUPPORTED} Type your question instead.`); return; }
     const listener = new QuestionRecognition();
     listener.lang = "en-GB";
     listener.interimResults = true;
@@ -531,8 +539,7 @@
     listener.onerror = (event) => {
       if (questionListener !== listener) return;
       stopQuestionListening();
-      orb("error", ["not-allowed", "service-not-allowed"].includes(event.error)
-        ? "Microphone access is blocked for this site." : "Jarvis could not hear you. Try again or type.");
+      orb("error", voiceError(event.error, "Jarvis could not hear you. Try again or type."));
     };
     listener.onend = () => {
       if (questionListener !== listener) return;
@@ -546,7 +553,7 @@
     orb("listening", "Listening…");
     try { listener.start(); } catch {
       stopQuestionListening();
-      orb("error", "Voice input is unavailable in this browser. Type your question.");
+      orb("error", `${VOICE_UNSUPPORTED} Type your question instead.`);
     }
   }
 

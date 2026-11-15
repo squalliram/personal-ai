@@ -143,6 +143,28 @@ class ReleaseTests(unittest.TestCase):
         with (self.checkout / ".git/energy-dashboard.deploy.lock").open("r") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
+    def test_assistant_provider_keys_are_written_only_when_valid(self):
+        account, token = "0123456789abcdef" * 2, "cf-token_" + "0123456789abcdef"
+        HOST.install(
+            self.checkout,
+            SHA,
+            self.password_hash,
+            home=self.home,
+            cloudflare_account_id=account,
+            cloudflare_api_token=token,
+        )
+        config = (self.app / "command-centre.env").read_text()
+        self.assertIn(f"COMMAND_CENTRE_CLOUDFLARE_ACCOUNT_ID={account}\n", config)
+        self.assertIn(f"COMMAND_CENTRE_CLOUDFLARE_API_TOKEN={token}\n", config)
+        self.assertNotIn("COMMAND_CENTRE_OPENAI_API_KEY", config)
+        for bad in (
+            {"cloudflare_account_id": account},
+            {"cloudflare_account_id": "x" * 32, "cloudflare_api_token": token},
+            {"cloudflare_account_id": account, "cloudflare_api_token": "bad\ntoken-0123456789abcdef"},
+        ):
+            with self.subTest(bad=bad), self.assertRaises(HOST.ReleaseError):
+                HOST.install(self.checkout, SHA, self.password_hash, home=self.home, **bad)
+
     def test_stale_run_cannot_write_app_env_entrypoint_or_restart(self):
         self.app.mkdir()
         sentinel = self.app / "command-centre.env"

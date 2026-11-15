@@ -20,7 +20,7 @@ from pathlib import Path
 from urllib.parse import parse_qs
 from zoneinfo import ZoneInfo
 
-from instagram_agent import openai_client
+from instagram_agent import cloudflare_client, openai_client
 from instagram_agent import storage as instagram_storage
 
 from . import assistant, passkeys, sources
@@ -646,11 +646,41 @@ class CommandCentreApp:
             [],
         )
 
+    def _assistant_providers(self) -> list[tuple[str, cloudflare_client.CloudflareAI | openai_client.OpenAIClient]]:
+        """Configured answer providers, free Workers AI first, OpenAI as the fallback."""
+        settings, providers = self.settings, []
+        if settings.cloudflare_account_id and settings.cloudflare_api_token:
+            try:
+                providers.append(
+                    (
+                        "cloudflare",
+                        cloudflare_client.CloudflareAI(
+                            settings.cloudflare_account_id, settings.cloudflare_api_token, timeout=30, retries=0
+                        ),
+                    )
+                )
+            except ValueError:
+                pass
+        if settings.openai_api_key:
+            providers.append(
+                (
+                    "openai",
+                    openai_client.OpenAIClient(
+                        settings.openai_api_key,
+                        text_model=settings.openai_model or openai_client.TEXT_MODEL,
+                        timeout=30,
+                        retries=0,
+                    ),
+                )
+            )
+        return providers
+
     def assistant_status(self, request: Request) -> Result:
-        return 200, {"available": bool(self.settings.openai_api_key)}, []
+        return 200, {"available": bool(self._assistant_providers())}, []
 
     def ask_assistant(self, request: Request) -> Result:
-        if not self.settings.openai_api_key:
+        providers = self._assistant_providers()
+        if not providers:
             return _error(503, "assistant_not_configured")
         body, error = _json_body(request.environ)
         if error:
@@ -668,24 +698,21 @@ class CommandCentreApp:
         context = assistant.build_context(
             now=data["now"], data=data, instagram=sources.instagram_drafts(self.settings), agents=sources.agents()
         )
-        client = openai_client.OpenAIClient(
-            self.settings.openai_api_key,
-            text_model=self.settings.openai_model or openai_client.TEXT_MODEL,
-            timeout=45,
-            retries=0,
-        )
-        try:
-            answer = client.chat_text(
-                assistant.SYSTEM_PROMPT,
-                assistant.user_message(question, context),
-                max_tokens=assistant.MAX_ANSWER_TOKENS,
+        message = assistant.user_message(question, context)
+        for name, client in providers:
+            try:
+                answer = client.chat_text(assistant.SYSTEM_PROMPT, message, max_tokens=assistant.MAX_ANSWER_TOKENS)
+            except openai_client.AIError:
+                self.audit.record("assistant", "failure", actor="owner", client=request.client, provider=name)
+                continue
+            # The question and answer are owner content, so only the outcome is audited.
+            self.audit.record("assistant", "success", actor="owner", client=request.client, provider=name)
+            return (
+                200,
+                {"answer": answer[:2000], "model": client.text_model, "generated_at": self._iso(self.clock())},
+                [],
             )
-        except openai_client.AIError:
-            self.audit.record("assistant", "failure", actor="owner", client=request.client)
-            return _error(502, "assistant_unavailable")
-        # The question and answer are owner content, so only the outcome is audited.
-        self.audit.record("assistant", "success", actor="owner", client=request.client)
-        return 200, {"answer": answer[:2000], "model": client.text_model, "generated_at": self._iso(self.clock())}, []
+        return _error(502, "assistant_unavailable")
 
     def modules(self, request: Request) -> Result:
         data = self._collect()
