@@ -789,7 +789,8 @@
   // A port of initializeDashboard() from octopus_energy/dashboard.js, drawn with DOM nodes in the HUD theme.
   function energyDashboard(root, published) {
     let data = null, fuel = "electricity", period = "day", busy = false, loadError = false;
-    let refreshBusy = false, lastRefreshStatus = null, attached = false, stopped = false;
+    let refreshBusy = false, lastRefreshStatus = null, stopped = false;
+    const generation = renderCount;
     let repositionTooltip = () => {};
     const canRefresh = Boolean(session) && ["recommend", "execute"].includes(session.permission);
 
@@ -1211,9 +1212,10 @@
     const onViewport = () => { if (live()) repositionTooltip(); };
     const timer = setInterval(onVisible, ENERGY_RELOAD_MS);
     const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => repositionTooltip());
+    // A newer render (navigation) means this dashboard is gone or was never shown.
     function live() {
-      if (root.isConnected) { attached = true; return true; }
-      if (attached) stop();
+      if (generation === renderCount && root.isConnected) return true;
+      if (generation !== renderCount) stop();
       return false;
     }
     function stop() {
