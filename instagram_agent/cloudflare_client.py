@@ -94,6 +94,17 @@ class CloudflareAI:
             raise CloudflareError("Workers AI returned no JSON reply")
         return parsed
 
+    def chat_text(self, system: str, user: str, *, max_tokens: int = 1024) -> str:
+        payload = {
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            "max_tokens": max_tokens,
+        }
+        result = self._run(self.text_model, json.dumps(payload).encode(), "application/json")
+        reply = result.get("response") if isinstance(result, dict) else None
+        if not isinstance(reply, str) or not reply.strip():
+            raise CloudflareError("Workers AI returned no reply")
+        return reply.strip()
+
     def image(self, prompt: str) -> bytes:
         fields = {"prompt": prompt[:2048], "width": str(self.width), "height": str(self.height)}
         if self.image_model.startswith(MULTIPART_MODELS):

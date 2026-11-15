@@ -51,6 +51,8 @@ class Settings:
     instagram_media: Path | None = None
     openai_api_key: str | None = field(default=None, repr=False)
     openai_model: str | None = None
+    cloudflare_account_id: str | None = None
+    cloudflare_api_token: str | None = field(default=None, repr=False)
     passkeys_db: Path | None = None
     energy_refresh_dir: Path | None = None
 
@@ -88,6 +90,8 @@ def load_settings(root: Path = ROOT, environ: Mapping[str, str] | None = None) -
         instagram_media=path("INSTAGRAM_MEDIA", "data/instagram/drafts"),
         openai_api_key=(values.get(PREFIX + "OPENAI_API_KEY") or "").strip() or None,
         openai_model=(values.get(PREFIX + "OPENAI_MODEL") or "").strip() or None,
+        cloudflare_account_id=(values.get(PREFIX + "CLOUDFLARE_ACCOUNT_ID") or "").strip() or None,
+        cloudflare_api_token=(values.get(PREFIX + "CLOUDFLARE_API_TOKEN") or "").strip() or None,
         passkeys_db=path("PASSKEYS_DB", "data/command_centre_passkeys.sqlite3"),
         energy_refresh_dir=path("ENERGY_REFRESH_DIR", "data/energy-refresh"),
     )

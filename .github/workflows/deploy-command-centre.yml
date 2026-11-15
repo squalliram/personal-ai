@@ -68,7 +68,10 @@ jobs:
           CPANEL_SSH_KNOWN_HOSTS: ${{ secrets.CPANEL_SSH_KNOWN_HOSTS }}
           CPANEL_APP_PATH: ${{ secrets.CPANEL_APP_PATH }}
           COMMAND_CENTRE_PASSWORD_HASH: ${{ secrets.COMMAND_CENTRE_PASSWORD_HASH }}
-          # Optional: without it, Ask Jarvis stays off.
+          # Optional answer providers for Ask Jarvis (Workers AI first, OpenAI as fallback).
+          # Without either, Ask Jarvis stays off.
+          COMMAND_CENTRE_CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          COMMAND_CENTRE_CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           COMMAND_CENTRE_OPENAI_API_KEY: ${{ secrets.COMMAND_CENTRE_OPENAI_API_KEY }}
           COMMAND_CENTRE_WHEELS_DIR: ${{ runner.temp }}/wheels
         shell: bash

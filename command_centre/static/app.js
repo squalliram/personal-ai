@@ -74,6 +74,8 @@
 
   function showLogin(message) {
     session = null; csrf = null;
+    clearCache();
+    $("view").replaceChildren();
     assistantGeneration += 1;
     asking = false;
     closeAssistant(false);
@@ -92,7 +94,8 @@
     $("login-view").hidden = true;
     $("app-view").hidden = false;
     $("permission-badge").textContent = `Permission: ${info.permission.toUpperCase()}`;
-    render();
+    clearCache();
+    render().then(prefetch);
     setupAssistant();
   }
 
@@ -272,6 +275,15 @@
   // "Hello Jarvis" only starts the passkey prompt: the device's Face ID, Touch ID or PIN is
   // what signs you in, so a recording or cloned voice cannot.
   const WAKE_PHRASE = /\b(hello|hey|hi)\W*jarvis\b/i;
+  const VOICE_ERRORS = {
+    "not-allowed": "Microphone access is blocked for this site. Allow it from the padlock in the address bar.",
+    "service-not-allowed": "Microphone access is blocked for this site. Allow it from the padlock in the address bar.",
+    "audio-capture": "No microphone was found on this device.",
+    "network": "Speech recognition needs an internet connection. Try again.",
+    "no-speech": "Jarvis did not hear anything. Try again, closer to the microphone.",
+  };
+  const VOICE_UNSUPPORTED = "Voice needs Chrome, Edge or Safari. Firefox has no speech recognition.";
+  const voiceError = (code, fallback) => VOICE_ERRORS[code] || fallback;
   let recognition = null;
   function stopListening() {
     if (recognition) {
@@ -301,8 +313,7 @@
     listener.onerror = (event) => {
       if (recognition !== listener) return;
       stopListening();
-      $("login-status").textContent = ["not-allowed", "service-not-allowed"].includes(event.error)
-        ? "Microphone access is blocked for this site." : "Jarvis could not hear you. Try again.";
+      $("login-status").textContent = voiceError(event.error, "Jarvis could not hear you. Try again.");
     };
     listener.onend = () => {
       if (recognition !== listener) return;
@@ -315,7 +326,7 @@
     $("login-status").textContent = "Listening… say “Hello Jarvis”.";
     try { listener.start(); } catch {
       stopListening();
-      $("login-status").textContent = "Voice sign-in is unavailable in this browser.";
+      $("login-status").textContent = VOICE_UNSUPPORTED;
     }
   }
 
@@ -330,16 +341,16 @@
   }
 
   async function passkeyCard() {
-    const result = await api("api/v1/passkeys");
-    if (!result.ok) return null;
-    if (!result.data.available) return card("Passkeys", muted("Passkeys are not available on this server yet, so sign in with your passphrase."));
+    const data = await load("api/v1/passkeys");
+    if (!data) return null;
+    if (!data.available) return card("Passkeys", muted("Passkeys are not available on this server yet, so sign in with your passphrase."));
     const notice = el("p", { role: "status", "aria-live": "polite" });
     const removeButton = (item) => {
       const button = el("button", { type: "button", "aria-label": `Remove passkey ${item.label}` }, "Remove");
       button.addEventListener("click", async () => {
         button.disabled = true;
         const removed = await api("api/v1/passkeys/remove", { method: "POST", body: { credential_id: item.id } });
-        if (removed.ok) render(); else { button.disabled = false; notice.textContent = "The passkey could not be removed."; }
+        if (removed.ok) { clearCache(); render(); } else { button.disabled = false; notice.textContent = "The passkey could not be removed."; }
       });
       return button;
     };
@@ -396,14 +407,14 @@
       const saved = await api("api/v1/passkeys/register", { method: "POST", body: {
         client_data_json: b64.encode(credential.response.clientDataJSON),
         attestation_object: b64.encode(credential.response.attestationObject), label: labelInput.value } });
-      if (saved.ok) render();
+      if (saved.ok) { clearCache(); render(); }
       else notice.textContent = "The passkey could not be saved.";
     });
     return card("Passkeys",
       muted("Sign in with Face ID, Touch ID, Windows Hello or your phone instead of the passphrase. Passkeys saved to iCloud Keychain or Google Password Manager work on your other devices, and on any other computer you can scan a QR code with your phone. On the sign-in screen, say “Hello Jarvis” to open the passkey prompt."),
       table([["Passkey", (r) => r.label], ["Added", (r) => when(r.created_at)],
-        ["Last used", (r) => (r.last_used_at ? when(r.last_used_at) : "Never")], ["", removeButton]], result.data.passkeys, "No passkeys yet."),
-      result.data.passkeys.length < result.data.limit ? form : muted("The passkey limit has been reached."), notice);
+        ["Last used", (r) => (r.last_used_at ? when(r.last_used_at) : "Never")], ["", removeButton]], data.passkeys, "No passkeys yet."),
+      data.passkeys.length < data.limit ? form : muted("The passkey limit has been reached."), notice);
   }
 
   const LOGOUT_DEADLINE_MS = 10000;
@@ -432,8 +443,8 @@
   // Ask Jarvis ------------------------------------------------------------------------------
   const QuestionRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   const ASSISTANT_ERRORS = {
-    assistant_not_configured: "Ask Jarvis needs an OpenAI key on the server.",
-    assistant_unavailable: "Jarvis could not reach OpenAI. Try again in a moment.",
+    assistant_not_configured: "Ask Jarvis has no AI provider configured on the server.",
+    assistant_unavailable: "Jarvis could not reach its AI provider. Try again in a moment.",
     rate_limited: "That's the hourly question limit. Try again later.",
     network_error: "The server could not be reached.",
   };
@@ -445,7 +456,6 @@
     const result = await api("api/v1/assistant");
     const available = Boolean(result.ok && result.data.available && session);
     $("assistant-toggle").hidden = !available;
-    $("assistant-mic").hidden = !QuestionRecognition;
   }
 
   function orb(state, message) {
@@ -518,6 +528,7 @@
   function listenForQuestion() {
     if (questionListener) { stopQuestionListening(); orb("idle", "Stopped listening."); return; }
     if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+    if (!QuestionRecognition) { orb("error", `${VOICE_UNSUPPORTED} Type your question instead.`); return; }
     const listener = new QuestionRecognition();
     listener.lang = "en-GB";
     listener.interimResults = true;
@@ -531,8 +542,7 @@
     listener.onerror = (event) => {
       if (questionListener !== listener) return;
       stopQuestionListening();
-      orb("error", ["not-allowed", "service-not-allowed"].includes(event.error)
-        ? "Microphone access is blocked for this site." : "Jarvis could not hear you. Try again or type.");
+      orb("error", voiceError(event.error, "Jarvis could not hear you. Try again or type."));
     };
     listener.onend = () => {
       if (questionListener !== listener) return;
@@ -546,18 +556,88 @@
     orb("listening", "Listening…");
     try { listener.start(); } catch {
       stopQuestionListening();
-      orb("error", "Voice input is unavailable in this browser. Type your question.");
+      orb("error", `${VOICE_UNSUPPORTED} Type your question instead.`);
     }
   }
 
+  // Data cache: a section whose data is already here renders at once, then refreshes in the background.
+  const CACHE_SHOW_MS = 10 * 60 * 1000; // older data is never shown; the section loads afresh
+  const CACHE_FRESH_MS = 15 * 1000; // younger data is not re-fetched in the background
+  const PREFETCH = ["api/v1/energy", "api/v1/instagram/drafts", "api/v1/modules", "api/v1/agents",
+    "api/v1/automations", "api/v1/integrations", "api/v1/audit", "api/v1/passkeys", "api/v1/overview"];
+  const cache = new Map(); // path -> { json, at }
+  const inflight = new Map(); // path -> pending api() result
+  const sectionViews = new Map(); // section -> { nodes, title, status } last shown
+  let cacheEpoch = 0;
+  let renderUses = new Map(); // path -> cache entry served to the current render
+
+  function clearCache() {
+    cacheEpoch += 1;
+    cache.clear();
+    inflight.clear();
+    sectionViews.clear();
+  }
+
+  function fetchData(path) {
+    if (inflight.has(path)) return inflight.get(path);
+    const epoch = cacheEpoch;
+    const request = api(path).then((result) => {
+      if (epoch === cacheEpoch) {
+        inflight.delete(path);
+        if (result.ok) cache.set(path, { json: JSON.stringify(result.data), at: Date.now() });
+      }
+      return result;
+    });
+    inflight.set(path, request);
+    return request;
+  }
+
   async function load(path) {
-    const result = await api(path);
+    const entry = cache.get(path);
+    if (entry && Date.now() - entry.at < CACHE_SHOW_MS) {
+      renderUses.set(path, entry);
+      return JSON.parse(entry.json);
+    }
+    const epoch = cacheEpoch;
+    const result = await fetchData(path);
+    if (epoch !== cacheEpoch) return null;
     if (result.status === 401) { showLogin("Your session has ended. Sign in again."); return null; }
     if (!result.ok) {
       $("view-status").textContent = `Could not load data (${(result.data && result.data.error) || result.status}).`;
       return null;
     }
     return result.data;
+  }
+
+  async function revalidate(current, uses) {
+    const stale = [...uses].filter(([, entry]) => Date.now() - entry.at >= CACHE_FRESH_MS);
+    if (stale.length === 0) return;
+    const epoch = cacheEpoch;
+    const results = await Promise.all(stale.map(([path]) => fetchData(path)));
+    if (epoch !== cacheEpoch || !session) return;
+    if (results.some((result) => result.status === 401)) { showLogin("Your session has ended. Sign in again."); return; }
+    if (current !== renderCount) return;
+    const failed = results.find((result) => !result.ok);
+    let notice = "";
+    if (failed) {
+      const oldest = Math.min(...stale.map(([, entry]) => entry.at));
+      notice = `Showing data from ${when(new Date(oldest).toISOString())}; refreshing failed (${(failed.data && failed.data.error) || failed.status}).`;
+      $("view-status").textContent = notice;
+    }
+    if (stale.some(([path, entry]) => cache.has(path) && cache.get(path).json !== entry.json)) render({ background: true, notice });
+  }
+
+  async function prefetch() {
+    const epoch = cacheEpoch;
+    for (const path of PREFETCH) {
+      if (epoch !== cacheEpoch || !session) return;
+      const entry = cache.get(path);
+      if (entry && Date.now() - entry.at < CACHE_FRESH_MS) continue;
+      const result = await fetchData(path);
+      if (epoch !== cacheEpoch || !session) return;
+      if (result.status === 401) { showLogin("Your session has ended. Sign in again."); return; }
+      if (!result.ok) return;
+    }
   }
 
   // Views -----------------------------------------------------------------------------------
@@ -1368,8 +1448,10 @@
       const code = (result.data && result.data.error) || result.status;
       status.textContent = `Could not save the decision. ${DECISION_ERRORS[code] || `(${code})`}`;
       if (code !== "publishing" && code !== "already_decided") for (const button of buttons) button.disabled = false;
+      else clearCache();
       return;
     }
+    clearCache();
     render();
   }
 
@@ -1460,26 +1542,54 @@
   const VIEWS = { overview, "my-day": myDay, energy, agents: agentsView, integrations, automations: automationsView, settings, instagram };
 
   let renderCount = 0;
-  async function render() {
+  // A background render runs after fresh data replaced what the section was showing; `notice` reports a partial refresh.
+  async function render(options) {
     if (!session) return;
+    const background = Boolean(options && options.background);
     const id = (location.hash || "#overview").slice(1);
     const section = SECTIONS.find(([key]) => key === id) || SECTIONS[0];
     for (const link of document.querySelectorAll("#nav-list a")) {
       if (link.dataset.section === section[0]) link.setAttribute("aria-current", "page");
       else link.removeAttribute("aria-current");
     }
-    $("view-title").textContent = section[1];
-    $("view-status").textContent = "Loading…";
     const current = ++renderCount;
-    $("view").replaceChildren();
+    renderUses = new Map();
+    const uses = renderUses;
+    if (!background) {
+      $("view-title").textContent = section[1];
+      $("view-status").textContent = "";
+    }
+    // Cached data resolves within microtasks, so this only fires when the section waits on the network.
+    const loading = background ? 0 : setTimeout(() => {
+      if (current !== renderCount) return;
+      $("view").replaceChildren();
+      $("view-status").textContent = "Loading…";
+    }, 0);
     const view = document.createDocumentFragment();
     await (VIEWS[section[0]] ? VIEWS[section[0]](view) : placeholder(view, section[0]));
+    clearTimeout(loading);
     if (current !== renderCount) return;
-    $("view").replaceChildren(view);
+    const editing = document.activeElement && $("view").contains(document.activeElement) && document.activeElement.matches("input, textarea, select");
+    if (background && editing) return;
+    const fresh = [...view.childNodes];
+    const title = $("view-title").textContent;
+    const previous = sectionViews.get(section[0]);
+    // Reuse the nodes already built for identical content: images stay loaded and nothing re-flows.
+    const same = previous && previous.title === title && previous.status === $("view-status").textContent
+      && previous.nodes.length === fresh.length && previous.nodes.every((node, i) => node.isEqualNode(fresh[i]));
+    const nodes = same ? previous.nodes : fresh;
+    const shown = $("view").childNodes;
+    if (shown.length !== nodes.length || nodes.some((node, i) => shown[i] !== node)) {
+      if (same) for (const node of nodes) if (node.querySelectorAll) for (const input of node.querySelectorAll('input[type="password"]')) input.value = "";
+      $("view").replaceChildren(...nodes);
+    }
     if ($("view-status").textContent === "Loading…") $("view-status").textContent = "";
+    if (options && options.notice) $("view-status").textContent = options.notice;
+    sectionViews.set(section[0], { nodes, title, status: $("view-status").textContent });
     if (section[0] !== "overview" && $("view-title").textContent !== section[1]) $("view-title").textContent = section[1];
     $("nav").classList.remove("open");
     $("menu-toggle").setAttribute("aria-expanded", "false");
+    if (!background) revalidate(current, uses);
   }
 
   async function boot() {

@@ -306,7 +306,7 @@ def verify(app: Path, sha: str, deployment_id: str, *, revoke_sessions=False):
             "authenticated_read_smoke": True,
             "owner_passphrase_sign_in_tested": False,
             "existing_sessions_revoked": revoke_sessions,
-            "assistant_configured": bool(application.settings.openai_api_key),
+            "assistant_configured": bool(application._assistant_providers()),
             "passkeys_available": application.passkeys is not None,
         }
     finally:
@@ -320,6 +320,8 @@ def install(
     *,
     home: Path | None = None,
     openai_api_key: str = "",
+    cloudflare_account_id: str = "",
+    cloudflare_api_token: str = "",
     wheels: dict | None = None,
 ):
     home = (home or Path.home()).resolve()
@@ -334,6 +336,13 @@ def install(
     require(
         not openai_api_key or bool(re.fullmatch(r"[A-Za-z0-9_-]{20,400}", openai_api_key)),
         "Invalid OpenAI API key format",
+    )
+    cloudflare_account_id, cloudflare_api_token = cloudflare_account_id.strip(), cloudflare_api_token.strip()
+    require(
+        bool(cloudflare_account_id) == bool(cloudflare_api_token)
+        and (not cloudflare_account_id or bool(re.fullmatch(r"[0-9a-f]{32}", cloudflare_account_id)))
+        and (not cloudflare_api_token or bool(re.fullmatch(r"[A-Za-z0-9._~+/=-]{20,400}", cloudflare_api_token))),
+        "Invalid Cloudflare Workers AI credentials",
     )
     app = checkout.parent / "command-centre-app"
     require(app.is_relative_to(home) and "public_html" not in app.relative_to(home).parts, "App root is not private")
@@ -401,6 +410,9 @@ def install(
         }
         if openai_api_key:
             values["OPENAI_API_KEY"] = openai_api_key
+        if cloudflare_account_id:
+            values["CLOUDFLARE_ACCOUNT_ID"] = cloudflare_account_id
+            values["CLOUDFLARE_API_TOKEN"] = cloudflare_api_token
         require(
             all("\n" not in value and "\r" not in value for value in values.values()), "Invalid configuration value"
         )
@@ -479,6 +491,8 @@ def main():
             sys.argv[2],
             payload["password_hash"],
             openai_api_key=payload.get("openai_api_key") or "",
+            cloudflare_account_id=payload.get("cloudflare_account_id") or "",
+            cloudflare_api_token=payload.get("cloudflare_api_token") or "",
             wheels=payload.get("wheels") or {},
         )
         print(json.dumps(result, sort_keys=True))

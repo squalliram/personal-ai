@@ -10,6 +10,7 @@ import re
 import sqlite3
 import stat
 import sys
+import threading
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -20,7 +21,7 @@ from pathlib import Path
 from urllib.parse import parse_qs
 from zoneinfo import ZoneInfo
 
-from instagram_agent import openai_client
+from instagram_agent import cloudflare_client, openai_client
 from instagram_agent import storage as instagram_storage
 
 from . import assistant, energy_refresh, passkeys, sources
@@ -48,6 +49,9 @@ STATIC_FILES = {
     "/static/app.css": ("app.css", "text/css; charset=utf-8"),
 }
 MAX_BODY_BYTES = 4096
+# Overview, integrations, automations, modules and the assistant share one snapshot. It is reused until a
+# source file changes or this many seconds pass, so time-based health (stale, overdue) stays current.
+COLLECT_TTL_SECONDS = 30
 TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_-]{43}")
 CSP = (
     "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; "
@@ -110,6 +114,9 @@ class CommandCentreApp:
         audit: AuditLog | None = None,
     ) -> None:
         self.settings, self.secure, self.clock, self.cron_reader = settings, secure, clock, cron_reader
+        self.monotonic = monotonic
+        self._collect_lock = threading.Lock()
+        self._collected: tuple[tuple, float, dict] | None = None
         self.allowed_hosts = frozenset(allowed_hosts)
         self.cookie_name = "__Host-cc_session" if secure else "cc_session"
         if settings.sessions_db:
@@ -185,11 +192,13 @@ class CommandCentreApp:
     # WSGI -------------------------------------------------------------------------------------
 
     def __call__(self, environ: dict, start_response: Callable) -> list[bytes]:
+        started = time.perf_counter()
         try:
             status, payload, headers = self._dispatch(environ)
         except Exception as error:
             print(f"command-centre internal_error {type(error).__name__}", file=sys.stderr)
             status, payload, headers = _error(500, "internal_error")
+        elapsed_ms = (time.perf_counter() - started) * 1000
         if isinstance(payload, tuple):
             body, content_type = payload
         else:
@@ -197,7 +206,13 @@ class CommandCentreApp:
             content_type = "application/json"
         start_response(
             f"{status} {HTTPStatus(status).phrase}",
-            [*self._security_headers(), ("Content-Type", content_type), ("Content-Length", str(len(body))), *headers],
+            [
+                *self._security_headers(),
+                ("Content-Type", content_type),
+                ("Content-Length", str(len(body))),
+                ("Server-Timing", f"app;dur={elapsed_ms:.1f}"),
+                *headers,
+            ],
         )
         return [body]
 
@@ -552,7 +567,37 @@ class CommandCentreApp:
         self.audit.record("logout", "success", actor="owner", client=request.client)
         return 200, {"authenticated": False}, [self._cookie("", 0)]
 
+    def _source_signature(self) -> tuple:
+        """Identity of every file the shared snapshot reads, including SQLite WAL files."""
+        settings = self.settings
+        signature: list[tuple[int, int, int] | None] = []
+        for path in (
+            settings.energy_db,
+            settings.energy_status,
+            settings.briefing_db,
+            settings.briefing_reports,
+            settings.instagram_db,
+        ):
+            for candidate in (path, path.with_name(path.name + "-wal")) if path else ():
+                try:
+                    info = os.stat(candidate)
+                except OSError:
+                    signature.append(None)
+                else:
+                    signature.append((info.st_ino, info.st_mtime_ns, info.st_size))
+        return tuple(signature)
+
     def _collect(self) -> dict:
+        signature = self._source_signature()
+        with self._collect_lock:
+            cached = self._collected
+            if cached and cached[0] == signature and 0 <= self.monotonic() - cached[1] < COLLECT_TTL_SECONDS:
+                return cached[2]
+            data = self._collect_fresh()
+            self._collected = (signature, self.monotonic(), data)
+            return data
+
+    def _collect_fresh(self) -> dict:
         now = self._now()
         energy = sources.energy_snapshot(self.settings, now)
         briefing = sources.briefing_snapshot(self.settings)
@@ -652,11 +697,41 @@ class CommandCentreApp:
             [],
         )
 
+    def _assistant_providers(self) -> list[tuple[str, cloudflare_client.CloudflareAI | openai_client.OpenAIClient]]:
+        """Configured answer providers, free Workers AI first, OpenAI as the fallback."""
+        settings, providers = self.settings, []
+        if settings.cloudflare_account_id and settings.cloudflare_api_token:
+            try:
+                providers.append(
+                    (
+                        "cloudflare",
+                        cloudflare_client.CloudflareAI(
+                            settings.cloudflare_account_id, settings.cloudflare_api_token, timeout=30, retries=0
+                        ),
+                    )
+                )
+            except ValueError:
+                pass
+        if settings.openai_api_key:
+            providers.append(
+                (
+                    "openai",
+                    openai_client.OpenAIClient(
+                        settings.openai_api_key,
+                        text_model=settings.openai_model or openai_client.TEXT_MODEL,
+                        timeout=30,
+                        retries=0,
+                    ),
+                )
+            )
+        return providers
+
     def assistant_status(self, request: Request) -> Result:
-        return 200, {"available": bool(self.settings.openai_api_key)}, []
+        return 200, {"available": bool(self._assistant_providers())}, []
 
     def ask_assistant(self, request: Request) -> Result:
-        if not self.settings.openai_api_key:
+        providers = self._assistant_providers()
+        if not providers:
             return _error(503, "assistant_not_configured")
         body, error = _json_body(request.environ)
         if error:
@@ -674,24 +749,21 @@ class CommandCentreApp:
         context = assistant.build_context(
             now=data["now"], data=data, instagram=sources.instagram_drafts(self.settings), agents=sources.agents()
         )
-        client = openai_client.OpenAIClient(
-            self.settings.openai_api_key,
-            text_model=self.settings.openai_model or openai_client.TEXT_MODEL,
-            timeout=45,
-            retries=0,
-        )
-        try:
-            answer = client.chat_text(
-                assistant.SYSTEM_PROMPT,
-                assistant.user_message(question, context),
-                max_tokens=assistant.MAX_ANSWER_TOKENS,
+        message = assistant.user_message(question, context)
+        for name, client in providers:
+            try:
+                answer = client.chat_text(assistant.SYSTEM_PROMPT, message, max_tokens=assistant.MAX_ANSWER_TOKENS)
+            except openai_client.AIError:
+                self.audit.record("assistant", "failure", actor="owner", client=request.client, provider=name)
+                continue
+            # The question and answer are owner content, so only the outcome is audited.
+            self.audit.record("assistant", "success", actor="owner", client=request.client, provider=name)
+            return (
+                200,
+                {"answer": answer[:2000], "model": client.text_model, "generated_at": self._iso(self.clock())},
+                [],
             )
-        except openai_client.AIError:
-            self.audit.record("assistant", "failure", actor="owner", client=request.client)
-            return _error(502, "assistant_unavailable")
-        # The question and answer are owner content, so only the outcome is audited.
-        self.audit.record("assistant", "success", actor="owner", client=request.client)
-        return 200, {"answer": answer[:2000], "model": client.text_model, "generated_at": self._iso(self.clock())}, []
+        return _error(502, "assistant_unavailable")
 
     def modules(self, request: Request) -> Result:
         data = self._collect()
@@ -802,5 +874,7 @@ class CommandCentreApp:
         if not changed:
             self.audit.record("instagram_decision", "already_decided", actor="owner", draft=draft_id)
             return _error(409, "already_decided")
+        with self._collect_lock:
+            self._collected = None
         self.audit.record("instagram_decision", decision, actor="owner", draft=draft_id, client=request.client)
         return 200, {"draft_id": draft_id, "status": decision}, []
