@@ -168,10 +168,9 @@ def _week_insight(fuel: str, info: dict) -> dict | None:
     if change is None or abs(week["kwh"] - week["previous_kwh"]) < MIN_KWH_CHANGE:
         return None
     cost = ""
-    if week["cost"] is not None and week["previous_cost"] is not None:
-        cost = (
-            f" (about £{abs(week['cost'] - week['previous_cost']):.2f} {'more' if change > 0 else 'less'}, estimated)"
-        )
+    if week["cost"] is not None and week["previous_cost"] is not None and week["cost"] != week["previous_cost"]:
+        spent = week["cost"] - week["previous_cost"]
+        cost = f" (about £{abs(spent):.2f} {'more' if spent > 0 else 'less'}, estimated)"
     detail = (
         f"{week['kwh']:.1f} kWh in the 7 days to {_day(through)} against {week['previous_kwh']:.1f} kWh "
         f"the week before{cost}."
@@ -194,12 +193,15 @@ def _month_insight(fuel: str, info: dict) -> dict | None:
     previous_month_end = through.replace(day=1) - timedelta(days=1)
     days = [through.replace(day=d) for d in range(1, through.day + 1)]
     before = [previous_month_end.replace(day=min(d.day, previous_month_end.day)) for d in days]
+    before = sorted(set(before))
     kwh, cost = _sums(series, days)
-    previous_kwh, previous_cost = _sums(series, sorted(set(before)))
+    previous_kwh, previous_cost = _sums(series, before)
     if kwh is None or not previous_kwh:
         return None
-    change = (kwh - previous_kwh) / previous_kwh
-    if abs(change) < MONTH_CHANGE or abs(kwh - previous_kwh) < MIN_KWH_CHANGE:
+    # Per-day averages, so a 31-day month is not compared against 28 days of February.
+    daily, previous_daily = kwh / len(days), previous_kwh / len(before)
+    change = daily / previous_daily - 1
+    if abs(change) < MONTH_CHANGE or abs(daily - previous_daily) * len(days) < MIN_KWH_CHANGE:
         return None
     month, last = f"{through:%B}", f"{previous_month_end:%B}"
     projected = None
@@ -208,12 +210,12 @@ def _month_insight(fuel: str, info: dict) -> dict | None:
     if cost is not None and previous_cost is not None:
         detail = (
             f"£{cost:.2f} for {kwh:.1f} kWh over 1–{through.day} {month}, {_pct(change)} "
-            f"{'more' if change > 0 else 'less'} usage than the same days of {last} (£{previous_cost:.2f})."
+            f"{'more' if change > 0 else 'less'} usage a day than the same days of {last} (£{previous_cost:.2f})."
         )
     else:
         detail = (
             f"{kwh:.1f} kWh over 1–{through.day} {month}, {_pct(change)} {'more' if change > 0 else 'less'} "
-            f"than the same days of {last} ({previous_kwh:.1f} kWh)."
+            f"a day than the same days of {last} ({previous_daily:.1f} kWh a day)."
         )
     title = f"{name} on track for about £{projected:.0f} in {month}" if projected else f"{name} this month"
     evidence = {
@@ -329,13 +331,13 @@ def _instagram_items(instagram: dict, job_flagged: bool, now: datetime) -> list[
     local = now.astimezone(LONDON)
     drafts = instagram["drafts"]
     items = []
-    failed = [d for d in drafts if d.get("publish_error")]
+    failed = [d for d in drafts if d.get("publish_error") and d.get("status") not in ("rejected", "published")]
     if failed:
         items.append(
             _item(
                 "critical", "instagram",
                 f"{len(failed)} Instagram post{'s' if len(failed) != 1 else ''} failed to publish. "
-                "Open the draft to see why, then post it by hand or reject it.",
+                "Open the draft to see why, then post it by hand if you still want it.",
                 "#instagram", failed_publishes=len(failed),
             )
         )  # fmt: skip

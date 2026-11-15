@@ -97,6 +97,28 @@ class EnergyInsightTests(unittest.TestCase):
         self.assertEqual((item["evidence"]["kwh"], item["evidence"]["previous_kwh"]), (91.0, 70.0))
         self.assertTrue(item["suggestion"])
 
+    def test_weekly_cost_direction_follows_pounds_not_kwh(self):
+        rows = history(kwh=last_week(13.0))
+        for row in rows:
+            if row["date"] >= (TODAY - timedelta(days=7)).isoformat():
+                row["total_cost_gbp"] = 1.0
+        (item,) = self.insights(rows)
+        self.assertEqual(item["title"], "Electricity up 30% this week")
+        self.assertIn("£10.50 less, estimated", item["detail"])
+
+    def test_month_comparison_uses_daily_averages_across_unequal_months(self):
+        through = date(2026, 3, 31)
+        rows = []
+        for offset in range(70):
+            day = through - timedelta(days=offset)
+            value = 10.5 if day.month == 3 else 10.0
+            rows.append(
+                {"date": day.isoformat(), "fuel": "electricity", "consumption_kwh": value, "total_cost_gbp": None}
+            )
+        now = datetime(2026, 4, 1, 20, 0, tzinfo=LONDON)
+        found = insights.energy_fuels(AVAILABLE, rows, None, now)
+        self.assertIsNone(insights._month_insight("electricity", found["electricity"]))
+
     def test_a_drop_is_reported_once_as_good_news(self):
         (item,) = self.insights(history(kwh=last_week(7.0)))
         self.assertEqual(item["severity"], "good")
@@ -208,7 +230,8 @@ class AttentionTests(unittest.TestCase):
             "auto_publish": True,
             "latest_attempt": {"outcome": "ok"},
             "drafts": [
-                draft(status="approved", publish_error="secret upstream text"),
+                draft(status="failed", publish_error="secret upstream text"),
+                draft(status="rejected", publish_error="later rejected"),
                 draft(will_post=True, posts_at="2026-11-16T08:00:00+00:00"),
                 draft(will_post=True, posts_at="2026-11-15T08:00:00+00:00"),
             ],
