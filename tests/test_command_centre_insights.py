@@ -45,6 +45,15 @@ def fuels(rows, dashboard=None, energy=AVAILABLE):
 
 
 class EnergyFuelsTests(unittest.TestCase):
+    def test_non_finite_readings_are_treated_as_missing(self):
+        rows = history(kwh=lambda day: float("nan") if day == TODAY - timedelta(days=1) else 10.0)
+        rows += history("gas", lambda day: float("inf"))
+        found = fuels(rows)
+        self.assertEqual(found["electricity"]["days"][-1]["kwh"], None)
+        self.assertIsNone(found["electricity"]["week"]["kwh"])
+        self.assertEqual(found["gas"]["state"], "unavailable")
+        json.dumps(insights.public_fuels(found), allow_nan=False)
+
     def test_each_fuel_gets_its_own_fourteen_complete_days(self):
         rows = history() + history("gas", lambda day: 30.0)
         rows.append({"date": TODAY.isoformat(), "fuel": "electricity", "consumption_kwh": 3.0, "total_cost_gbp": 1.0})

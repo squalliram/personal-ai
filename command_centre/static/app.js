@@ -803,7 +803,8 @@
       ["Last drafting run", latest ? `${when(latest.started_at)} · ${latest.outcome}` : null]].filter(([, v]) => v);
     return widget("Instagram", "Daily drafts", {},
       el("p", { class: "big-number" }, String(ig.pending_drafts), el("span", { class: "muted" }, ` draft${ig.pending_drafts === 1 ? "" : "s"} to review`)),
-      rows.length ? keyValues(rows) : muted(ig.summary),
+      ig.status === "operational" ? null : muted(ig.summary),
+      rows.length ? keyValues(rows) : null,
       el("a", { href: "#instagram" }, ig.pending_drafts ? "Review drafts" : "Open Instagram"));
   }
 

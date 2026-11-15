@@ -6,6 +6,7 @@ suggestion. Nothing here writes, schedules or calls a model, and no source text 
 
 from __future__ import annotations
 
+import math
 from calendar import monthrange
 from datetime import date, datetime, timedelta
 from statistics import median
@@ -49,7 +50,9 @@ def _local(value: object) -> datetime | None:
 
 
 def _number(value: object) -> float | None:
-    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value):
+        return None
+    return float(value)
 
 
 # Energy -----------------------------------------------------------------------------------------

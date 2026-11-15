@@ -261,6 +261,7 @@ def energy_dashboard(settings: Settings) -> dict:
         or _instant(data.get("generated_at")) is None
         or not isinstance(data.get("daily"), list)
         or not isinstance(data.get("hourly"), list)
+        or not isinstance(data.get("latest_reading_at", {}), dict)
     ):
         return {"state": "invalid", "dashboard": None}
     return {"state": "available", "dashboard": {key: data[key] for key in DASHBOARD_KEYS if key in data}}
