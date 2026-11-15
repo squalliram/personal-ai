@@ -643,9 +643,13 @@
     return "nominal";
   }
 
-  function svg(tag, attrs) {
+  function svg(tag, attrs, ...children) {
     const node = document.createElementNS("http://www.w3.org/2000/svg", tag);
-    for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, String(value));
+    for (const [key, value] of Object.entries(attrs || {})) node.setAttribute(key, String(value));
+    for (const child of children.flat(Infinity)) {
+      if (child === null || child === undefined || child === false) continue;
+      node.append(child instanceof Node ? child : document.createTextNode(String(child)));
+    }
     return node;
   }
 
@@ -751,19 +755,9 @@
   // Energy -----------------------------------------------------------------------------------
   // The pure helpers (validateData, viewGroups, anomalyModel, chartLayout, ...) are loaded from
   // static/energy-core.js: the same script that runs the standalone /energy-usage dashboard.
-  const SVG_NS = "http://www.w3.org/2000/svg";
   const ENERGY_RELOAD_MS = 5 * 60 * 1000;
   const COST_REASONS = { missing_unit_rate: "missing unit rates", missing_standing_charge: "missing standing charges", unknown_gas_units: "unverified gas units" };
 
-  function svg(tag, attrs, ...children) {
-    const node = document.createElementNS(SVG_NS, tag);
-    for (const [key, value] of Object.entries(attrs || {})) node.setAttribute(key, String(value));
-    for (const child of children.flat()) {
-      if (child === null || child === undefined || child === false) continue;
-      node.append(child instanceof Node ? child : document.createTextNode(String(child)));
-    }
-    return node;
-  }
   const energyMoney = (value) => (value === null ? "Cost unavailable"
     : value > 0 && value < 0.005 ? "Under £0.01 estimated cost" : `£${value.toFixed(2)} estimated cost`);
   const energyTime = (value) => (value ? new Date(value).toLocaleString("en-GB", { timeZone: "Europe/London" }) : "unavailable");
@@ -910,7 +904,7 @@
           svg("text", { class: "chart-axis-title", x: (left + right) / 2, y: 382, "text-anchor": "middle" }, xTitle),
           svg("text", { class: "chart-axis-title", transform: "translate(22 170) rotate(-90)", "text-anchor": "middle" }, "Energy used (kWh)"),
           svg("path", { class: "chart-series", d: path })),
-        elements, crosshair);
+        ...elements, crosshair);
       chart.setAttribute("aria-label", `${fuel} ${period} consumption, ${groups[0].key} to ${groups.at(-1).key}. ${xTitle}; Energy used (kWh).`);
       let selected = null;
       function positionTooltip(point) {
