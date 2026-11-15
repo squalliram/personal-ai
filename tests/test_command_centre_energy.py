@@ -247,6 +247,15 @@ class EnergyViewWiringTests(unittest.TestCase):
         # The standalone page starts itself only where its own markup exists.
         self.assertTrue(re.search(r"document\.querySelector\('#chart'\)\) initializeDashboard\(\)", core.decode()))
 
+    def test_view_shares_the_section_cache_and_refresh_invalidates_it(self):
+        script = (ROOT / "command_centre/static/app.js").read_text(encoding="utf-8")
+        prefetch = re.search(r"const PREFETCH = \[(.*?)\];", script, re.S).group(1)
+        self.assertIn('"api/v1/energy/dashboard"', prefetch)
+        self.assertRegex(script, r'load\("api/v1/energy/dashboard"\)')
+        queued = script.index('["pending", "already_running", "retry_queued"].includes(body?.state)')
+        self.assertIn('forget("api/v1/energy", "api/v1/energy/dashboard")', script[queued : queued + 300])
+        self.assertIn('if (remember("api/v1/energy/dashboard", result.data)) forget("api/v1/energy")', script)
+
     def test_refresh_module_never_runs_the_sync(self):
         source = (ROOT / "command_centre/energy_refresh.py").read_text(encoding="utf-8")
         imports = re.findall(r"^(?:from|import) (\S+)", source, re.M)

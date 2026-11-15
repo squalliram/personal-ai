@@ -563,7 +563,7 @@
   // Data cache: a section whose data is already here renders at once, then refreshes in the background.
   const CACHE_SHOW_MS = 10 * 60 * 1000; // older data is never shown; the section loads afresh
   const CACHE_FRESH_MS = 15 * 1000; // younger data is not re-fetched in the background
-  const PREFETCH = ["api/v1/energy", "api/v1/instagram/drafts", "api/v1/modules", "api/v1/agents",
+  const PREFETCH = ["api/v1/energy", "api/v1/energy/dashboard", "api/v1/instagram/drafts", "api/v1/modules", "api/v1/agents",
     "api/v1/automations", "api/v1/integrations", "api/v1/audit", "api/v1/passkeys", "api/v1/overview"];
   const cache = new Map(); // path -> { json, at }
   const inflight = new Map(); // path -> pending api() result
@@ -582,7 +582,7 @@
     if (inflight.has(path)) return inflight.get(path);
     const epoch = cacheEpoch;
     const request = api(path).then((result) => {
-      if (epoch === cacheEpoch) {
+      if (epoch === cacheEpoch && inflight.get(path) === request) {
         inflight.delete(path);
         if (result.ok) cache.set(path, { json: JSON.stringify(result.data), at: Date.now() });
       }
@@ -590,6 +590,20 @@
     });
     inflight.set(path, request);
     return request;
+  }
+
+  // Drop cached paths; a request already in flight for them is no longer cached when it returns.
+  function forget(...paths) {
+    for (const path of paths) { cache.delete(path); inflight.delete(path); }
+  }
+
+  // Cache data fetched outside load(); returns whether it differs from what was cached.
+  function remember(path, data) {
+    const json = JSON.stringify(data);
+    const changed = cache.get(path)?.json !== json;
+    inflight.delete(path);
+    cache.set(path, { json, at: Date.now() });
+    return changed;
   }
 
   async function load(path) {
@@ -869,10 +883,14 @@
   }
 
   // A port of initializeDashboard() from octopus_energy/dashboard.js, drawn with DOM nodes in the HUD theme.
+  const energyChoice = { fuel: "electricity", period: "day" }; // kept when a background refresh rebuilds the view
+  let energyInstances = 0;
   function energyDashboard(root, published) {
-    let data = null, fuel = "electricity", period = "day", busy = false, loadError = false;
-    let refreshBusy = false, lastRefreshStatus = null, stopped = false;
+    let data = null, { fuel, period } = energyChoice, busy = false, loadError = false;
+    let refreshBusy = false, lastRefreshStatus = null, stopped = false, attached = false;
     const generation = renderCount;
+    // Unique per instance, so render() never swaps this live dashboard for an older, stopped copy.
+    root.dataset.instance = String(++energyInstances);
     let repositionTooltip = () => {};
     const canRefresh = Boolean(session) && ["recommend", "execute"].includes(session.permission);
 
@@ -882,9 +900,9 @@
     const refreshStatus = el("p", { class: "energy-refresh-status", role: "status", "aria-live": "polite" });
     const choice = (kind, value, label, active) => el("button", { type: "button", [`data-${kind}`]: value,
       class: active ? "active" : "", "aria-pressed": String(active) }, label);
-    const fuelButtons = [choice("fuel", "electricity", "Electricity", true), choice("fuel", "gas", "Gas", false)];
+    const fuelButtons = [choice("fuel", "electricity", "Electricity", fuel === "electricity"), choice("fuel", "gas", "Gas", fuel === "gas")];
     const periodButtons = [["day", "Daily"], ["week", "Weekly"], ["month", "Monthly"], ["year", "Yearly"], ["latest-day", "Latest day"]]
-      .map(([value, label], index) => choice("period", value, label, index === 0));
+      .map(([value, label]) => choice("period", value, label, value === period));
     const cards = el("div", { class: "grid energy-metrics" });
     const title = el("h2", {}, "Consumption");
     const range = muted("");
@@ -1146,6 +1164,7 @@
         if (result.status === 401) { stop(); showLogin("Your session has ended. Sign in again."); return false; }
         if (!result.ok) throw new Error("unavailable");
         accept(result.data);
+        if (remember("api/v1/energy/dashboard", result.data)) forget("api/v1/energy");
         return true;
       } catch (error) {
         failed(error.message);
@@ -1215,6 +1234,7 @@
           finish("warning", `Rate limited. Try again in ${retry} seconds. The existing snapshot is kept.`); return;
         }
         if (!reply.ok || !["pending", "already_running", "retry_queued"].includes(body?.state)) throw new Error("Request unavailable");
+        forget("api/v1/energy", "api/v1/energy/dashboard");
         const timestamp = (value) => value === null || (validInstant(value) && value.endsWith("Z"));
         if (!Object.hasOwn(body, "request_id") || !Object.hasOwn(body, "last_attempt_at")
             || !(body.request_id === null || validRequestId(body.request_id))
@@ -1230,7 +1250,7 @@
         message(joining ? "running" : "requested", joining ? "Already running: fetching from Octopus." : "Requested. Waiting for the background runner.");
         let observedSuccess = baseline.last_success_at;
         const poll = async () => {
-          if (stopped) { refreshBusy = false; return; }
+          if (stopped || !live()) { refreshBusy = false; return; }
           if (Date.now() >= deadline) {
             finish("warning", "Unable to confirm this request’s outcome. It may still be queued or delayed. The existing snapshot is kept; check Data as of or try again later."); return;
           }
@@ -1276,8 +1296,8 @@
     for (const [kind, buttons] of [["fuel", fuelButtons], ["period", periodButtons]]) {
       for (const button of buttons) {
         button.addEventListener("click", () => {
-          if (kind === "fuel") fuel = button.dataset.fuel;
-          else period = button.dataset.period;
+          if (kind === "fuel") fuel = energyChoice.fuel = button.dataset.fuel;
+          else period = energyChoice.period = button.dataset.period;
           for (const other of buttons) {
             other.classList.toggle("active", other === button);
             other.setAttribute("aria-pressed", String(other === button));
@@ -1294,10 +1314,10 @@
     const onViewport = () => { if (live()) repositionTooltip(); };
     const timer = setInterval(onVisible, ENERGY_RELOAD_MS);
     const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => repositionTooltip());
-    // A newer render (navigation) means this dashboard is gone or was never shown.
+    // Stops once it leaves the page, or once a newer render starts before it was ever shown.
     function live() {
-      if (generation === renderCount && root.isConnected) return true;
-      if (generation !== renderCount) stop();
+      if (root.isConnected) { attached = true; return true; }
+      if (attached || generation !== renderCount) stop();
       return false;
     }
     function stop() {
