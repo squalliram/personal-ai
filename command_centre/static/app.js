@@ -885,12 +885,16 @@
   // A port of initializeDashboard() from octopus_energy/dashboard.js, drawn with DOM nodes in the HUD theme.
   const energyChoice = { fuel: "electricity", period: "day" }; // kept when a background refresh rebuilds the view
   let energyInstances = 0;
-  let energyRefreshing = false; // a Fetch latest data request is being tracked; background rebuilds would lose it
+  let energyRefreshOwner = null; // instance tracking a Fetch latest data request; background rebuilds would lose it
   function energyDashboard(root, published, generation) {
     let data = null, { fuel, period } = energyChoice, busy = false, loadError = false;
     let refreshBusy = false, lastRefreshStatus = null, stopped = false, attached = false;
     // Unique per instance, so render() never swaps this live dashboard for an older, stopped copy.
-    root.dataset.instance = String(++energyInstances);
+    const instance = root.dataset.instance = String(++energyInstances);
+    const release = () => {
+      refreshBusy = false;
+      if (energyRefreshOwner === instance) energyRefreshOwner = null;
+    };
     let repositionTooltip = () => {};
     const canRefresh = Boolean(session) && ["recommend", "execute"].includes(session.permission);
 
@@ -1200,11 +1204,12 @@
 
     async function requestRefresh() {
       if (refreshBusy || busy || !canRefresh) return;
-      refreshBusy = energyRefreshing = true;
+      refreshBusy = true;
+      energyRefreshOwner = instance;
       refreshButton.disabled = true;
       const message = (state, text) => { refreshStatus.dataset.state = state; refreshStatus.textContent = text; };
       const finish = (state, text) => {
-        refreshBusy = energyRefreshing = false;
+        release();
         refreshButton.disabled = busy || !canRefresh;
         message(state, text);
       };
@@ -1256,7 +1261,7 @@
         message(joining ? "running" : "requested", joining ? "Already running: fetching from Octopus." : "Requested. Waiting for the background runner.");
         let observedSuccess = baseline.last_success_at;
         const poll = async () => {
-          if (stopped || !live()) { refreshBusy = energyRefreshing = false; return; }
+          if (stopped || !live()) { release(); return; }
           if (Date.now() >= deadline) {
             finish("warning", "Unable to confirm this request’s outcome. It may still be queued or delayed. The existing snapshot is kept; check Data as of or try again later."); return;
           }
@@ -1329,7 +1334,7 @@
     function stop() {
       if (stopped) return;
       stopped = true;
-      if (refreshBusy) energyRefreshing = false;
+      if (refreshBusy) release();
       clearInterval(timer);
       observer?.disconnect();
       document.removeEventListener("visibilitychange", onVisible);
@@ -1350,7 +1355,7 @@
   async function energy(view, options) {
     const generation = renderCount; // the render this view belongs to, read before awaiting
     const [data, published] = await Promise.all([load("api/v1/energy"), load("api/v1/energy/dashboard")]);
-    if (!data || generation !== renderCount || (options?.background && energyRefreshing)) return;
+    if (!data || generation !== renderCount || (options?.background && energyRefreshOwner !== null)) return;
     const h = data.health;
     const dashboard = el("div", { class: "energy-dashboard" });
     if (published) energyDashboard(dashboard, published, generation);
@@ -1580,7 +1585,7 @@
       if (link.dataset.section === section[0]) link.setAttribute("aria-current", "page");
       else link.removeAttribute("aria-current");
     }
-    if (background && section[0] === "energy" && energyRefreshing) return;
+    if (background && section[0] === "energy" && energyRefreshOwner !== null) return;
     const current = ++renderCount;
     renderUses = new Map();
     const uses = renderUses;
@@ -1598,7 +1603,7 @@
     await (VIEWS[section[0]] ? VIEWS[section[0]](view, { background }) : placeholder(view, section[0]));
     clearTimeout(loading);
     if (current !== renderCount) return;
-    if (background && section[0] === "energy" && energyRefreshing) return; // a refresh began while this render loaded
+    if (background && section[0] === "energy" && energyRefreshOwner !== null) return; // a refresh began while this render loaded
     const editing = document.activeElement && $("view").contains(document.activeElement) && document.activeElement.matches("input, textarea, select");
     if (background && editing) return;
     const fresh = [...view.childNodes];
