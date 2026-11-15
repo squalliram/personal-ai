@@ -1387,14 +1387,19 @@
   async function energy(view, options) {
     const generation = renderCount; // the render this view belongs to, read before awaiting
     const [data, published] = await Promise.all([load("api/v1/energy"), load("api/v1/energy/dashboard")]);
-    if (!data || generation !== renderCount || (options?.background && energyRefreshOwner !== null)) return;
-    const h = data.health;
+    if ((!data && !published) || generation !== renderCount || (options?.background && energyRefreshOwner !== null)) return;
     const dashboard = el("div", { class: "energy-dashboard" });
     if (published) energyDashboard(dashboard, published, generation);
     else dashboard.append(card("Energy dashboard", el("p", { class: "energy-status", "data-state": "error" },
       "The published dashboard snapshot could not be loaded. Source records below are still shown; reload to retry.")));
-    view.append(dashboard,
-      el("h2", { class: "energy-section-title" }, "Source records"),
+    view.append(dashboard, el("h2", { class: "energy-section-title" }, "Source records"));
+    if (!data) {
+      view.append(card("Source status", el("p", { class: "energy-status", "data-state": "error" },
+        "The source records could not be loaded. The dashboard above is still shown; reload to retry.")));
+      return;
+    }
+    const h = data.health;
+    view.append(
       card("Source status", el("p", {}, status(h.status), " ", h.summary),
         keyValues([["Last successful sync", when(data.last_successful_sync_at)],
           ["Latest sync result", h.evidence.latest_sync_status], ["Latest daily data", h.evidence.latest_daily_date]])),
