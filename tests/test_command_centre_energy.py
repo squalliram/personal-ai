@@ -255,6 +255,10 @@ class EnergyViewWiringTests(unittest.TestCase):
         queued = script.index('["pending", "already_running", "retry_queued"].includes(body?.state)')
         self.assertIn('forget("api/v1/energy", "api/v1/energy/dashboard")', script[queued : queued + 300])
         self.assertIn('if (remember("api/v1/energy/dashboard", result.data)) forget("api/v1/energy")', script)
+        # A dashboard belongs to the render that started loading it, not whichever render is current when data arrives.
+        view = script[script.index("async function energy(view)") :]
+        self.assertLess(view.index("const generation = renderCount"), view.index("await Promise.all"))
+        self.assertIn("energyDashboard(dashboard, published, generation)", view)
 
     def test_refresh_module_never_runs_the_sync(self):
         source = (ROOT / "command_centre/energy_refresh.py").read_text(encoding="utf-8")

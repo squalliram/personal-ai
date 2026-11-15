@@ -885,10 +885,9 @@
   // A port of initializeDashboard() from octopus_energy/dashboard.js, drawn with DOM nodes in the HUD theme.
   const energyChoice = { fuel: "electricity", period: "day" }; // kept when a background refresh rebuilds the view
   let energyInstances = 0;
-  function energyDashboard(root, published) {
+  function energyDashboard(root, published, generation) {
     let data = null, { fuel, period } = energyChoice, busy = false, loadError = false;
     let refreshBusy = false, lastRefreshStatus = null, stopped = false, attached = false;
-    const generation = renderCount;
     // Unique per instance, so render() never swaps this live dashboard for an older, stopped copy.
     root.dataset.instance = String(++energyInstances);
     let repositionTooltip = () => {};
@@ -1341,11 +1340,12 @@
   }
 
   async function energy(view) {
+    const generation = renderCount; // the render this view belongs to, read before awaiting
     const [data, published] = await Promise.all([load("api/v1/energy"), load("api/v1/energy/dashboard")]);
-    if (!data) return;
+    if (!data || generation !== renderCount) return;
     const h = data.health;
     const dashboard = el("div", { class: "energy-dashboard" });
-    if (published) energyDashboard(dashboard, published);
+    if (published) energyDashboard(dashboard, published, generation);
     else dashboard.append(card("Energy dashboard", el("p", { class: "energy-status", "data-state": "error" },
       "The published dashboard snapshot could not be loaded. Source records below are still shown; reload to retry.")));
     view.append(dashboard,
