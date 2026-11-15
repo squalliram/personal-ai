@@ -144,7 +144,7 @@ class ReleaseTests(unittest.TestCase):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
     def test_assistant_provider_keys_are_written_only_when_valid(self):
-        account, token = "0123456789abcdef0123456789abcdef", "cf-token_0123456789abcdef"
+        account, token = "0123456789abcdef" * 2, "cf-token_" + "0123456789abcdef"
         HOST.install(
             self.checkout,
             SHA,
