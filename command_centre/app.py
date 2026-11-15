@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import csv
 import hmac
+import io
 import ipaddress
 import json
 import os
@@ -14,7 +16,7 @@ import threading
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from http import HTTPStatus
 from http.cookies import CookieError, SimpleCookie
 from pathlib import Path
@@ -49,6 +51,13 @@ MAX_BODY_BYTES = 4096
 # Overview, integrations, automations, modules and the assistant share one snapshot. It is reused until a
 # source file changes or this many seconds pass, so time-based health (stale, overdue) stays current.
 COLLECT_TTL_SECONDS = 30
+AUDIT_PAGE_SIZES = (10, 25, 50, 100)
+AUDIT_EXPORT_LIMIT = 10_000
+AUDIT_ACTION = re.compile(r"[a-z_]{1,40}")
+SESSION_ID = re.compile(r"[a-f0-9]{16}")
+PAGE_NUMBER = re.compile(r"[0-9]{1,6}")
+# Spreadsheet apps run a cell starting with any of these as a formula (OWASP "CSV injection").
+FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r", "\n", "\uff1d", "\uff0b", "\uff0d", "\uff20")
 TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_-]{43}")
 CSP = (
     "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; "
@@ -96,6 +105,42 @@ def _json_body(environ: dict, limit: int = MAX_BODY_BYTES) -> tuple[object, Resu
         return json.loads(environ["wsgi.input"].read(length)), None
     except (ValueError, UnicodeDecodeError):
         return None, _error(400, "invalid_request")
+
+
+def csv_cell(value: object) -> object:
+    """Neutralise spreadsheet formulas by prefixing an apostrophe, so a cell is always shown as text."""
+    if isinstance(value, str) and value.lstrip(" ").startswith(FORMULA_PREFIXES):
+        return "'" + value
+    return value
+
+
+_PLATFORMS = (
+    ("iPhone", "iPhone"),
+    ("iPad", "iPad"),
+    ("Android", "Android"),
+    ("CrOS", "ChromeOS"),
+    ("Macintosh", "Mac"),
+    ("Windows", "Windows"),
+    ("Linux", "Linux"),
+)
+_BROWSERS = (
+    ("Edg/", "Edge"),
+    ("OPR/", "Opera"),
+    ("Firefox/", "Firefox"),
+    ("FxiOS/", "Firefox"),
+    ("CriOS/", "Chrome"),
+    ("Chrome/", "Chrome"),
+    ("Safari/", "Safari"),
+)
+
+
+def describe_device(user_agent: str) -> str:
+    """A coarse label such as "Safari on iPhone"; the raw User-Agent is never stored."""
+    platform = next((name for marker, name in _PLATFORMS if marker in user_agent), None)
+    browser = next((name for marker, name in _BROWSERS if marker in user_agent), None)
+    if platform and browser:
+        return f"{browser} on {platform}"
+    return platform or browser or "Unknown device"
 
 
 class CommandCentreApp:
@@ -178,6 +223,9 @@ class CommandCentreApp:
             ("GET", "/api/v1/energy"): Route(self.energy, Permission.READ),
             ("GET", "/api/v1/briefing/runs"): Route(self.briefing_runs, Permission.READ),
             ("GET", "/api/v1/audit"): Route(self.audit_log, Permission.READ),
+            ("GET", "/api/v1/audit/export"): Route(self.audit_export, Permission.READ),
+            ("GET", "/api/v1/sessions"): Route(self.session_list, Permission.READ),
+            ("POST", "/api/v1/sessions/revoke"): Route(self.session_revoke, Permission.READ, csrf=True),
             ("GET", "/api/v1/instagram/drafts"): Route(self.instagram_drafts, Permission.READ),
             ("GET", "/api/v1/instagram/slide"): Route(self.instagram_slide, Permission.READ),
             ("POST", "/api/v1/instagram/decision"): Route(self.instagram_decision, Permission.RECOMMEND, csrf=True),
@@ -331,7 +379,10 @@ class CommandCentreApp:
 
     def _start_session(self, request: Request, remember: bool, method: str) -> Result:
         self.sessions.revoke(request.token)
-        token, session = self.sessions.create(self.settings.permission_ceiling, remember=remember)
+        device = describe_device(request.environ.get("HTTP_USER_AGENT", ""))
+        token, session = self.sessions.create(
+            self.settings.permission_ceiling, remember=remember, device=device, client=request.client
+        )
         self.audit.record(
             "login",
             "success",
@@ -340,6 +391,7 @@ class CommandCentreApp:
             permission=session.permission.label,
             remembered=session.remember,
             method=method,
+            device=device,
         )
         lifetime = (
             self.settings.session_remember_seconds if session.remember else self.settings.session_absolute_seconds
@@ -797,8 +849,128 @@ class CommandCentreApp:
         snapshot = sources.briefing_snapshot(self.settings, int(raw))
         return 200, snapshot, []
 
+    def _audit_action(self, request: Request) -> tuple[str | None, bool]:
+        action = request.query("action") or None
+        return action, action is None or bool(AUDIT_ACTION.fullmatch(action))
+
     def audit_log(self, request: Request) -> Result:
-        return 200, {"entries": self.audit.recent(50)}, []
+        page, per_page = request.query("page") or "1", request.query("per_page") or "50"
+        action, valid = self._audit_action(request)
+        if not valid or not PAGE_NUMBER.fullmatch(page) or not PAGE_NUMBER.fullmatch(per_page):
+            return _error(400, "invalid_parameters")
+        if int(per_page) not in AUDIT_PAGE_SIZES:
+            return _error(400, "invalid_parameters")
+        page, per_page = int(page), int(per_page)
+        if not 1 <= page <= 100_000:
+            return _error(400, "invalid_parameters")
+        entries, total = self.audit.page(limit=per_page, offset=(page - 1) * per_page, action=action)
+        return (
+            200,
+            {
+                "entries": entries,
+                "page": page,
+                "per_page": per_page,
+                "total": total,
+                "pages": max(1, -(-total // per_page)),
+                "action": action,
+                "actions": self.audit.actions(),
+                "page_sizes": list(AUDIT_PAGE_SIZES),
+            },
+            [],
+        )
+
+    def audit_export(self, request: Request) -> Result:
+        """Download the audit log (newest first) as CSV or JSON. It holds operational metadata only."""
+        kind = request.query("format")
+        action, valid = self._audit_action(request)
+        if kind not in ("csv", "json") or not valid:
+            return _error(400, "invalid_parameters")
+        entries, total = self.audit.page(limit=AUDIT_EXPORT_LIMIT, action=action)
+        now = self.clock()
+        stamp = datetime.fromtimestamp(now, timezone.utc).strftime("%Y%m%dT%H%MZ")
+        if kind == "json":
+            body = json.dumps(
+                {
+                    "exported_at": self._iso(now),
+                    "action": action,
+                    "total": total,
+                    "count": len(entries),
+                    "truncated": total > len(entries),
+                    "entries": entries,
+                },
+                indent=2,
+            ).encode()
+            content_type = "application/json"
+        else:
+            stream = io.StringIO()
+            writer = csv.writer(stream, lineterminator="\r\n")
+            writer.writerow(["id", "at", "actor", "action", "outcome", "detail"])
+            for entry in entries:
+                detail = json.dumps(entry["detail"], sort_keys=True, separators=(",", ":"))
+                writer.writerow(
+                    [csv_cell(entry[k]) for k in ("id", "at", "actor", "action", "outcome")] + [csv_cell(detail)]
+                )
+            body, content_type = stream.getvalue().encode(), "text/csv; charset=utf-8"
+        self.audit.record(
+            "audit_export", "success", actor="owner", client=request.client, format=kind, rows=len(entries)
+        )
+        name = f"jarvis-audit-{stamp}.{kind}"
+        return 200, (body, content_type), [("Content-Disposition", f'attachment; filename="{name}"')]
+
+    def _session_entry(self, session: Session, current: Session) -> dict:
+        return {
+            "id": session.public_id,
+            "current": session.token_hash == current.token_hash,
+            "device": session.device or "Unknown device",
+            "client": session.client or None,
+            "signed_in_at": self._iso(session.created_at),
+            "last_active_at": self._iso(session.last_seen_at),
+            "expires_at": self._iso(self.sessions.expires_at(session)),
+            "remembered": session.remember,
+        }
+
+    def session_list(self, request: Request) -> Result:
+        found = sorted(self.sessions.active(), key=lambda s: s.last_seen_at, reverse=True)
+        return (
+            200,
+            {
+                "sessions": [self._session_entry(s, request.session) for s in found],
+                "sign_in_activity": {
+                    **self.audit.sign_in_activity(self.clock() - 24 * 60 * 60),
+                    "failed_window_hours": 24,
+                },
+            },
+            [],
+        )
+
+    def session_revoke(self, request: Request) -> Result:
+        """Sign out one other session (`{"id"}`) or every other one (`{"others": true}`). Use logout for this one."""
+        body, error = _json_body(request.environ)
+        if error:
+            return error
+        if not isinstance(body, dict) or len(body) != 1:
+            return _error(400, "invalid_request")
+        current = request.session.token_hash
+        if body.get("others") is True:
+            targets = [s for s in self.sessions.active() if s.token_hash != current]
+        elif isinstance(body.get("id"), str) and SESSION_ID.fullmatch(body["id"]):
+            targets = [s for s in self.sessions.active() if s.public_id == body["id"]]
+            if not targets:
+                return _error(404, "not_found")
+            if targets[0].token_hash == current:
+                return _error(400, "current_session")
+        else:
+            return _error(400, "invalid_request")
+        revoked = sum(self.sessions.revoke_hash(s.token_hash) for s in targets)
+        self.audit.record(
+            "session_revoke",
+            "success",
+            actor="owner",
+            client=request.client,
+            scope="others" if "others" in body else "one",
+            revoked=revoked,
+        )
+        return self.session_list(request)
 
     def instagram_drafts(self, request: Request) -> Result:
         return 200, sources.instagram_drafts(self.settings), []
