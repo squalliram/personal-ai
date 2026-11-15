@@ -70,6 +70,7 @@ def _read_id(path: Path) -> str | None:
 
 
 def _existing(settings: Settings, status: dict, flag: Path, running: Path):
+    """Return ``(reply or None, status)``; the status is re-read if the runner moved the flag meanwhile."""
     # The runner may rename the selected flag while this request is reading it. Re-resolve once.
     for resolution in range(2):
         path = flag if _regular(flag) else running if _regular(running) else None
@@ -85,20 +86,20 @@ def _existing(settings: Settings, status: dict, flag: Path, running: Path):
                 continue
             matches = request_id == status.get("request_id")
             if path == running and active and matches and attempt:
-                return _reply(202, "already_running", 0, attempt, request_id)
+                return _reply(202, "already_running", 0, attempt, request_id), status
             if (
                 matches
                 and status.get("request_state") == "pending"
                 and status.get("result") in ("no_data", "partial", "failed")
                 and attempt
             ):
-                return _reply(202, "retry_queued", 0, attempt, request_id)
-            return _reply(202, "pending", 0, attempt, request_id)
+                return _reply(202, "retry_queued", 0, attempt, request_id), status
+            return _reply(202, "pending", 0, attempt, request_id), status
         if active:
             if not attempt:
                 raise Unavailable
-            return _reply(202, "already_running", 0, attempt, status.get("request_id"))
-        return None
+            return _reply(202, "already_running", 0, attempt, status.get("request_id")), status
+        return None, status
     raise Unavailable
 
 
@@ -147,8 +148,8 @@ def request_refresh(settings: Settings, now: datetime):
                 path.exists() and (not _regular(path) or stat.S_IMODE(path.stat().st_mode) != 0o600)
             ):
                 return _reply(503, "unavailable")
-        status = _status(settings)
-        existing = _existing(settings, status, flag, running)
+        # Cooldown uses the status _existing last read: a completed attempt may have just removed the flag.
+        existing, status = _existing(settings, _status(settings), flag, running)
         if existing:
             return existing
         attempt = _instant(status.get("last_attempt_at"))
@@ -158,7 +159,7 @@ def request_refresh(settings: Settings, now: datetime):
             return _reply(429, "rate_limited", min(COOLDOWN_SECONDS, math.ceil(remaining)))
         request_id = secrets.token_hex(16)
         if not _publish(directory, flag, request_id):
-            return _existing(settings, _status(settings), flag, running) or _reply(503, "unavailable")
+            return _existing(settings, _status(settings), flag, running)[0] or _reply(503, "unavailable")
         # A fast worker may already have claimed or fulfilled this ID. The watermark alone cannot prove that.
         return _reply(202, "pending", 0, _status(settings).get("last_attempt_at"), request_id)
     except (Unavailable, OSError):

@@ -9,6 +9,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from command_centre_fixtures import ROOT, Client, Clock, make_app, make_settings
 
@@ -168,6 +169,21 @@ class RefreshRequestTests(EnergyTestCase):
         self.write_status(last_attempt_at=iso(self.now - timedelta(seconds=301)), result="no_data")
         self.assertEqual(self.post().status, 202)
 
+    def test_cooldown_uses_the_status_reread_after_a_flag_vanishes(self):
+        self.flag().write_text("d" * 32)
+        self.flag().chmod(0o600)
+        self.write_status(last_attempt_at=iso(self.now - timedelta(hours=1)), result="no_data")
+
+        def runner_finishes(path):
+            self.flag().unlink()
+            self.write_status(last_attempt_at=iso(self.now), result="no_data")
+            raise energy_refresh._Vanished
+
+        with patch.object(energy_refresh, "_read_id", side_effect=runner_finishes):
+            response = self.post()
+        self.assertEqual((response.status, response.json()["state"]), (429, "rate_limited"))
+        self.assertFalse(self.flag().exists())
+
     def test_unsafe_directory_or_flags_are_unavailable(self):
         self.refresh_dir.chmod(0o750)
         self.assertEqual(self.post().json()["state"], "unavailable")
@@ -204,7 +220,8 @@ class RefreshRequestTests(EnergyTestCase):
 
 class EnergyViewWiringTests(unittest.TestCase):
     def test_view_reuses_the_standalone_dashboard_helpers(self):
-        app = make_app(make_settings(Path(TemporaryDirectory().name)))
+        with TemporaryDirectory() as directory:
+            app = make_app(make_settings(Path(directory)))
         core = app.static["/static/energy-core.js"][0]
         self.assertEqual(core, (ROOT / "octopus_energy/dashboard.js").read_bytes())
         index = (ROOT / "command_centre/static/index.html").read_text(encoding="utf-8")
