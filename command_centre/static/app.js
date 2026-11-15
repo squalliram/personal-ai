@@ -454,7 +454,10 @@
     pendingLogout = new Promise((resolve) => { settled = resolve; });
     try {
       const result = await (vault ? playVault("lock", revoke) : revoke);
-      if (result.ok || result.status === 401) showLogin("You have signed out.");
+      if (result.ok || result.status === 401) {
+        history.replaceState(null, "", location.pathname + location.search);
+        showLogin("You have signed out.");
+      }
       else $("view-status").textContent = "Sign-out did not complete. Try again.";
     } finally {
       button.disabled = false;
