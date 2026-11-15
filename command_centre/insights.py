@@ -200,7 +200,7 @@ def _month_insight(fuel: str, info: dict) -> dict | None:
         return None
     # Per-day averages, so a 31-day month is not compared against 28 days of February.
     daily, previous_daily = kwh / len(days), previous_kwh / len(before)
-    change = daily / previous_daily - 1
+    change = round(daily / previous_daily - 1, 4)
     if abs(change) < MONTH_CHANGE or abs(daily - previous_daily) * len(days) < MIN_KWH_CHANGE:
         return None
     month, last = f"{through:%B}", f"{previous_month_end:%B}"

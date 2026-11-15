@@ -119,6 +119,11 @@ class EnergyInsightTests(unittest.TestCase):
         found = insights.energy_fuels(AVAILABLE, rows, None, now)
         self.assertIsNone(insights._month_insight("electricity", found["electricity"]))
 
+    def test_a_month_rise_of_exactly_the_threshold_is_reported(self):
+        rows = history(kwh=lambda day: 11.5 if day.month == 11 else 10.0)
+        (item,) = self.insights(rows)
+        self.assertEqual((item["id"], item["evidence"]["change"]), ("electricity-month", 0.15))
+
     def test_a_drop_is_reported_once_as_good_news(self):
         (item,) = self.insights(history(kwh=last_week(7.0)))
         self.assertEqual(item["severity"], "good")
