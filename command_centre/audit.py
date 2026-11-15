@@ -50,9 +50,48 @@ class AuditLog:
             )
 
     def recent(self, limit: int = 50) -> list[dict]:
+        return self.page(limit=limit)[0]
+
+    def page(self, *, limit: int = 50, offset: int = 0, action: str | None = None) -> tuple[list[dict], int]:
+        """Newest first, optionally one action only. Returns the rows and the total matching count."""
+        where, params = ("WHERE action=?", (action,)) if action else ("", ())
+        with closing(sqlite3.connect(self.path, timeout=5)) as conn:
+            conn.row_factory = sqlite3.Row
+            conn.execute("BEGIN")
+            (total,) = conn.execute(f"SELECT COUNT(*) FROM audit_log {where}", params).fetchone()
+            rows = conn.execute(
+                f"SELECT id,at,actor,action,outcome,detail FROM audit_log {where} ORDER BY id DESC LIMIT ? OFFSET ?",
+                (*params, limit, offset),
+            ).fetchall()
+        return [{**dict(row), "detail": json.loads(row["detail"])} for row in rows], total
+
+    def actions(self) -> list[str]:
+        with closing(sqlite3.connect(self.path, timeout=5)) as conn:
+            return [row[0] for row in conn.execute("SELECT DISTINCT action FROM audit_log ORDER BY action")]
+
+    def sign_in_activity(self, since: float, *, limit: int = 5) -> dict:
+        """Recent successful sign-ins and how many sign-in attempts failed since `since` (a Unix time)."""
+        cutoff = datetime.fromtimestamp(since, timezone.utc).isoformat(timespec="seconds")
         with closing(sqlite3.connect(self.path, timeout=5)) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
-                "SELECT at,actor,action,outcome,detail FROM audit_log ORDER BY id DESC LIMIT ?", (limit,)
+                "SELECT at,detail FROM audit_log WHERE action='login' AND outcome='success' ORDER BY id DESC LIMIT ?",
+                (limit,),
             ).fetchall()
-        return [{**dict(row), "detail": json.loads(row["detail"])} for row in rows]
+            (failed,) = conn.execute(
+                "SELECT COUNT(*) FROM audit_log WHERE action IN ('login','passkey_login')"
+                " AND outcome IN ('failure','rate_limited') AND at>=?",
+                (cutoff,),
+            ).fetchone()
+        sign_ins = []
+        for row in rows:
+            detail = json.loads(row["detail"])
+            sign_ins.append(
+                {
+                    "at": row["at"],
+                    "method": detail.get("method"),
+                    "client": detail.get("client"),
+                    "device": detail.get("device"),
+                }
+            )
+        return {"recent_sign_ins": sign_ins, "failed_attempts": failed}

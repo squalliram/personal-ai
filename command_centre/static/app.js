@@ -14,7 +14,29 @@
   const BASIS_LABELS = { measured: "Measured", estimated: "Estimated", inferred: "Inferred", source_record: "Source record" };
   let csrf = null;
   let session = null;
+  // Audit pages are always fetched fresh (never cached); the page and filter survive Settings re-renders.
+  const auditView = { page: 1, action: "" };
+  let signInCount = 0; // changes only when the session ends, unlike the cache epoch
+  let sessionsNotice = ""; // last sign-out failure; kept across re-renders until the next attempt or sign-out
   const $ = (id) => document.getElementById(id);
+
+  // Display preferences live in this browser only; they never reach the server and change no security setting.
+  const PREFS_KEY = "jarvis.preferences";
+  const AUDIT_PAGE_SIZES = [10, 25, 50, 100];
+  const PREF_DEFAULTS = { startPage: "overview", vault: true, voiceGreeting: true, auditPageSize: 25 };
+  function prefs() {
+    let saved = {};
+    try { saved = JSON.parse(localStorage.getItem(PREFS_KEY) || "{}") || {}; } catch { saved = {}; }
+    return {
+      startPage: SECTIONS.some(([id]) => id === saved.startPage) ? saved.startPage : PREF_DEFAULTS.startPage,
+      vault: typeof saved.vault === "boolean" ? saved.vault : PREF_DEFAULTS.vault,
+      voiceGreeting: typeof saved.voiceGreeting === "boolean" ? saved.voiceGreeting : PREF_DEFAULTS.voiceGreeting,
+      auditPageSize: AUDIT_PAGE_SIZES.includes(saved.auditPageSize) ? saved.auditPageSize : PREF_DEFAULTS.auditPageSize,
+    };
+  }
+  function savePrefs(update) {
+    try { localStorage.setItem(PREFS_KEY, JSON.stringify({ ...prefs(), ...update })); return true; } catch { return false; }
+  }
 
   function el(tag, attrs, ...children) {
     const node = document.createElement(tag);
@@ -74,7 +96,10 @@
 
   function showLogin(message) {
     session = null; csrf = null;
+    signInCount += 1;
+    sessionsNotice = "";
     clearCache();
+    auditView.page = 1; auditView.action = "";
     $("view").replaceChildren();
     assistantGeneration += 1;
     asking = false;
@@ -94,6 +119,8 @@
     $("login-view").hidden = true;
     $("app-view").hidden = false;
     $("permission-badge").textContent = `Permission: ${info.permission.toUpperCase()}`;
+    const start = prefs().startPage;
+    if (!location.hash && start !== "overview") history.replaceState(null, "", `#${start}`);
     clearCache();
     render().then(prefetch);
     setupAssistant();
@@ -193,8 +220,9 @@
 
   function granted(data) {
     stopListening();
-    playVault("unlock");
-    speak(VAULT.unlock.caption, reducedMotion() ? 0 : VAULT_GRANTED_MS);
+    const { vault, voiceGreeting } = prefs();
+    if (vault) playVault("unlock");
+    if (voiceGreeting) speak(VAULT.unlock.caption, reducedMotion() || !vault ? 0 : VAULT_GRANTED_MS);
     showApp(data);
   }
 
@@ -423,7 +451,8 @@
     const button = $("logout");
     if (button.disabled) return;
     button.disabled = true;
-    speak(VAULT.lock.caption);
+    const { vault, voiceGreeting } = prefs();
+    if (voiceGreeting) speak(VAULT.lock.caption);
     const controller = new AbortController();
     const deadline = setTimeout(() => controller.abort(), LOGOUT_DEADLINE_MS);
     const revoke = api("api/v1/session", { method: "DELETE", signal: controller.signal })
@@ -431,8 +460,11 @@
     let settled;
     pendingLogout = new Promise((resolve) => { settled = resolve; });
     try {
-      const result = await playVault("lock", revoke);
-      if (result.ok || result.status === 401) showLogin("You have signed out.");
+      const result = await (vault ? playVault("lock", revoke) : revoke);
+      if (result.ok || result.status === 401) {
+        history.replaceState(null, "", location.pathname + location.search);
+        showLogin("You have signed out.");
+      }
       else $("view-status").textContent = "Sign-out did not complete. Try again.";
     } finally {
       button.disabled = false;
@@ -564,7 +596,7 @@
   const CACHE_SHOW_MS = 10 * 60 * 1000; // older data is never shown; the section loads afresh
   const CACHE_FRESH_MS = 15 * 1000; // younger data is not re-fetched in the background
   const PREFETCH = ["api/v1/energy", "api/v1/energy/dashboard", "api/v1/instagram/drafts", "api/v1/modules", "api/v1/agents",
-    "api/v1/automations", "api/v1/integrations", "api/v1/audit", "api/v1/passkeys", "api/v1/overview"];
+    "api/v1/automations", "api/v1/integrations", "api/v1/passkeys", "api/v1/overview"];
   const cache = new Map(); // path -> { json, at }
   const inflight = new Map(); // path -> pending api() result
   const sectionViews = new Map(); // section -> { nodes, title, status } last shown
@@ -1415,11 +1447,146 @@
     }
   }
 
+  const SIGN_IN_METHODS = { passphrase: "Passphrase", passkey: "Passkey" };
+
+  async function sessionsCard() {
+    const epoch = cacheEpoch;
+    const result = await api("api/v1/sessions");
+    if (epoch !== cacheEpoch) return null;
+    if (result.status === 401) { showLogin("Your session has ended. Sign in again."); return null; }
+    if (!result.ok) {
+      const retry = el("button", { type: "button" }, "Try again");
+      retry.addEventListener("click", () => render());
+      return card("Signed-in devices", muted(`Signed-in devices could not be loaded (${(result.data && result.data.error) || result.status}).`),
+        el("div", { class: "settings-actions" }, retry));
+    }
+    const { sessions, sign_in_activity: activity } = result.data;
+    const notice = el("p", { role: "status", "aria-live": "polite" }, sessionsNotice);
+    const revoke = async (body, button) => {
+      button.disabled = true;
+      sessionsNotice = "";
+      notice.textContent = "";
+      const signIn = signInCount;
+      const done = await api("api/v1/sessions/revoke", { method: "POST", body });
+      if (signIn !== signInCount) return;
+      if (done.status === 401) { showLogin("Your session has ended. Sign in again."); return; }
+      if (!done.ok) sessionsNotice = "That device could not be signed out.";
+      clearCache(); auditView.page = 1; render();
+    };
+    const device = (item) => item.current ? `${item.device} (this device)` : item.device;
+    const action = (item) => {
+      if (item.current) return "";
+      const button = el("button", { type: "button", "aria-label": `Sign out ${item.device}` }, "Sign out");
+      button.addEventListener("click", () => revoke({ id: item.id }, button));
+      return button;
+    };
+    const others = sessions.filter((item) => !item.current).length;
+    const all = el("button", { type: "button" }, "Sign out all other devices");
+    all.addEventListener("click", () => revoke({ others: true }, all));
+    const failed = activity.failed_attempts;
+    return card("Signed-in devices",
+      muted("Every browser signed in to Jarvis right now. Sign out any you don't recognise, then change the passphrase through the deploy if needed."),
+      table([["Device", device], ["Last active", (r) => when(r.last_active_at)],
+        ["Expires", (r) => `${when(r.expires_at)}${r.remembered ? " (remembered)" : ""}`], ["", action]], sessions, "No active sessions."),
+      others ? el("div", { class: "settings-actions" }, all) : muted("No other devices are signed in."),
+      el("h3", {}, "Recent sign-ins"),
+      keyValues([[`Failed attempts (last ${activity.failed_window_hours} h)`, failed ? `${failed} — check the audit log` : "None"]]),
+      table([["When", (r) => when(r.at)], ["Method", (r) => SIGN_IN_METHODS[r.method] || r.method || "Unknown"],
+        ["Device", (r) => r.device || "Unknown"], ["From", (r) => r.client || "Unknown"]], activity.recent_sign_ins, "No sign-ins recorded."),
+      notice);
+  }
+
+  function preferencesCard() {
+    const current = prefs();
+    const notice = el("p", { class: "muted", role: "status", "aria-live": "polite" });
+    const saved = (update) => {
+      notice.textContent = savePrefs(update) ? "Saved on this device." : "This browser blocked saving preferences.";
+    };
+    const select = (id, options, value, onChange) => {
+      const node = el("select", { id }, options.map(([v, label]) => {
+        const option = el("option", { value: String(v) }, label);
+        if (String(v) === String(value)) option.selected = true;
+        return option;
+      }));
+      node.addEventListener("change", () => onChange(node.value));
+      return node;
+    };
+    const toggle = (id, label, value, key) => {
+      const box = el("input", { id, type: "checkbox" });
+      box.checked = value;
+      box.addEventListener("change", () => saved({ [key]: box.checked }));
+      return el("label", { class: "check", for: id }, box, label);
+    };
+    return card("Display preferences",
+      muted("These apply to this browser only and are kept on this device, not on the server."),
+      el("div", { class: "prefs" },
+        el("label", { for: "pref-start" }, "Start page after sign-in"),
+        select("pref-start", SECTIONS, current.startPage, (v) => saved({ startPage: v })),
+        el("label", { for: "pref-audit-size" }, "Audit log entries per page"),
+        select("pref-audit-size", AUDIT_PAGE_SIZES.map((n) => [n, String(n)]), current.auditPageSize, (v) => {
+          saved({ auditPageSize: Number(v) });
+          auditView.page = 1;
+          render();
+        }),
+        toggle("pref-vault", "Vault animation when signing in and out", current.vault, "vault"),
+        toggle("pref-voice", "Spoken “Access granted” greeting", current.voiceGreeting, "voiceGreeting")),
+      notice);
+  }
+
+
+  async function auditCard() {
+    const body = el("div", {});
+    const section = card("Audit log", muted("Operational metadata only. Content and secrets are never recorded."), body);
+    const state = auditView;
+    const perPage = prefs().auditPageSize;
+    let generation = 0;
+    const query = (extra) => {
+      const params = new URLSearchParams(extra);
+      if (state.action) params.set("action", state.action);
+      return params.toString();
+    };
+    async function show() {
+      const ticket = ++generation;
+      const epoch = cacheEpoch;
+      const result = await api(`api/v1/audit?${query({ page: state.page, per_page: perPage })}`);
+      if (epoch !== cacheEpoch) return false;
+      if (ticket !== generation) return true;
+      if (result.status === 401) { showLogin("Your session has ended. Sign in again."); return false; }
+      if (!result.ok) { body.replaceChildren(muted(`The audit log could not be loaded (${(result.data && result.data.error) || result.status}).`)); return true; }
+      const data = result.data;
+      const filter = el("select", { id: "audit-action" }, el("option", { value: "" }, "All actions"),
+        data.actions.map((name) => {
+          const option = el("option", { value: name }, name.replace(/_/g, " "));
+          if (name === state.action) option.selected = true;
+          return option;
+        }));
+      filter.addEventListener("change", () => { state.action = filter.value; state.page = 1; show(); });
+      const exports = ["csv", "json"].map((kind) => el("a", { class: "button-link", href: `api/v1/audit/export?${query({ format: kind })}`,
+        download: "" }, `Export ${kind.toUpperCase()}`));
+      const prev = el("button", { type: "button" }, "Previous");
+      const next = el("button", { type: "button" }, "Next");
+      prev.disabled = data.page <= 1;
+      next.disabled = data.page >= data.pages;
+      prev.addEventListener("click", () => { state.page = Math.max(1, data.page - 1); show(); });
+      next.addEventListener("click", () => { state.page = data.page + 1; show(); });
+      body.replaceChildren(
+        el("div", { class: "audit-tools" }, el("label", { for: "audit-action" }, "Action"), filter, ...exports),
+        table([["When", (r) => when(r.at)], ["Actor", (r) => r.actor], ["Action", (r) => r.action], ["Outcome", (r) => r.outcome]],
+          data.entries, "No audit entries."),
+        el("div", { class: "pager" }, prev,
+          el("span", { "aria-live": "polite" }, `Page ${data.page} of ${data.pages} · ${data.total} entr${data.total === 1 ? "y" : "ies"}`), next),
+        muted(`Exports hold up to 10,000 of the newest entries${state.action ? " for the chosen action" : ""}; each export is itself audited.`));
+      return true;
+    }
+    return (await show()) ? section : null;
+  }
+
   async function settings(view) {
-    const [data, jobs, agentData] = await Promise.all([load("api/v1/audit"), load("api/v1/automations"), load("api/v1/agents")]);
-    if (!data || !jobs || !agentData || !session) return;
+    const [jobs, agentData, instagramData, sessionsSection, passkeys, audit] = await Promise.all([
+      load("api/v1/automations"), load("api/v1/agents"), load("api/v1/instagram/drafts"), sessionsCard(), passkeyCard(), auditCard()]);
+    if (!session) return;
+    const unavailable = "Could not be loaded right now.";
     const canDecide = ["recommend", "execute"].includes(session.permission);
-    const passkeys = await passkeyCard();
     view.append(
       card("Session", keyValues([["Permission", session.permission.toUpperCase()], ["Session expires", when(session.expires_at)],
         session.remembered ? ["Remembered device", "Yes, until the session expires or you sign out"]
@@ -1427,15 +1594,20 @@
       el("ul", {}, el("li", {}, "READ: retrieve and analyse data."),
         el("li", {}, "RECOMMEND: suggest changes and prepare drafts."),
         el("li", {}, "EXECUTE: perform explicitly approved operations. No execute operations exist yet."))),
+      sessionsSection,
       passkeys,
+      preferencesCard(),
       card("Agents and automations",
         muted("These settings are read-only here. Schedules and agent definitions change through the repository; enable, disable and run-now controls arrive in Phase 5."),
-        table([["Automation", (r) => r.name], ["Status", (r) => status(r.status)], ["Trigger", (r) => r.trigger]], jobs.automations, "No automations."),
-        table([["Agent", (r) => r.name], ["Guardrail", (r) => r.guardrail], ["Definition", (r) => el("code", {}, r.definition)]], agentData.agents, "No agents."),
-        keyValues([["Instagram draft approvals", canDecide ? "You can approve or reject drafts on the Instagram page." : "Read-only: your permission cannot approve drafts."]])),
-      card("Audit log", muted("Operational metadata only. Content and secrets are never recorded."),
-        table([["When", (r) => when(r.at)], ["Actor", (r) => r.actor], ["Action", (r) => r.action], ["Outcome", (r) => r.outcome]],
-          data.entries, "No audit entries.")));
+        jobs ? table([["Automation", (r) => r.name], ["Status", (r) => status(r.status)], ["Trigger", (r) => r.trigger]], jobs.automations, "No automations.")
+          : muted(`Automations: ${unavailable}`),
+        agentData ? table([["Agent", (r) => r.name], ["Guardrail", (r) => r.guardrail], ["Definition", (r) => el("code", {}, r.definition)]], agentData.agents, "No agents.")
+          : muted(`Agents: ${unavailable}`),
+        keyValues([["Instagram draft approvals", canDecide ? "You can approve or reject drafts on the Instagram page." : "Read-only: your permission cannot approve drafts."],
+          ["Instagram automatic posting", !instagramData ? unavailable : instagramData.state !== "available" ? "Unknown: no Instagram database on this server"
+            : instagramData.auto_publish ? "On: drafts that pass review post at their publish time" : "Off: nothing posts automatically"],
+          ["Posting kill switch", "Repository variable INSTAGRAM_AUTO_PUBLISH (0 stops posting); applies on the next deploy"]])),
+      audit);
   }
 
   async function placeholder(view, id) {
