@@ -609,11 +609,13 @@
     if (results.some((result) => result.status === 401)) { showLogin("Your session has ended. Sign in again."); return; }
     if (current !== renderCount) return;
     const failed = results.find((result) => !result.ok);
+    let notice = "";
     if (failed) {
       const oldest = Math.min(...stale.map(([, entry]) => entry.at));
-      $("view-status").textContent = `Showing data from ${when(new Date(oldest).toISOString())}; refreshing failed (${(failed.data && failed.data.error) || failed.status}).`;
+      notice = `Showing data from ${when(new Date(oldest).toISOString())}; refreshing failed (${(failed.data && failed.data.error) || failed.status}).`;
+      $("view-status").textContent = notice;
     }
-    if (stale.some(([path, entry]) => cache.has(path) && cache.get(path).json !== entry.json)) render({ background: true });
+    if (stale.some(([path, entry]) => cache.has(path) && cache.get(path).json !== entry.json)) render({ background: true, notice });
   }
 
   async function prefetch() {
@@ -1031,7 +1033,7 @@
   const VIEWS = { overview, "my-day": myDay, energy, agents: agentsView, integrations, automations: automationsView, settings, instagram };
 
   let renderCount = 0;
-  // A background render runs after fresh data replaced what the section was showing.
+  // A background render runs after fresh data replaced what the section was showing; `notice` reports a partial refresh.
   async function render(options) {
     if (!session) return;
     const background = Boolean(options && options.background);
@@ -1073,6 +1075,7 @@
       $("view").replaceChildren(...nodes);
     }
     if ($("view-status").textContent === "Loading…") $("view-status").textContent = "";
+    if (options && options.notice) $("view-status").textContent = options.notice;
     sectionViews.set(section[0], { nodes, title, status: $("view-status").textContent });
     if (section[0] !== "overview" && $("view-title").textContent !== section[1]) $("view-title").textContent = section[1];
     $("nav").classList.remove("open");
