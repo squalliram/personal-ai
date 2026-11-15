@@ -68,6 +68,7 @@ Devin's assessment argued against a live web app and for extending the static `d
 | Rate limiting | 5 failed logins per client and 20 overall per 15 minutes; 240 API requests per session per minute. |
 | Permissions | READ < RECOMMEND < EXECUTE. Default ceiling RECOMMEND. Each route declares its level. No EXECUTE routes exist. |
 | Headers | Strict CSP with no inline script, `frame-ancestors 'none'`, `nosniff`, `no-referrer`, `no-store`, no Python version in `Server`. |
+| Caching | HTTP stays `no-store`; the SPA keeps section data in memory only. A section with data under 10 minutes old renders at once, and data over 15 seconds old is re-fetched in the background and re-rendered if it changed. Sign-out, a 401, an Instagram decision or a passkey change clears it. Server side, overview, integrations, automations and modules share one snapshot, rebuilt when an energy, briefing or Instagram source file (or its SQLite WAL) changes, after 30 seconds, or after an Instagram decision. Responses carry `Server-Timing: app;dur=…`. |
 | Secrets | Only `COMMAND_CENTRE_*` keys are read from `.env`. Octopus credentials never enter the app. Tests scan every response for credentials, hash and meter identifiers. |
 | Audit | Login, logout, permission, CSRF, cross-origin and rate-limit events. Never passwords, content or request bodies. |
 
