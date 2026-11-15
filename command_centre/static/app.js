@@ -17,7 +17,7 @@
   // Audit pages are always fetched fresh (never cached); the page and filter survive Settings re-renders.
   const auditView = { page: 1, action: "" };
   let signInCount = 0; // changes only when the session ends, unlike the cache epoch
-  let sessionsNotice = ""; // shown once by the next Signed-in devices card
+  let sessionsNotice = ""; // last sign-out failure; kept across re-renders until the next attempt or sign-out
   const $ = (id) => document.getElementById(id);
 
   // Display preferences live in this browser only; they never reach the server and change no security setting.
@@ -97,6 +97,7 @@
   function showLogin(message) {
     session = null; csrf = null;
     signInCount += 1;
+    sessionsNotice = "";
     clearCache();
     auditView.page = 1; auditView.action = "";
     $("view").replaceChildren();
@@ -931,9 +932,10 @@
     }
     const { sessions, sign_in_activity: activity } = result.data;
     const notice = el("p", { role: "status", "aria-live": "polite" }, sessionsNotice);
-    sessionsNotice = "";
     const revoke = async (body, button) => {
       button.disabled = true;
+      sessionsNotice = "";
+      notice.textContent = "";
       const signIn = signInCount;
       const done = await api("api/v1/sessions/revoke", { method: "POST", body });
       if (signIn !== signInCount) return;
