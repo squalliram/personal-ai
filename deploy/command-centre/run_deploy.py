@@ -54,6 +54,8 @@ def main():
             {
                 "password_hash": env["COMMAND_CENTRE_PASSWORD_HASH"],
                 "openai_api_key": env.get("COMMAND_CENTRE_OPENAI_API_KEY", ""),
+                "cloudflare_account_id": env.get("COMMAND_CENTRE_CLOUDFLARE_ACCOUNT_ID", ""),
+                "cloudflare_api_token": env.get("COMMAND_CENTRE_CLOUDFLARE_API_TOKEN", ""),
                 "wheels": wheels(env.get("COMMAND_CENTRE_WHEELS_DIR", "")),
             }
         ).encode(),

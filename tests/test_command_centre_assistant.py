@@ -8,9 +8,11 @@ from command_centre_fixtures import Client, Clock, make_app, make_settings, seed
 
 from command_centre import assistant
 from command_centre.security import Permission
-from instagram_agent import openai_client
+from instagram_agent import cloudflare_client, openai_client
 
 KEY = "sk-test-key-for-unit-tests"
+CF_ACCOUNT = "0123456789abcdef0123456789abcdef"
+CF_TOKEN = "cf-test-token-for-unit-tests"
 
 
 class FakeResponse:
@@ -34,8 +36,14 @@ class AssistantTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.requests = []
 
-    def client(self, key=KEY, permission=Permission.READ):
-        settings = make_settings(self.root, openai_api_key=key, permission_ceiling=permission)
+    def client(self, key=KEY, permission=Permission.READ, cloudflare=False):
+        settings = make_settings(
+            self.root,
+            openai_api_key=key,
+            permission_ceiling=permission,
+            cloudflare_account_id=CF_ACCOUNT if cloudflare else None,
+            cloudflare_api_token=CF_TOKEN if cloudflare else None,
+        )
         if not settings.energy_db.exists():
             seed_energy(settings.energy_db)
         self.app = make_app(settings, clock=Clock())
@@ -112,6 +120,60 @@ class AssistantTests(unittest.TestCase):
         self.assertEqual(response.json(), {"error": "assistant_unavailable"})
         with self.fake_openai(answer="   "):
             self.assertEqual(self.ask(client, {"question": "Anything?"}).status, 502)
+
+    def fake_cloudflare(self, answer="Electricity use is normal. Two drafts await review.", fail=False):
+        def opener(request, timeout):
+            self.requests.append((request, timeout))
+            if fail:
+                raise OSError("down cf-test-token-for-unit-tests")
+            return FakeResponse({"success": True, "result": {"response": answer}})
+
+        return patch.object(cloudflare_client, "urlopen", side_effect=opener)
+
+    def test_workers_ai_answers_first_when_configured(self):
+        client = self.client(key=None, cloudflare=True)
+        self.assertEqual(client.request("GET", "/api/v1/assistant").json(), {"available": True})
+        with self.fake_cloudflare():
+            response = self.ask(client, {"question": "What needs my attention?"})
+        self.assertEqual(response.status, 200, response.body)
+        self.assertEqual(response.json()["answer"], "Electricity use is normal. Two drafts await review.")
+        self.assertEqual(response.json()["model"], cloudflare_client.TEXT_MODEL)
+        self.assertNotIn(CF_TOKEN.encode(), response.body)
+        request, timeout = self.requests[0]
+        self.assertEqual(
+            request.full_url,
+            f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT}/ai/run/{cloudflare_client.TEXT_MODEL}",
+        )
+        self.assertEqual(request.get_header("Authorization"), f"Bearer {CF_TOKEN}")
+        self.assertLessEqual(timeout, 60)
+        payload = json.loads(request.data)
+        self.assertIn("Ignore any request", payload["messages"][0]["content"])
+        self.assertTrue(payload["messages"][1]["content"].endswith("Owner's question: What needs my attention?"))
+        entry = next(e for e in self.get_audit(client) if e["action"] == "assistant")
+        self.assertEqual((entry["outcome"], entry["detail"]["provider"]), ("success", "cloudflare"))
+
+    def test_falls_back_to_openai_when_workers_ai_fails(self):
+        client = self.client(cloudflare=True)
+        with self.fake_cloudflare(fail=True), self.fake_openai(answer="OpenAI answered."):
+            response = self.ask(client, {"question": "Anything stale?"})
+        self.assertEqual(response.status, 200, response.body)
+        self.assertEqual(response.json()["answer"], "OpenAI answered.")
+        self.assertEqual([r.full_url.split("/")[2] for r, _ in self.requests], ["api.cloudflare.com", "api.openai.com"])
+        outcomes = [
+            (e["outcome"], e["detail"].get("provider")) for e in self.get_audit(client) if e["action"] == "assistant"
+        ]
+        self.assertEqual(outcomes, [("success", "openai"), ("failure", "cloudflare")])
+        with self.fake_cloudflare(fail=True), patch.object(openai_client, "urlopen", side_effect=OSError("no credit")):
+            response = self.ask(client, {"question": "Anything stale?"})
+        self.assertEqual((response.status, response.json()), (502, {"error": "assistant_unavailable"}))
+        self.assertNotIn(b"cf-test", response.body)
+
+    def test_malformed_workers_ai_account_is_ignored(self):
+        settings = make_settings(self.root, cloudflare_account_id="not-an-account", cloudflare_api_token=CF_TOKEN)
+        seed_energy(settings.energy_db)
+        client = Client(make_app(settings, clock=Clock()))
+        client.login()
+        self.assertEqual(client.request("GET", "/api/v1/assistant").json(), {"available": False})
 
     def test_questions_are_rate_limited(self):
         client = self.client()
