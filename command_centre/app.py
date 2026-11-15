@@ -55,6 +55,7 @@ AUDIT_PAGE_SIZES = (10, 25, 50, 100)
 AUDIT_EXPORT_LIMIT = 10_000
 AUDIT_ACTION = re.compile(r"[a-z_]{1,40}")
 SESSION_ID = re.compile(r"[a-f0-9]{16}")
+PAGE_NUMBER = re.compile(r"[0-9]{1,6}")
 # Spreadsheet apps run a cell starting with any of these as a formula (OWASP "CSV injection").
 FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r", "\n", "\uff1d", "\uff0b", "\uff0d", "\uff20")
 TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_-]{43}")
@@ -855,7 +856,9 @@ class CommandCentreApp:
     def audit_log(self, request: Request) -> Result:
         page, per_page = request.query("page") or "1", request.query("per_page") or "50"
         action, valid = self._audit_action(request)
-        if not valid or not page.isdigit() or not per_page.isdigit() or int(per_page) not in AUDIT_PAGE_SIZES:
+        if not valid or not PAGE_NUMBER.fullmatch(page) or not PAGE_NUMBER.fullmatch(per_page):
+            return _error(400, "invalid_parameters")
+        if int(per_page) not in AUDIT_PAGE_SIZES:
             return _error(400, "invalid_parameters")
         page, per_page = int(page), int(per_page)
         if not 1 <= page <= 100_000:

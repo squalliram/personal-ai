@@ -65,7 +65,17 @@ class AuditPaginationTests(SettingsTestCase):
         self.assertEqual(data["actions"], ["login", "probe"])
 
     def test_parameters_are_validated(self):
-        for query in ("page=0", "page=abc", "per_page=7", "per_page=1000", "action=DROP%20TABLE", "page=100001"):
+        for query in (
+            "page=0",
+            "page=abc",
+            "per_page=7",
+            "per_page=1000",
+            "action=DROP%20TABLE",
+            "page=100001",
+            "per_page=%C2%B2",
+            "page=%C2%B2",
+            "page=%EF%BC%91",
+        ):
             self.assertEqual(self.client.request("GET", "/api/v1/audit", query=query).status, 400, query)
 
     def test_requires_a_session(self):
