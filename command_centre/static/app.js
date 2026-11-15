@@ -14,6 +14,8 @@
   const BASIS_LABELS = { measured: "Measured", estimated: "Estimated", inferred: "Inferred", source_record: "Source record" };
   let csrf = null;
   let session = null;
+  // Audit pages are always fetched fresh (never cached); the page and filter survive Settings re-renders.
+  const auditView = { page: 1, action: "" };
   const $ = (id) => document.getElementById(id);
 
   // Display preferences live in this browser only; they never reach the server and change no security setting.
@@ -93,6 +95,7 @@
   function showLogin(message) {
     session = null; csrf = null;
     clearCache();
+    auditView.page = 1; auditView.action = "";
     $("view").replaceChildren();
     assistantGeneration += 1;
     asking = false;
@@ -589,7 +592,7 @@
   const CACHE_SHOW_MS = 10 * 60 * 1000; // older data is never shown; the section loads afresh
   const CACHE_FRESH_MS = 15 * 1000; // younger data is not re-fetched in the background
   const PREFETCH = ["api/v1/energy", "api/v1/instagram/drafts", "api/v1/modules", "api/v1/agents",
-    "api/v1/automations", "api/v1/integrations", "api/v1/audit", "api/v1/passkeys", "api/v1/overview"];
+    "api/v1/automations", "api/v1/integrations", "api/v1/passkeys", "api/v1/overview"];
   const cache = new Map(); // path -> { json, at }
   const inflight = new Map(); // path -> pending api() result
   const sectionViews = new Map(); // section -> { nodes, title, status } last shown
@@ -927,7 +930,7 @@
       button.disabled = true;
       const done = await api("api/v1/sessions/revoke", { method: "POST", body });
       if (done.status === 401) { showLogin("Your session has ended. Sign in again."); return; }
-      if (done.ok) render();
+      if (done.ok) { clearCache(); auditView.page = 1; render(); }
       else { button.disabled = false; notice.textContent = "That device could not be signed out."; }
     };
     const device = (item) => item.current ? `${item.device} (this device)` : item.device;
@@ -982,21 +985,21 @@
         el("label", { for: "pref-audit-size" }, "Audit log entries per page"),
         select("pref-audit-size", AUDIT_PAGE_SIZES.map((n) => [n, String(n)]), current.auditPageSize, (v) => {
           saved({ auditPageSize: Number(v) });
-          if (resizeAudit) resizeAudit(Number(v));
+          auditView.page = 1;
+          render();
         }),
         toggle("pref-vault", "Vault animation when signing in and out", current.vault, "vault"),
         toggle("pref-voice", "Spoken “Access granted” greeting", current.voiceGreeting, "voiceGreeting")),
       notice);
   }
 
-  let resizeAudit = null;
 
   async function auditCard() {
     const body = el("div", {});
     const section = card("Audit log", muted("Operational metadata only. Content and secrets are never recorded."), body);
-    const state = { page: 1, action: "", perPage: prefs().auditPageSize };
+    const state = auditView;
+    const perPage = prefs().auditPageSize;
     let generation = 0;
-    resizeAudit = (size) => { state.perPage = size; state.page = 1; show(); };
     const query = (extra) => {
       const params = new URLSearchParams(extra);
       if (state.action) params.set("action", state.action);
@@ -1004,7 +1007,7 @@
     };
     async function show() {
       const ticket = ++generation;
-      const result = await api(`api/v1/audit?${query({ page: state.page, per_page: state.perPage })}`);
+      const result = await api(`api/v1/audit?${query({ page: state.page, per_page: perPage })}`);
       if (ticket !== generation) return true;
       if (result.status === 401) { showLogin("Your session has ended. Sign in again."); return false; }
       if (!result.ok) { body.replaceChildren(muted(`The audit log could not be loaded (${(result.data && result.data.error) || result.status}).`)); return true; }
