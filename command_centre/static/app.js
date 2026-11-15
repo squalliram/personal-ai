@@ -974,16 +974,22 @@
         el("label", { for: "pref-start" }, "Start page after sign-in"),
         select("pref-start", SECTIONS, current.startPage, (v) => saved({ startPage: v })),
         el("label", { for: "pref-audit-size" }, "Audit log entries per page"),
-        select("pref-audit-size", AUDIT_PAGE_SIZES.map((n) => [n, String(n)]), current.auditPageSize, (v) => saved({ auditPageSize: Number(v) })),
+        select("pref-audit-size", AUDIT_PAGE_SIZES.map((n) => [n, String(n)]), current.auditPageSize, (v) => {
+          saved({ auditPageSize: Number(v) });
+          if (resizeAudit) resizeAudit(Number(v));
+        }),
         toggle("pref-vault", "Vault animation when signing in and out", current.vault, "vault"),
         toggle("pref-voice", "Spoken “Access granted” greeting", current.voiceGreeting, "voiceGreeting")),
       notice);
   }
 
+  let resizeAudit = null;
+
   async function auditCard() {
     const body = el("div", {});
     const section = card("Audit log", muted("Operational metadata only. Content and secrets are never recorded."), body);
     const state = { page: 1, action: "", perPage: prefs().auditPageSize };
+    resizeAudit = (size) => { state.perPage = size; state.page = 1; show(); };
     const query = (extra) => {
       const params = new URLSearchParams(extra);
       if (state.action) params.set("action", state.action);
