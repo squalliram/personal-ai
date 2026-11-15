@@ -12,7 +12,7 @@ from pathlib import Path
 
 from octopus_energy.cli import load_env
 
-from . import analysis, cloudflare_client, drafts, following, publish, storage
+from . import analysis, cloudflare_client, drafts, following, publish, storage, token_refresh
 from .analysis import LONDON
 from .cloudflare_client import CloudflareAI
 from .graph import GRAPH_HOST, GRAPH_VERSION, INSTAGRAM_HOST, GraphAPIError, GraphClient
@@ -213,9 +213,10 @@ def main(argv: list[str] | None = None) -> int:
                     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 except BlockingIOError:
                     return 0  # The previous tick is still drafting.
+                refreshed = token_refresh.tick(conn, env, Path(args.env_file), _now())
                 outcome = daily(conn, env, args.media)
                 published = publish.tick(conn, env, args.media, _now())
-            print(outcome, published, sep="; ")
+            print(outcome, refreshed, published, sep="; ")
             return 0 if outcome in ("ok", "partial", "skipped", "gave_up") else 1
         token, user_id = env.get("INSTAGRAM_ACCESS_TOKEN", ""), env.get("INSTAGRAM_USER_ID", "")
         if not token or not user_id:

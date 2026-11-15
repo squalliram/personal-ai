@@ -8,6 +8,7 @@ data/instagram/
 __pycache__/
 reports/daily/*.md
 .env
+.env.lock
 reports/energy/*.md
 reports/energy/dashboard/
 .DS_Store

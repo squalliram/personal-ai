@@ -201,3 +201,52 @@ def decide_draft(conn: sqlite3.Connection, draft_id: str, decision: str, decided
             conn, draft_id, decision, decided_at, topic=row[0], caption=row[1], hashtags=(row[2] or "").split()
         )
     return True
+
+
+def token_state(conn) -> dict:
+    """Non-secret token lifecycle metadata. The access token itself is never stored here."""
+    row = conn.execute(
+        "SELECT expires_at,last_refreshed_at,last_attempt_at,last_outcome,last_error FROM token_state WHERE id=1"
+    ).fetchone()
+    return (
+        dict(row)
+        if row
+        else {
+            "expires_at": None,
+            "last_refreshed_at": None,
+            "last_attempt_at": None,
+            "last_outcome": None,
+            "last_error": None,
+        }
+    )
+
+
+def record_token_status(conn, outcome: str) -> None:
+    """Remember a configuration state without recording an API attempt."""
+    with conn:
+        conn.execute(
+            "INSERT INTO token_state(id,last_outcome) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET "
+            "last_outcome=excluded.last_outcome,last_error=NULL",
+            (outcome,),
+        )
+
+
+def record_token_success(conn, expires_at: str, stamp: str) -> None:
+    with conn:
+        conn.execute(
+            "INSERT INTO token_state(id,expires_at,last_refreshed_at,last_attempt_at,last_outcome,last_error) "
+            "VALUES(1,?,?,?,'refreshed',NULL) ON CONFLICT(id) DO UPDATE SET expires_at=excluded.expires_at, "
+            "last_refreshed_at=excluded.last_refreshed_at,last_attempt_at=excluded.last_attempt_at,"
+            "last_outcome='refreshed',last_error=NULL",
+            (expires_at, stamp, stamp),
+        )
+
+
+def record_token_failure(conn, stamp: str, error: str) -> None:
+    with conn:
+        conn.execute(
+            "INSERT INTO token_state(id,last_attempt_at,last_outcome,last_error) VALUES(1,?,'failed',?) "
+            "ON CONFLICT(id) DO UPDATE SET last_attempt_at=excluded.last_attempt_at,last_outcome='failed',"
+            "last_error=excluded.last_error",
+            (stamp, error[:300]),
+        )

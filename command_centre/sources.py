@@ -450,13 +450,51 @@ def _publishing(conn) -> dict:
     }
 
 
-def instagram_drafts(settings: Settings, limit: int = 30) -> dict:
+def _token_snapshot(row, now: datetime) -> dict:
+    """Public-safe token lifecycle metadata; credential material is never read by this adapter."""
+    result = {
+        "state": "unknown",
+        "expires_at": None,
+        "last_refreshed_at": None,
+        "last_attempt_at": None,
+        "last_error": None,
+    }
+    if row is None:
+        return result
+    expires = _instant(row["expires_at"])
+    refreshed = _instant(row["last_refreshed_at"])
+    attempted = _instant(row["last_attempt_at"])
+    result.update(
+        expires_at=expires.isoformat(timespec="seconds") if expires else None,
+        last_refreshed_at=refreshed.isoformat(timespec="seconds") if refreshed else None,
+        last_attempt_at=attempted.isoformat(timespec="seconds") if attempted else None,
+        last_error=row["last_error"][:300] if isinstance(row["last_error"], str) else None,
+    )
+    outcome = row["last_outcome"]
+    if outcome in ("not_configured", "externally_managed", "unsupported"):
+        result["state"] = outcome
+    elif expires and expires <= now:
+        result["state"] = "expired"
+    elif outcome == "failed":
+        result["state"] = "refresh_failed"
+    elif expires is None:
+        result["state"] = "unknown"
+    elif expires <= now + timedelta(days=14):
+        result["state"] = "expiring"
+    else:
+        result["state"] = "valid"
+    return result
+
+
+def instagram_drafts(settings: Settings, limit: int = 30, now: datetime | None = None) -> dict:
     """Every draft awaiting review and the latest `limit` decisions. Scores and publish times are suggestions."""
+    now = now or datetime.now(timezone.utc)
     result = {
         "source": "instagram",
         "state": "not_configured",
         "basis": "inferred",
         "auto_publish": False,
+        "token": _token_snapshot(None, now) | {"state": "not_configured"},
         "drafts": [],
         "runs": [],
         "latest_attempt": None,
@@ -483,6 +521,13 @@ def instagram_drafts(settings: Settings, limit: int = 30) -> dict:
                 "SELECT run_on,started_at,outcome,drafts,error FROM daily_runs WHERE outcome!='skipped' "
                 "ORDER BY id DESC LIMIT 1"
             ).fetchone()
+            try:
+                token_row = conn.execute(
+                    "SELECT expires_at,last_refreshed_at,last_attempt_at,last_outcome,last_error "
+                    "FROM token_state WHERE id=1"
+                ).fetchone()
+            except sqlite3.OperationalError:
+                token_row = None  # Older databases have no token lifecycle table.
     except (OSError, sqlite3.Error):
         result["state"] = "unavailable"
         return result
@@ -514,6 +559,7 @@ def instagram_drafts(settings: Settings, limit: int = 30) -> dict:
     result["auto_publish"] = publishing["on"]
     result["runs"] = [dict(run) for run in runs]
     result["latest_attempt"] = dict(attempt) if attempt else None
+    result["token"] = _token_snapshot(token_row, now)
     result["state"] = "available"
     return result
 
