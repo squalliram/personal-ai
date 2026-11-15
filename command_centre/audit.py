@@ -57,6 +57,7 @@ class AuditLog:
         where, params = ("WHERE action=?", (action,)) if action else ("", ())
         with closing(sqlite3.connect(self.path, timeout=5)) as conn:
             conn.row_factory = sqlite3.Row
+            conn.execute("BEGIN")
             (total,) = conn.execute(f"SELECT COUNT(*) FROM audit_log {where}", params).fetchone()
             rows = conn.execute(
                 f"SELECT id,at,actor,action,outcome,detail FROM audit_log {where} ORDER BY id DESC LIMIT ? OFFSET ?",
