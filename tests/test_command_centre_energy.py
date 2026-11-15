@@ -259,6 +259,7 @@ class EnergyViewWiringTests(unittest.TestCase):
         view = script[script.index("async function energy(view)") :]
         self.assertLess(view.index("const generation = renderCount"), view.index("await Promise.all"))
         self.assertIn("energyDashboard(dashboard, published, generation)", view)
+        self.assertRegex(view, r"await Promise\.all\(.*\);\s*if \(!data \|\| generation !== renderCount")
 
     def test_refresh_module_never_runs_the_sync(self):
         source = (ROOT / "command_centre/energy_refresh.py").read_text(encoding="utf-8")

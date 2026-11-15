@@ -1163,6 +1163,7 @@
         const epoch = cacheEpoch;
         const result = await api("api/v1/energy/dashboard", { signal: controller.signal });
         if (epoch !== cacheEpoch) { stop(); return false; } // signed out (or in again) meanwhile
+        if (!live()) return false; // navigated away meanwhile: leave the cache to the current view
         if (result.status === 401) { stop(); showLogin("Your session has ended. Sign in again."); return false; }
         if (!result.ok) throw new Error("unavailable");
         accept(result.data);
@@ -1185,6 +1186,7 @@
         const epoch = cacheEpoch;
         const result = await api(path, { ...options, signal: controller.signal });
         if (epoch !== cacheEpoch) { stop(); throw new Error("signed_out"); }
+        if (!live()) throw new Error("detached");
         if (result.status === 401) { stop(); showLogin("Your session has ended. Sign in again."); throw new Error("signed_out"); }
         return result;
       } finally { clearTimeout(timeout); }
@@ -1345,10 +1347,10 @@
     try { accept(published); } catch (error) { failed(error.message); }
   }
 
-  async function energy(view) {
+  async function energy(view, options) {
     const generation = renderCount; // the render this view belongs to, read before awaiting
     const [data, published] = await Promise.all([load("api/v1/energy"), load("api/v1/energy/dashboard")]);
-    if (!data || generation !== renderCount) return;
+    if (!data || generation !== renderCount || (options?.background && energyRefreshing)) return;
     const h = data.health;
     const dashboard = el("div", { class: "energy-dashboard" });
     if (published) energyDashboard(dashboard, published, generation);
@@ -1593,9 +1595,10 @@
       $("view-status").textContent = "Loading…";
     }, 0);
     const view = document.createDocumentFragment();
-    await (VIEWS[section[0]] ? VIEWS[section[0]](view) : placeholder(view, section[0]));
+    await (VIEWS[section[0]] ? VIEWS[section[0]](view, { background }) : placeholder(view, section[0]));
     clearTimeout(loading);
     if (current !== renderCount) return;
+    if (background && section[0] === "energy" && energyRefreshing) return; // a refresh began while this render loaded
     const editing = document.activeElement && $("view").contains(document.activeElement) && document.activeElement.matches("input, textarea, select");
     if (background && editing) return;
     const fresh = [...view.childNodes];
