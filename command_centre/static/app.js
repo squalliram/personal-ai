@@ -16,6 +16,8 @@
   let session = null;
   // Audit pages are always fetched fresh (never cached); the page and filter survive Settings re-renders.
   const auditView = { page: 1, action: "" };
+  let signInCount = 0; // changes only when the session ends, unlike the cache epoch
+  let sessionsNotice = ""; // shown once by the next Signed-in devices card
   const $ = (id) => document.getElementById(id);
 
   // Display preferences live in this browser only; they never reach the server and change no security setting.
@@ -94,6 +96,7 @@
 
   function showLogin(message) {
     session = null; csrf = null;
+    signInCount += 1;
     clearCache();
     auditView.page = 1; auditView.action = "";
     $("view").replaceChildren();
@@ -927,15 +930,16 @@
         el("div", { class: "settings-actions" }, retry));
     }
     const { sessions, sign_in_activity: activity } = result.data;
-    const notice = el("p", { role: "status", "aria-live": "polite" });
+    const notice = el("p", { role: "status", "aria-live": "polite" }, sessionsNotice);
+    sessionsNotice = "";
     const revoke = async (body, button) => {
       button.disabled = true;
-      const sent = cacheEpoch;
+      const signIn = signInCount;
       const done = await api("api/v1/sessions/revoke", { method: "POST", body });
-      if (sent !== cacheEpoch) return;
+      if (signIn !== signInCount) return;
       if (done.status === 401) { showLogin("Your session has ended. Sign in again."); return; }
-      if (done.ok) { clearCache(); auditView.page = 1; render(); }
-      else { button.disabled = false; notice.textContent = "That device could not be signed out."; }
+      if (!done.ok) sessionsNotice = "That device could not be signed out.";
+      clearCache(); auditView.page = 1; render();
     };
     const device = (item) => item.current ? `${item.device} (this device)` : item.device;
     const action = (item) => {
