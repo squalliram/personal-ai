@@ -165,6 +165,18 @@ class EnergyHealthTests(SourceTestCase):
         self.assertEqual(len(energy["daily"]), 10)
         self.assertEqual(energy["tariffs"][0]["tariff_code"], "E-1R-GO-VAR-22-10-14-A")
         self.assertEqual([row["consumption_kwh"] > row["threshold_kwh"] for row in energy["anomalies"]], [True])
+        # The exact stored date range behind each available-period total.
+        self.assertEqual(
+            energy["coverage"],
+            [
+                {
+                    "fuel": "electricity",
+                    "first_date": energy["daily"][0]["date"],
+                    "last_date": energy["daily"][-1]["date"],
+                    "days": 10,
+                }
+            ],
+        )
 
     def test_sync_outcomes_map_to_evidence_based_states(self):
         cases = [
