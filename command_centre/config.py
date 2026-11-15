@@ -52,6 +52,7 @@ class Settings:
     openai_api_key: str | None = field(default=None, repr=False)
     openai_model: str | None = None
     passkeys_db: Path | None = None
+    energy_refresh_dir: Path | None = None
 
 
 def load_settings(root: Path = ROOT, environ: Mapping[str, str] | None = None) -> Settings:
@@ -88,4 +89,5 @@ def load_settings(root: Path = ROOT, environ: Mapping[str, str] | None = None) -
         openai_api_key=(values.get(PREFIX + "OPENAI_API_KEY") or "").strip() or None,
         openai_model=(values.get(PREFIX + "OPENAI_MODEL") or "").strip() or None,
         passkeys_db=path("PASSKEYS_DB", "data/command_centre_passkeys.sqlite3"),
+        energy_refresh_dir=path("ENERGY_REFRESH_DIR", "data/energy-refresh"),
     )

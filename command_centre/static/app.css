@@ -303,3 +303,57 @@ tbody tr:hover td{background:rgba(0,229,255,.04)}
 @media (max-width:760px){.assistant{right:.5rem;left:.5rem;width:auto;bottom:5rem}.assistant-fab{right:.75rem;bottom:.75rem}}
 @media (prefers-reduced-motion:reduce){.fab-ring,.orb span,.assistant{animation:none!important}}
 
+
+/* Energy: the /energy-usage dashboard in the HUD theme ------------------------------------ */
+.energy-dashboard{display:grid;gap:1rem;margin-bottom:1.5rem}
+.energy-dashboard .card,.energy-dashboard .grid{margin:0}
+.energy-head-row{display:flex;justify-content:space-between;align-items:flex-start;gap:1rem;flex-wrap:wrap}
+.energy-eyebrow{margin:0 0 .35rem;font-family:var(--mono);font-size:.68rem;letter-spacing:.22em;text-transform:uppercase;color:var(--interface);text-shadow:0 0 8px rgba(0,229,255,.6)}
+.energy-status,.energy-refresh-status{margin:.2rem 0;border-left:2px solid var(--muted);padding:.35rem .7rem;background:rgba(0,0,0,.28)}
+.energy-refresh-status:empty{display:none}
+.energy-status[data-state=ready],.energy-refresh-status[data-state=ready]{border-color:var(--ok)}
+.energy-status[data-state=warning],.energy-refresh-status[data-state=warning]{border-color:var(--warn);background:linear-gradient(90deg,rgba(255,181,71,.1),rgba(0,0,0,.28) 60%)}
+.energy-status[data-state=error],.energy-refresh-status[data-state=error]{border-color:var(--bad);background:linear-gradient(90deg,rgba(255,107,107,.12),rgba(0,0,0,.28) 60%)}
+.energy-refresh-status[data-state=requested],.energy-refresh-status[data-state=running]{border-color:var(--interface)}
+.energy-updated{margin:.3rem 0 0;font-size:.82rem}
+.energy-refresh{display:grid;gap:.35rem;justify-items:end;max-width:22rem}
+.energy-refresh .muted{font-size:.78rem;text-align:right}
+.energy-refresh button:disabled{opacity:.45;cursor:not-allowed;box-shadow:none}
+.energy-filters{display:flex;gap:1.5rem;flex-wrap:wrap}
+.energy-filter h3{margin:0 0 .45rem}
+.segmented{display:flex;flex-wrap:wrap;gap:.4rem}
+.segmented button{font-family:var(--mono);font-size:.74rem;text-transform:uppercase;letter-spacing:.14em}
+.segmented button[aria-pressed=true]{border-color:var(--interface);color:var(--interface);background:rgba(0,229,255,.16);box-shadow:inset 0 0 14px rgba(0,229,255,.18),0 0 12px rgba(0,229,255,.3);text-shadow:0 0 8px rgba(0,229,255,.7)}
+.energy-metric h2::first-letter{text-transform:uppercase}
+.energy-metric .muted{margin:0;font-size:.85rem}
+.energy-chart-card h2{margin-bottom:.2rem}
+.energy-small{font-size:.8rem}
+.chart-stage{position:relative}
+.chart-scroll{overflow-x:auto}
+.energy-chart{display:block;width:100%;min-width:720px;height:auto;color:var(--interface);filter:drop-shadow(0 0 4px rgba(0,229,255,.35))}
+.energy-chart[data-fuel=gas]{color:var(--amber);filter:drop-shadow(0 0 4px rgba(255,181,71,.35))}
+.energy-chart .chart-axis{stroke:var(--muted);fill:none;stroke-width:1.2}
+.energy-chart .chart-grid{stroke:var(--line);stroke-dasharray:3 6}
+.energy-chart .chart-tick{fill:var(--muted);font:13px var(--mono)}
+.energy-chart .chart-axis-title{fill:var(--ink);font:600 12px var(--mono);letter-spacing:.14em;text-transform:uppercase}
+.energy-chart .chart-series{fill:none;stroke:currentColor;stroke-width:2.5;stroke-linejoin:round;stroke-linecap:round}
+.energy-chart .chart-point{cursor:crosshair;outline:none}
+.energy-chart .point-hit{fill:transparent}
+.energy-chart .point-dot{fill:currentColor}
+.energy-chart .point-high{fill:var(--bg);stroke:var(--red);stroke-width:2}
+.energy-chart .chart-point:focus .point-dot{stroke:var(--ink);stroke-width:3}
+.energy-chart .chart-crosshair{stroke:var(--muted);stroke-width:1;stroke-dasharray:4 5;pointer-events:none}
+.energy-chart .chart-crosshair-group{pointer-events:none}
+.energy-chart .chart-marker{fill:var(--bg);stroke:currentColor;stroke-width:3;pointer-events:none}
+.chart-tooltip{position:absolute;z-index:2;width:360px;max-width:calc(100% - 16px);max-height:min(70vh,440px);overflow:auto;padding:14px 16px;font-size:.85rem;
+  background:rgba(1,10,18,.96);border:1px solid rgba(0,229,255,.5);border-radius:2px;box-shadow:0 0 24px rgba(0,229,255,.25),0 16px 50px rgba(0,0,0,.6)}
+.chart-tooltip h3{margin:0 0 .2rem;color:var(--interface)}
+.chart-tooltip .tooltip-range{margin:0;color:var(--muted);font-size:.78rem}
+.chart-tooltip dl{margin:10px 0}.chart-tooltip dl div{display:flex;justify-content:space-between;gap:16px}
+.chart-tooltip dt{color:var(--muted)}.chart-tooltip dd{margin:0;text-align:right;font-weight:600}
+.chart-tooltip ul{padding-left:18px}.chart-tooltip li{margin:6px 0}
+.high-point{border-top:1px solid var(--line)}
+.high-point h4{margin:.7rem 0 .3rem;font-family:var(--mono);font-size:.7rem;letter-spacing:.16em;text-transform:uppercase;color:var(--amber)}
+.energy-action{border-left:2px solid var(--ok);padding:.45rem .75rem;background:linear-gradient(90deg,rgba(90,255,200,.1),rgba(0,0,0,.28) 60%)}
+.energy-section-title{font-family:var(--mono);font-size:.78rem;font-weight:600;letter-spacing:.2em;text-transform:uppercase;color:var(--muted);margin:0 0 .75rem}
+@media (max-width:760px){.energy-refresh{justify-items:start;max-width:none}.energy-refresh .muted{text-align:left}.chart-tooltip{font-size:.8rem}.energy-filters{gap:1rem}}

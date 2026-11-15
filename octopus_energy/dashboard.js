@@ -627,4 +627,5 @@ function initializeDashboard() {
   load();
 }
 
-if (typeof document !== 'undefined') initializeDashboard();
+// The Command Centre reuses the pure helpers above and draws its own view, so only start on the standalone page.
+if (typeof document !== 'undefined' && document.querySelector('#chart')) initializeDashboard();
