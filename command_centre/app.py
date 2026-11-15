@@ -26,7 +26,7 @@ from zoneinfo import ZoneInfo
 from instagram_agent import cloudflare_client, openai_client
 from instagram_agent import storage as instagram_storage
 
-from . import assistant, passkeys, sources
+from . import assistant, energy_refresh, passkeys, sources
 from .audit import AuditLog
 from .automations import CronReader, list_automations, read_crontab
 from .config import Settings
@@ -42,8 +42,11 @@ from .security import (
 
 LONDON = ZoneInfo("Europe/London")
 STATIC_DIR = Path(__file__).with_name("static")
+# The standalone /energy-usage dashboard script doubles as the Energy view's pure helper library.
+ENERGY_CORE = Path(__file__).resolve().parent.parent / "octopus_energy/dashboard.js"
 STATIC_FILES = {
     "/": ("index.html", "text/html; charset=utf-8"),
+    "/static/energy-core.js": (ENERGY_CORE, "text/javascript; charset=utf-8"),
     "/static/app.js": ("app.js", "text/javascript; charset=utf-8"),
     "/static/app.css": ("app.css", "text/css; charset=utf-8"),
 }
@@ -221,6 +224,9 @@ class CommandCentreApp:
             ("GET", "/api/v1/integrations"): Route(self.integrations, Permission.READ),
             ("GET", "/api/v1/automations"): Route(self.automations, Permission.READ),
             ("GET", "/api/v1/energy"): Route(self.energy, Permission.READ),
+            ("GET", "/api/v1/energy/dashboard"): Route(self.energy_dashboard, Permission.READ),
+            ("GET", "/api/v1/energy/refresh"): Route(self.energy_refresh_status, Permission.READ),
+            ("POST", "/api/v1/energy/refresh"): Route(self.energy_refresh, Permission.RECOMMEND, csrf=True),
             ("GET", "/api/v1/briefing/runs"): Route(self.briefing_runs, Permission.READ),
             ("GET", "/api/v1/audit"): Route(self.audit_log, Permission.READ),
             ("GET", "/api/v1/audit/export"): Route(self.audit_export, Permission.READ),
@@ -841,6 +847,19 @@ class CommandCentreApp:
         now = self._now()
         snapshot = sources.energy_snapshot(self.settings, now)
         return 200, {**snapshot, "health": sources.energy_health(snapshot, self.settings, now)}, []
+
+    def energy_dashboard(self, request: Request) -> Result:
+        return 200, sources.energy_dashboard(self.settings), []
+
+    def energy_refresh_status(self, request: Request) -> Result:
+        state, status = sources.energy_refresh_status(self.settings)
+        return 200, {"state": state, "status": status}, []
+
+    def energy_refresh(self, request: Request) -> Result:
+        """Queue a background energy sync: the dashboard's request flag, never the sync itself."""
+        code, body, headers = energy_refresh.request_refresh(self.settings, self._now())
+        self.audit.record("energy_refresh", body["state"], actor="owner", client=request.client)
+        return code, body, headers
 
     def briefing_runs(self, request: Request) -> Result:
         raw = request.query("limit") or "14"

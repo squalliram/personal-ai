@@ -400,6 +400,7 @@ def install(
             "PASSKEYS_DB": str(app / "data/passkeys.sqlite3"),
             "ENERGY_DB": str(checkout / "data/octopus_energy.sqlite3"),
             "ENERGY_STATUS": str(checkout / "reports/energy/dashboard/status.json"),
+            "ENERGY_REFRESH_DIR": str(checkout / "data/energy-refresh"),
             "BRIEFING_DB": str(checkout / "data/daily_briefing.sqlite3"),
             "BRIEFING_REPORTS": str(checkout / "reports/daily"),
             "INSTAGRAM_DB": str(checkout / "data/instagram.sqlite3"),

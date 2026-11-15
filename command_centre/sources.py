@@ -7,6 +7,7 @@ or CLI writers from here: on a legacy database they rebuild derived tables.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import sqlite3
@@ -175,6 +176,65 @@ def energy_health(snapshot: dict, settings: Settings, now: datetime) -> dict:
         else:
             status, summary = "operational", "The latest Octopus sync succeeded recently."
     return _health("octopus_energy", "Octopus Energy", "energy", "local_sqlite", status, summary, now, **evidence)
+
+
+DASHBOARD_KEYS = (
+    "generated_at",
+    "latest_reading_at",
+    "last_successful_sync_at",
+    "daily",
+    "hourly",
+    "latest_day",
+    "notice",
+)
+DASHBOARD_MAX_BYTES = 8 * 1024 * 1024
+
+
+def _non_finite(token: str):
+    raise ValueError(f"non-finite number {token}")
+
+
+def _finite(token: str) -> float:
+    value = float(token)
+    if not math.isfinite(value):
+        raise ValueError("non-finite number")
+    return value
+
+
+def energy_dashboard(settings: Settings) -> dict:
+    """Read the snapshot the energy runner publishes for /energy-usage (``data.json`` beside the status).
+
+    This is the exact dataset the standalone dashboard renders, so the Energy view keeps parity with it.
+    The browser validates it with the dashboard's own ``validateData`` before drawing anything.
+    """
+    path = settings.energy_status.with_name("data.json")
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return {"state": "not_published", "dashboard": None}
+    except OSError:
+        return {"state": "unavailable", "dashboard": None}
+    if not stat.S_ISREG(info.st_mode) or info.st_size > DASHBOARD_MAX_BYTES:
+        return {"state": "invalid", "dashboard": None}
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd, "rb") as source:
+            raw = source.read(DASHBOARD_MAX_BYTES + 1)
+        data = (
+            json.loads(raw, parse_constant=_non_finite, parse_float=_finite)
+            if len(raw) <= DASHBOARD_MAX_BYTES
+            else None
+        )
+    except (OSError, ValueError):
+        return {"state": "invalid", "dashboard": None}
+    if (
+        not isinstance(data, dict)
+        or _instant(data.get("generated_at")) is None
+        or not isinstance(data.get("daily"), list)
+        or not isinstance(data.get("hourly"), list)
+    ):
+        return {"state": "invalid", "dashboard": None}
+    return {"state": "available", "dashboard": {key: data[key] for key in DASHBOARD_KEYS if key in data}}
 
 
 def energy_refresh_status(settings: Settings) -> tuple[str, dict | None]:

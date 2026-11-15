@@ -86,6 +86,9 @@ Devin's assessment argued against a live web app and for extending the static `d
 | `GET /api/v1/integrations` | READ | Source health with evidence |
 | `GET /api/v1/automations` | READ | Registry, last execution, history, cron marker count, stop-control truth |
 | `GET /api/v1/energy` | READ | Totals, 14-day daily, monthly estimates, tariffs, anomalies, sync history, labelled `measured` / `estimated` / `inferred` |
+| `GET /api/v1/energy/dashboard` | READ | The published `/energy-usage` snapshot (`data.json`: daily usage/cost, hourly profile, latest complete London day, reading timestamps), read with `O_NOFOLLOW` |
+| `GET /api/v1/energy/refresh` | READ | Validated refresh status published by the runner |
+| `POST /api/v1/energy/refresh` | RECOMMEND + CSRF | **Fetch latest data**: same protocol as `refresh.php` (5-minute cooldown, atomic `request.flag` with a random 32-hex ID). It never runs the sync or calls Octopus; the cron runner claims the flag. Audited |
 | `GET /api/v1/briefing/runs?limit=1..100` | READ | Run metadata without error text |
 | `GET /api/v1/audit?page=1..&per_page=10\|25\|50\|100&action=<name>` | READ | One page of audit entries, newest first (default 50 per page), with totals and the action names to filter by |
 | `GET /api/v1/audit/export?format=csv\|json&action=<name>` | READ | Download up to the newest 10,000 audit entries (`no-store`, attachment). CSV cells that a spreadsheet would read as a formula are prefixed with `'`. The export itself is audited |
