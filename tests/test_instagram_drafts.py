@@ -248,6 +248,13 @@ class DailyTickTests(unittest.TestCase):
         self.tick(MORNING, ai)
         self.assertIn("Manchester slang", ai.calls[0][0])
 
+    def test_create_and_review_forbid_invented_codes_and_prices(self):
+        ai = FakeAI([[raw_draft("a"), raw_draft("b"), raw_draft("c")]], [[90, 80, 70]])
+        self.tick(MORNING, ai)
+        prompts = {system.split(" agent")[0]: system for system, _ in ai.calls}
+        self.assertIn("promo codes", prompts["You are the Create"])
+        self.assertIn("promo code", prompts["You are the Review"])
+
 
 class SlidePromptTests(unittest.TestCase):
     def test_text_is_drawn_only_by_models_that_spell_it(self):
