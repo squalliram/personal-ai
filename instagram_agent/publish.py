@@ -192,15 +192,24 @@ def permalink(client: GraphClient, media_id: str) -> str | None:
     return value if isinstance(value, str) and value.startswith("https://") else None
 
 
+def ready(env: dict) -> bool:
+    """The switch and the public folder are set. Posting also needs the token and user ID (`configured`)."""
+    public_dir, public_url = env.get("INSTAGRAM_PUBLIC_DIR"), env.get("INSTAGRAM_PUBLIC_URL", "")
+    return bool(env.get("INSTAGRAM_AUTO_PUBLISH") == "1" and public_dir and public_url.startswith("https://"))
+
+
+def configured(env: dict) -> bool:
+    return ready(env) and bool(env.get("INSTAGRAM_ACCESS_TOKEN") and env.get("INSTAGRAM_USER_ID"))
+
+
 def tick(conn, env: dict, media_dir: Path, now: datetime, client: GraphClient | None = None, **kwargs) -> str:
     """Publish every due draft. Off unless INSTAGRAM_AUTO_PUBLISH=1 and the token and public folder are set."""
     public_dir, public_url = env.get("INSTAGRAM_PUBLIC_DIR"), env.get("INSTAGRAM_PUBLIC_URL", "")
-    ready = env.get("INSTAGRAM_AUTO_PUBLISH") == "1" and public_dir and public_url.startswith("https://")
-    if client is None and ready and env.get("INSTAGRAM_ACCESS_TOKEN") and env.get("INSTAGRAM_USER_ID"):
+    if client is None and configured(env):
         from .cli import graph_client
 
         client = graph_client(env)
-    if not ready or client is None:
+    if not ready(env) or client is None:
         set_state(conn, "off", now)
         return "publish_off"
     set_state(conn, "on", now)

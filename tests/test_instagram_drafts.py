@@ -408,12 +408,16 @@ class DailyNotificationTests(unittest.TestCase):
             "INSTAGRAM_VOICE_FILE": str(self.root / "voice.md"),
             "NOTIFICATIONS_DB": str(self.db),
             "INSTAGRAM_AUTO_PUBLISH": "1",
+            "INSTAGRAM_ACCESS_TOKEN": "IGtoken-secret",
+            "INSTAGRAM_USER_ID": "17841408862128347",
+            "INSTAGRAM_PUBLIC_DIR": str(self.root / "public"),
+            "INSTAGRAM_PUBLIC_URL": "https://example.test/ig-media",
         }
 
-    def tick(self, ai=None, now=MORNING):
+    def tick(self, ai=None, now=MORNING, env=None):
         ai = ai or FakeAI([[raw_draft("a"), raw_draft("b"), raw_draft("c")]], [[90, 80, 70]])
         with patch.object(cli, "model_client", return_value=ai if ai != "none" else None):
-            return cli.daily(self.conn, self.env, self.root / "drafts", now=now)
+            return cli.daily(self.conn, env or self.env, self.root / "drafts", now=now)
 
     def notes(self):
         if not self.db.exists():
@@ -430,9 +434,14 @@ class DailyNotificationTests(unittest.TestCase):
         self.assertEqual(len(self.notes()), 1)
 
     def test_drafts_ready_without_auto_posting(self):
-        self.env.pop("INSTAGRAM_AUTO_PUBLISH")
-        self.tick()
-        self.assertEqual(self.notes()[0][1], "3 Instagram drafts ready to review, posting is manual")
+        for key in ("INSTAGRAM_AUTO_PUBLISH", "INSTAGRAM_ACCESS_TOKEN", "INSTAGRAM_PUBLIC_URL"):
+            with self.subTest(missing=key):
+                self.conn.execute("DELETE FROM drafts")
+                self.conn.execute("DELETE FROM daily_runs")
+                self.conn.commit()
+                self.db.unlink(missing_ok=True)
+                self.tick(env={k: v for k, v in self.env.items() if k != key})
+                self.assertEqual(self.notes()[0][1], "3 Instagram drafts ready to review, posting is manual")
 
     def test_first_post_time_is_london_time(self):
         self.tick()

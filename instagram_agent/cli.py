@@ -151,7 +151,7 @@ def _notify_daily(conn, env: dict, outcome: str, now: datetime) -> None:
             for r in rows
             if r["scheduled_for"] and publish.will_post(r["status"], r["review_score"])
         ]
-        if env.get("INSTAGRAM_AUTO_PUBLISH") != "1":
+        if not publish.configured(env):
             first = "posting is manual"
         elif times:
             first = "first posts at " + min(times).astimezone(LONDON).strftime("%H:%M")
