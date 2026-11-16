@@ -187,7 +187,7 @@ def permalink(client: GraphClient, media_id: str) -> str | None:
     """The post's Instagram link, best effort."""
     try:
         value = client.get(media_id, {"fields": "permalink"}).get("permalink")
-    except (GraphAPIError, ValueError, AttributeError):
+    except Exception:  # the post is already live: nothing here may stop the tick
         return None
     return value if isinstance(value, str) and value.startswith("https://") else None
 

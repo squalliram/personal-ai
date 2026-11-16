@@ -272,6 +272,14 @@ class PublishNotificationTests(PublishCase):
             self.notifications(), [("ok", "Instagram post is live: Flat whites", "https://example.test/cc/#instagram")]
         )
 
+    def test_a_broken_permalink_read_does_not_stop_the_tick(self):
+        from http.client import IncompleteRead
+
+        self.add("a" * 16)
+        self.add("b" * 16)
+        self.assertEqual(self.tick(PermalinkGraph(IncompleteRead(b""))), "published 2, failed 0")
+        self.assertEqual([n[0] for n in self.notifications()], ["ok", "ok"])
+
     def test_each_failed_attempt_is_reported(self):
         self.add(data=b"not a jpeg")
         for _ in range(3):
