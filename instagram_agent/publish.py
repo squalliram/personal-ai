@@ -20,6 +20,8 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from notifications import command_centre_link, notify
+
 from . import storage
 from .drafts import PASS_SCORE
 from .graph import GraphAPIError, GraphClient
@@ -181,19 +183,40 @@ def publish_draft(
         shutil.rmtree(folder, ignore_errors=True)
 
 
+def permalink(client: GraphClient, media_id: str) -> str | None:
+    """The post's Instagram link, best effort."""
+    try:
+        value = client.get(media_id, {"fields": "permalink"}).get("permalink")
+    except Exception:  # the post is already live: nothing here may stop the tick
+        return None
+    return value if isinstance(value, str) and value.startswith("https://") else None
+
+
+def ready(env: dict) -> bool:
+    """The switch and the public folder are set. Posting also needs the token and user ID (`configured`)."""
+    public_dir, public_url = env.get("INSTAGRAM_PUBLIC_DIR"), env.get("INSTAGRAM_PUBLIC_URL", "")
+    return bool(env.get("INSTAGRAM_AUTO_PUBLISH") == "1" and public_dir and public_url.startswith("https://"))
+
+
+def configured(env: dict) -> bool:
+    return ready(env) and bool(env.get("INSTAGRAM_ACCESS_TOKEN") and env.get("INSTAGRAM_USER_ID"))
+
+
 def tick(conn, env: dict, media_dir: Path, now: datetime, client: GraphClient | None = None, **kwargs) -> str:
     """Publish every due draft. Off unless INSTAGRAM_AUTO_PUBLISH=1 and the token and public folder are set."""
     public_dir, public_url = env.get("INSTAGRAM_PUBLIC_DIR"), env.get("INSTAGRAM_PUBLIC_URL", "")
-    ready = env.get("INSTAGRAM_AUTO_PUBLISH") == "1" and public_dir and public_url.startswith("https://")
-    if client is None and ready and env.get("INSTAGRAM_ACCESS_TOKEN") and env.get("INSTAGRAM_USER_ID"):
+    if client is None and configured(env):
         from .cli import graph_client
 
         client = graph_client(env)
-    if not ready or client is None:
+    if not ready(env) or client is None:
         set_state(conn, "off", now)
         return "publish_off"
     set_state(conn, "on", now)
-    recover(conn, now)
+    page = command_centre_link(env, "instagram")
+    stuck = recover(conn, now)
+    if stuck:
+        notify("instagram", "failed", f"{stuck} Instagram post(s) stopped mid-publish: check Instagram", page, env=env)
     published = failed = 0
     for row in due(conn, now):
         stamp = now.isoformat(timespec="seconds")
@@ -229,6 +252,8 @@ def tick(conn, env: dict, media_dir: Path, now: datetime, client: GraphClient | 
                         "UPDATE drafts SET status='failed' WHERE draft_id=? AND status NOT IN ('rejected','published')",
                         (row["draft_id"],),
                     )
+            attempt = "not retried" if sent else f"attempt {row['fails'] + 1} of {MAX_ATTEMPTS}"
+            notify("instagram", "failed", f"Instagram post failed: {row['topic']} ({error}; {attempt})", page, env=env)
             failed += 1
             continue
         with conn:
@@ -241,5 +266,7 @@ def tick(conn, env: dict, media_dir: Path, now: datetime, client: GraphClient | 
                 storage.link_published(conn, row["draft_id"], media_id)
         except sqlite3.IntegrityError:
             pass  # linked once sync has stored the post
+        link = permalink(client, media_id) or page
+        notify("instagram", "ok", f"Instagram post is live: {row['topic']}", link, env=env)
         published += 1
     return f"published {published}, failed {failed}"

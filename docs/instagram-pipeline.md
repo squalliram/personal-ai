@@ -88,6 +88,10 @@ Both need a RECOMMEND session, CSRF and same-origin, and both are written to the
 - **Public slides:** Meta fetches each image from a URL, so the slides are copied to a random 32-character folder under `INSTAGRAM_PUBLIC_DIR`, checked to be reachable, and deleted when the call finishes.
 - **Failures:** recorded in `publish_runs` and shown on the draft. A failure before `media_publish` is retried on the next tick, up to 3 times. `media_publish` itself is never retried, and a crash after it started marks the draft failed with "check Instagram", so a post can't go out twice.
 
+## Notifications
+
+`daily` and `publish.tick` report through the shared `notifications` package: "3 Instagram drafts ready to review, first posts at HH:MM" once a day, "Instagram post is live: <topic>" with the post's permalink, and a failure for every failed post attempt and every failed, partial, not-configured or given-up drafting run (none for `skipped`). Each one is stored in `data/notifications.sqlite3` and listed newest first on the Command Centre **Inbox** page. With the `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` secrets set, the deploy writes them to the server's `.env` and each notification is also sent to that chat; a failed send is retried on later notifications, up to 3 times. Links point at `COMMAND_CENTRE_URL` (repository variable, default `https://iramkhan.com/command-centre/`). A notification problem never stops drafting or posting.
+
 ## How the numbers are worked out
 
 All of these are suggestions, not measurements:

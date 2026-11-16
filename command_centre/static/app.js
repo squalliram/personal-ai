@@ -1,7 +1,7 @@
 "use strict";
 (() => {
   const SECTIONS = [
-    ["overview", "Overview"], ["my-day", "My Day"], ["tasks", "Tasks"], ["calendar", "Calendar"],
+    ["overview", "Overview"], ["inbox", "Inbox"], ["my-day", "My Day"], ["tasks", "Tasks"], ["calendar", "Calendar"],
     ["energy", "Energy"], ["career", "Career"], ["finance", "Finance"], ["family", "Family"],
     ["health", "Health"], ["agents", "AI Agents"], ["instagram", "Instagram"], ["automations", "Automations"],
     ["integrations", "Integrations"], ["settings", "Settings"],
@@ -1788,7 +1788,46 @@
   }
 
 
-  const VIEWS = { overview, "my-day": myDay, energy, agents: agentsView, integrations, automations: automationsView, settings, instagram };
+  const OUTCOME_LABELS = { ok: "Done", failed: "Failed", info: "Info" };
+  const OUTCOME_STATUS = { ok: "operational", failed: "failed", info: "unverified" };
+  // Only stored https links become anchors; anything else is shown as plain text.
+  const notificationLink = (link) => (typeof link === "string" && link.startsWith("https://")
+    ? el("a", { href: link, rel: "noopener noreferrer", target: "_blank" }, "Open")
+    : "None");
+  const inboxView = { page: 1 };
+  async function inbox(view) {
+    const body = el("div", {});
+    view.append(card("Inbox", muted("Notifications from your agents and scheduled jobs, newest first. Times are London time."), body));
+    let generation = 0;
+    async function show() {
+      const ticket = ++generation; // a later page choice supersedes this request
+      const epoch = cacheEpoch;
+      const result = await api(`api/v1/notifications?page=${inboxView.page}&per_page=25`);
+      if (epoch !== cacheEpoch || ticket !== generation) return;
+      if (result.status === 401) { showLogin("Your session has ended. Sign in again."); return; }
+      if (!result.ok) { body.replaceChildren(muted(`The inbox could not be loaded (${(result.data && result.data.error) || result.status}).`)); return; }
+      const data = result.data;
+      if (data.state !== "available") {
+        body.replaceChildren(muted(data.state === "not_configured" ? "No notifications yet." : "The inbox is unavailable right now."));
+        return;
+      }
+      const prev = el("button", { type: "button" }, "Previous");
+      const next = el("button", { type: "button" }, "Next");
+      prev.disabled = data.page <= 1;
+      next.disabled = data.page >= data.pages;
+      prev.addEventListener("click", () => { inboxView.page = Math.max(1, data.page - 1); show(); });
+      next.addEventListener("click", () => { inboxView.page = data.page + 1; show(); });
+      body.replaceChildren(
+        table([["When", (r) => when(r.created_at)], ["Source", (r) => r.source],
+          ["Outcome", (r) => el("span", { class: `status status-${OUTCOME_STATUS[r.outcome] || "unverified"}` }, OUTCOME_LABELS[r.outcome] || r.outcome)],
+          ["What happened", (r) => r.title], ["Link", (r) => notificationLink(r.link)]], data.entries, "No notifications yet."),
+        el("div", { class: "pager" }, prev,
+          el("span", { "aria-live": "polite" }, `Page ${data.page} of ${data.pages} · ${data.total} notification${data.total === 1 ? "" : "s"}`), next));
+    }
+    await show();
+  }
+
+  const VIEWS = { overview, inbox, "my-day": myDay, energy, agents: agentsView, integrations, automations: automationsView, settings, instagram };
 
   let renderCount = 0;
   // A background render runs after fresh data replaced what the section was showing; `notice` reports a partial refresh.

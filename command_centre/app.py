@@ -15,6 +15,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Iterable
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from http import HTTPStatus
@@ -23,6 +24,7 @@ from pathlib import Path
 from urllib.parse import parse_qs
 from zoneinfo import ZoneInfo
 
+import notifications
 from instagram_agent import cloudflare_client, openai_client
 from instagram_agent import storage as instagram_storage
 
@@ -235,6 +237,7 @@ class CommandCentreApp:
             ("GET", "/api/v1/instagram/drafts"): Route(self.instagram_drafts, Permission.READ),
             ("GET", "/api/v1/instagram/slide"): Route(self.instagram_slide, Permission.READ),
             ("POST", "/api/v1/instagram/decision"): Route(self.instagram_decision, Permission.RECOMMEND, csrf=True),
+            ("GET", "/api/v1/notifications"): Route(self.notifications, Permission.READ),
         }
 
     # WSGI -------------------------------------------------------------------------------------
@@ -948,6 +951,28 @@ class CommandCentreApp:
             revoked=revoked,
         )
         return self.session_list(request)
+
+    def notifications(self, request: Request) -> Result:
+        """The owner inbox from `notifications.notify`, newest first."""
+        page, per_page = request.query("page") or "1", request.query("per_page") or "25"
+        if not PAGE_NUMBER.fullmatch(page) or not PAGE_NUMBER.fullmatch(per_page):
+            return _error(400, "invalid_parameters")
+        page, per_page = int(page), int(per_page)
+        if per_page not in AUDIT_PAGE_SIZES or not 1 <= page <= 100_000:
+            return _error(400, "invalid_parameters")
+        result = {"state": "not_configured", "entries": [], "page": page, "per_page": per_page, "total": 0, "pages": 1}
+        path = self.settings.notifications_db
+        if path is None:
+            return 200, result, []
+        try:
+            with closing(sources.connect_read_only(path)) as conn:
+                entries, total = notifications.recent(conn, per_page, (page - 1) * per_page)
+        except FileNotFoundError:
+            return 200, result, []
+        except sqlite3.Error:
+            return 200, {**result, "state": "unavailable"}, []
+        pages = max(1, -(-total // per_page))
+        return 200, {**result, "state": "available", "entries": entries, "total": total, "pages": pages}, []
 
     def instagram_drafts(self, request: Request) -> Result:
         return 200, sources.instagram_drafts(self.settings), []

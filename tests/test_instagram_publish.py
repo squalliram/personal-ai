@@ -1,12 +1,15 @@
 import io
 import json
+import sqlite3
 import tempfile
 import unittest
+from contextlib import redirect_stderr
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 from urllib.error import HTTPError
 
+import notifications
 from instagram_agent import cli, env_install, publish, storage
 from instagram_agent.graph import GraphAPIError, GraphClient
 
@@ -37,7 +40,7 @@ class FakeGraph(GraphClient):
         return {"status_code": self.statuses.pop(0) if len(self.statuses) > 1 else self.statuses[0]}
 
 
-class PublishTests(unittest.TestCase):
+class PublishCase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -45,7 +48,8 @@ class PublishTests(unittest.TestCase):
         self.conn = storage.connect(self.root / "instagram.sqlite3")
         self.addCleanup(self.conn.close)
         self.media, self.public = self.root / "drafts", self.root / "public"
-        self.env = {**ENV, "INSTAGRAM_PUBLIC_DIR": str(self.public)}
+        self.notes = self.root / "notifications.sqlite3"
+        self.env = {**ENV, "INSTAGRAM_PUBLIC_DIR": str(self.public), "COMMAND_CENTRE_NOTIFICATIONS_DB": str(self.notes)}
         self.checked = []
 
     def add(self, draft_id="a" * 16, *, score=80, slot=SLOT, made=MADE, slides=3, data=JPEG):
@@ -80,6 +84,8 @@ class PublishTests(unittest.TestCase):
     def status(self, draft_id="a" * 16):
         return self.conn.execute("SELECT status, media_id FROM drafts WHERE draft_id=?", (draft_id,)).fetchone()
 
+
+class PublishTests(PublishCase):
     def test_publishes_a_passing_pending_draft_as_a_carousel(self):
         self.add()
         graph = FakeGraph(statuses=("IN_PROGRESS", "FINISHED"))
@@ -229,6 +235,81 @@ class PublishTests(unittest.TestCase):
         graph = FakeGraph()
         self.assertEqual(self.tick(graph), "published 0, failed 0")
         self.assertEqual((self.status()["status"], graph.posts), ("failed", []))
+
+
+class PermalinkGraph(FakeGraph):
+    def __init__(self, permalink=None, **kwargs):
+        super().__init__(**kwargs)
+        self.permalink = permalink
+
+    def get(self, path_or_url, params=None):
+        if params == {"fields": "permalink"}:
+            if isinstance(self.permalink, Exception):
+                raise self.permalink
+            return {"permalink": self.permalink}
+        return super().get(path_or_url, params)
+
+
+class PublishNotificationTests(PublishCase):
+    """`tick()` tells the owner about each live post and failed attempt."""
+
+    def notifications(self):
+        with sqlite3.connect(self.notes) as conn:
+            return conn.execute("SELECT outcome, title, link FROM notifications ORDER BY id").fetchall()
+
+    def test_a_live_post_links_its_permalink(self):
+        self.add()
+        self.tick(PermalinkGraph("https://www.instagram.com/p/abc123/"))
+        self.assertEqual(
+            self.notifications(), [("ok", "Instagram post is live: Flat whites", "https://www.instagram.com/p/abc123/")]
+        )
+
+    def test_a_missing_permalink_falls_back_to_the_command_centre(self):
+        self.add()
+        self.env["COMMAND_CENTRE_URL"] = "https://example.test/cc/"
+        self.tick(PermalinkGraph(GraphAPIError("Graph API request failed")))
+        self.assertEqual(
+            self.notifications(), [("ok", "Instagram post is live: Flat whites", "https://example.test/cc/#instagram")]
+        )
+
+    def test_a_broken_permalink_read_does_not_stop_the_tick(self):
+        from http.client import IncompleteRead
+
+        self.add("a" * 16)
+        self.add("b" * 16)
+        self.assertEqual(self.tick(PermalinkGraph(IncompleteRead(b""))), "published 2, failed 0")
+        self.assertEqual([n[0] for n in self.notifications()], ["ok", "ok"])
+
+    def test_each_failed_attempt_is_reported(self):
+        self.add(data=b"not a jpeg")
+        for _ in range(3):
+            self.tick(FakeGraph())
+        notes = self.notifications()
+        self.assertEqual(len(notes), 3)
+        self.assertTrue(
+            all(n[0] == "failed" and n[2] == "https://iramkhan.com/command-centre/#instagram" for n in notes)
+        )
+        self.assertIn("Instagram post failed: Flat whites (", notes[0][1])
+        self.assertTrue(notes[0][1].endswith("attempt 1 of 3)"))
+        self.assertTrue(notes[2][1].endswith("attempt 3 of 3)"))
+
+    def test_a_failed_publish_call_says_it_is_not_retried(self):
+        self.add()
+        self.tick(FakeGraph(fail_publish=GraphAPIError("Graph API request failed (HTTP 500)")))
+        self.assertTrue(self.notifications()[0][1].endswith("outcome unknown, check Instagram; not retried)"))
+
+    def test_a_notifier_failure_does_not_stop_publishing(self):
+        self.add()
+        with patch.object(notifications, "connect", side_effect=sqlite3.OperationalError("locked")):
+            with redirect_stderr(io.StringIO()):
+                self.assertEqual(self.tick(FakeGraph()), "published 1, failed 0")
+        self.assertEqual(self.status()["status"], "published")
+
+    def test_publishing_off_sends_nothing(self):
+        self.add()
+        self.env.pop("INSTAGRAM_AUTO_PUBLISH")
+        self.tick(FakeGraph())
+        self.assertFalse(self.notes.exists())
 
 
 class GraphPostTests(unittest.TestCase):

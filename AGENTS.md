@@ -11,6 +11,7 @@
 - Preserve source URLs when supplied. Clearly label generated priorities as suggestions.
 - Any future write capability requires explicit user approval.
 - Approved write: `instagram_agent/publish.py` publishes the daily carousels through Meta's official content publishing API, only for drafts not rejected, never retrying a `media_publish` call. No other Instagram writes (comments, follows, DMs).
+- Approved write: Telegram messages to the owner's own chat (`TELEGRAM_CHAT_ID`), sent only through `notifications.notify`. Every notification is also stored for the Command Centre Inbox. No other Telegram calls, recipients or bots.
 
 ## Verification
 
