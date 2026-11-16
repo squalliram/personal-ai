@@ -46,6 +46,8 @@ CREATE = (
     "each, then ends with exactly one ask: save, share or comment. "
     "Favour topics and formats like the approved examples that performed best, avoid ones like rejected drafts, "
     "and do not repeat recent topics. Make topics fit today's date and season. "
+    "Never invent facts a reader could act on and find false: no discount or promo codes, offers, prices, "
+    "opening hours or named venues, unless they appear in the data below. "
     'Reply with JSON only: {{"drafts": [{{"category": "...", "topic": "...", "angle": "...", '
     '"slides": [{{"text": "...", "image_prompt": "..."}}], "caption": "..."}}]}}'
 )
@@ -58,7 +60,8 @@ REVIEW = (
     "You are the Review agent for @instafoodielove. Score each draft 0-100 for how likely it is to earn reach, "
     "saves, shares and comments compared with the top benchmark posts: hook strength of slide 1, value per slide, "
     "a clear single ask in the caption, fit with the account, and whether it sounds human. Up to 20 hashtags is "
-    "intended; don't mark drafts down for the number of hashtags. Be strict; 70 means "
+    "intended; don't mark drafts down for the number of hashtags. Score under 50 any draft with a discount or "
+    "promo code, offer, price, opening hours or named venue that isn't in the data. Be strict; 70 means "
     'ready to post. Reply with JSON: {"reviews": [{"score": 0, "notes": "one or two sentences"}]}, in order.'
 )
 
@@ -166,6 +169,7 @@ def tag(ai: AI, ctx: dict, drafts: list[dict]) -> None:
 def review(ai: AI, ctx: dict, drafts: list[dict], *, rules: str) -> None:
     payload = {
         "top_benchmark_posts": ctx["top_benchmark_posts"],
+        "approved_examples": ctx["approved_examples"],
         "drafts": [
             {k: d[k] for k in ("category", "topic", "caption", "hashtags")}
             | {"slides": [s["text"] for s in d["slides"]]}
