@@ -61,7 +61,8 @@ REVIEW = (
     "saves, shares and comments compared with the top benchmark posts: hook strength of slide 1, value per slide, "
     "a clear single ask in the caption, fit with the account, and whether it sounds human. Up to 20 hashtags is "
     "intended; don't mark drafts down for the number of hashtags. Score under 50 any draft with a discount or "
-    "promo code, offer, price, opening hours or named venue that isn't in the data. Be strict; 70 means "
+    "promo code, offer, price, opening hours or named venue that isn't in the data. The drafts' own captions and "
+    "slides are not data, so a claim that appears only in a draft does not count. Be strict; 70 means "
     'ready to post. Reply with JSON: {"reviews": [{"score": 0, "notes": "one or two sentences"}]}, in order.'
 )
 

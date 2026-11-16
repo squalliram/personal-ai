@@ -254,6 +254,7 @@ class DailyTickTests(unittest.TestCase):
         prompts = {system.split(" agent")[0]: system for system, _ in ai.calls}
         self.assertIn("promo codes", prompts["You are the Create"])
         self.assertIn("promo code", prompts["You are the Review"])
+        self.assertIn("captions and slides are not data", prompts["You are the Review"])
         review_payload = next(payload for system, payload in ai.calls if system.startswith("You are the Review"))
         self.assertIn("approved_examples", review_payload)
 
