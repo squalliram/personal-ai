@@ -248,6 +248,13 @@ class AnalyticsTests(unittest.TestCase):
         complete = {row["date"]: row["complete"] for row in self.daily()}
         self.assertEqual(complete, {"2026-03-29": 1, "2026-10-25": 1, "2026-11-02": 1, "2026-11-03": 0})
 
+    def test_a_reading_across_midnight_covers_the_start_of_the_next_day(self):
+        meter = self.meter()
+        self.reading(meter, "2026-11-01T00:00:00Z", "2026-11-02T01:00:00Z", 5)
+        self.reading(meter, "2026-11-02T01:00:00Z", "2026-11-03T00:00:00Z", 5)
+        complete = {row["date"]: row["complete"] for row in self.daily()}
+        self.assertEqual(complete, {"2026-11-01": 1, "2026-11-02": 1})
+
     def test_every_supply_point_must_cover_the_day(self):
         first, second = self.meter(), self.meter(point="second-point", serial="second-meter")
         self.half_hours(first, "2026-11-02")

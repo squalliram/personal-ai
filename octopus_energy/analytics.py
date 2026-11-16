@@ -63,13 +63,24 @@ class _Rates:
             cursor = boundary
 
 
-def _covers_day(day: str, readings: list) -> bool:
-    """Every supply point read that day has readings spanning the whole London day (23, 24 or 25 hours)."""
+def _previous_day(day: str) -> str:
+    return (datetime.fromisoformat(day) - timedelta(days=1)).date().isoformat()
+
+
+def _covers_day(day: str, readings: list, earlier: list) -> bool:
+    """Every supply point read that day has readings spanning the whole London day (23, 24 or 25 hours).
+
+    `earlier` holds the previous day's readings, so one running past midnight covers this day's start.
+    """
     start = datetime.fromisoformat(day).replace(tzinfo=LONDON).astimezone(timezone.utc)
     end = (datetime.fromisoformat(day) + timedelta(days=1)).replace(tzinfo=LONDON).astimezone(timezone.utc)
     points: dict[str, list] = defaultdict(list)
     for row in readings:
         points[row["point_id"]].append((_instant(row["interval_start"]), _instant(row["interval_end"])))
+    for row in earlier:
+        right = _instant(row["interval_end"])
+        if right > start and row["point_id"] in points:
+            points[row["point_id"]].append((_instant(row["interval_start"]), right))
     for spans in points.values():
         cursor = start
         for left, right in sorted(spans):
@@ -142,7 +153,15 @@ def _recompute_daily_costs(conn: sqlite3.Connection, gas_units: str) -> None:
         conn.execute(
             "INSERT INTO daily_costs(date,fuel,consumption_kwh,unit_cost_gbp,standing_charge_gbp,total_cost_gbp,complete)"
             " VALUES(?,?,?,?,?,?,?)",
-            (day, fuel, kwh, unit_cost, standing, total, int(_covers_day(day, readings))),
+            (
+                day,
+                fuel,
+                kwh,
+                unit_cost,
+                standing,
+                total,
+                int(_covers_day(day, readings, groups.get((_previous_day(day), fuel), []))),
+            ),
         )
 
 
