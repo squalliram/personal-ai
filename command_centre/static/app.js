@@ -700,74 +700,61 @@
     return hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
   }
 
-  function monthGrid(isoDate) {
-    const [year, month, day] = isoDate.split("-").map(Number);
-    const first = new Date(Date.UTC(year, month - 1, 1));
-    const days = new Date(Date.UTC(year, month, 0)).getUTCDate();
-    const offset = (first.getUTCDay() + 6) % 7;
-    const name = new Intl.DateTimeFormat("en-GB", { month: "long", timeZone: "UTC" }).format(first);
-    const cells = [];
-    for (let i = 0; i < offset; i += 1) cells.push(el("span", { class: "day blank", "aria-hidden": "true" }));
-    for (let d = 1; d <= days; d += 1) {
-      cells.push(el("span", d === day ? { class: "day today", "aria-current": "date" } : { class: "day" }, String(d)));
-    }
-    return el("div", { class: "month" },
-      el("div", { class: "month-head" }, el("strong", {}, name), el("span", { class: "muted" }, String(year))),
-      el("div", { class: "month-grid", role: "group", "aria-label": `${name} ${year}` },
-        ["M", "T", "W", "T", "F", "S", "S"].map((d) => el("span", { class: "dow", "aria-hidden": "true" }, d)), cells));
-  }
+  const shortDay = new Intl.DateTimeFormat("en-GB", { timeZone: "UTC", weekday: "short", day: "numeric", month: "short" });
+  const dayLabel = (iso) => shortDay.format(new Date(`${iso}T12:00:00Z`));
+  const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
-  function energyBars(rows) {
-    const byDate = new Map();
-    for (const row of rows) {
-      if (row.fuel !== "electricity" || typeof row.consumption_kwh !== "number") continue;
-      byDate.set(row.date, row.consumption_kwh);
-    }
-    const points = [...byDate.entries()].sort().slice(-7);
-    if (points.length === 0) return muted("No measured electricity days available.");
-    const ns = "http://www.w3.org/2000/svg";
-    const svg = document.createElementNS(ns, "svg");
-    svg.setAttribute("viewBox", "0 0 280 110");
-    svg.setAttribute("class", "bars");
-    svg.setAttribute("role", "img");
-    svg.setAttribute("aria-label", points.map(([d, v]) => `${d}: ${v.toFixed(1)} kWh`).join("; "));
-    const max = Math.max(...points.map(([, v]) => v)) || 1;
-    const width = 280 / points.length;
-    points.forEach(([date, value], i) => {
-      const height = Math.max(2, (value / max) * 80);
-      const rect = document.createElementNS(ns, "rect");
-      rect.setAttribute("x", String(i * width + 6));
-      rect.setAttribute("y", String(88 - height));
-      rect.setAttribute("width", String(width - 12));
-      rect.setAttribute("height", String(height));
-      rect.setAttribute("rx", "4");
-      const tip = document.createElementNS(ns, "title");
-      tip.textContent = `${date}: ${value.toFixed(2)} kWh (measured)`;
-      rect.append(tip);
-      const label = document.createElementNS(ns, "text");
-      label.setAttribute("x", String(i * width + width / 2));
-      label.setAttribute("y", "104");
-      label.setAttribute("text-anchor", "middle");
-      label.textContent = date.slice(8);
-      svg.append(rect, label);
+  function dayBars(days, fuel) {
+    const known = days.filter((d) => typeof d.kwh === "number");
+    if (known.length === 0) return muted(`No measured ${fuel} days in the last fortnight.`);
+    const max = Math.max(...known.map((d) => d.kwh)) || 1;
+    const width = 280 / days.length;
+    const chart = svg("svg", { viewBox: "0 0 280 100", class: "bars day-bars", role: "img",
+      "aria-label": `${fuel === "gas" ? "Gas" : "Electricity"}, last ${days.length} days: ` +
+        days.map((d) => `${dayLabel(d.date)} ${typeof d.kwh === "number" ? `${d.kwh.toFixed(1)} kWh` : "no reading"}`).join("; ") });
+    days.forEach((d, i) => {
+      const measured = typeof d.kwh === "number";
+      const height = measured ? Math.max(2, (d.kwh / max) * 74) : 2;
+      const recent = i >= days.length - 7;
+      chart.append(svg("rect", { x: i * width + 2, y: 80 - height, width: width - 4, height, rx: 2,
+        class: measured ? (recent ? "" : "prev") : "missing" },
+      svg("title", {}, `${dayLabel(d.date)}: ${measured ? `${d.kwh.toFixed(2)} kWh (measured)` : "no reading"}` +
+        (typeof d.cost === "number" ? `, £${d.cost.toFixed(2)} (estimated)` : ""))));
+      if ((days.length - 1 - i) % 2 === 0) {
+        chart.append(svg("text", { x: i * width + width / 2, y: 96, "text-anchor": "middle" }, String(Number(d.date.slice(8)))));
+      }
     });
-    return svg;
+    return chart;
   }
 
-  const HEALTH = {
-    nominal: { label: "Nominal", detail: "No source health check needs attention." },
-    degraded: { label: "Degraded", detail: "One or more sources or automations need attention." },
-    fault: { label: "Fault", detail: "One or more sources or automations have failed." },
-  };
-  const DEGRADED_STATUSES = ["degraded", "stale", "refresh_required"];
-
-  function aggregateHealth(data) {
-    const severities = new Set(data.attention.map((a) => a.severity));
-    const counts = data.integration_counts || {};
-    if (severities.has("critical") || counts.failed) return "fault";
-    if (severities.has("warning") || DEGRADED_STATUSES.some((s) => counts[s])) return "degraded";
-    return "nominal";
+  function fuelWidget(fuel, info) {
+    const name = fuel === "gas" ? "Gas" : "Electricity";
+    if (!info || info.state !== "available") {
+      return widget(name, "Last 14 days", { span: 2, className: "fuel" },
+        muted(info ? info.reason : "Energy data is not available yet."), el("a", { href: "#energy" }, "Open energy"));
+    }
+    const week = info.week;
+    const change = typeof week.change === "number" ? week.change : null;
+    const delta = change === null ? null : el("span", { class: `delta ${change > 0 ? "up" : "down"}` },
+      `${change > 0 ? "▲" : "▼"} ${Math.abs(change * 100).toFixed(0)}% vs previous 7 days`);
+    const peak = info.peak_hour ? `Usually peaks ${String(info.peak_hour.hour).padStart(2, "0")}:00–${String((info.peak_hour.hour + 1) % 24).padStart(2, "0")}:00` : null;
+    return widget(name, `7 days to ${dayLabel(info.through)}`, { span: 2, className: "fuel" },
+      el("div", { class: "fuel-head" },
+        el("p", { class: "big-number" }, typeof week.kwh === "number" ? week.kwh.toFixed(1) : "–", el("span", { class: "muted" }, "kWh")),
+        el("p", { class: "fuel-meta" }, typeof week.cost === "number" ? el("span", {}, `£${week.cost.toFixed(2)} `, basis("estimated")) : null, delta)),
+      dayBars(info.days, fuel),
+      el("p", { class: "fuel-foot muted" }, [peak, "Bright bars: last 7 days"].filter(Boolean).join(" · ")));
   }
+
+  function insightItem(item) {
+    return el("li", { class: `insight insight-${item.severity}` },
+      el("strong", {}, item.title),
+      el("p", {}, item.detail),
+      el("p", { class: "insight-do" }, el("span", { class: "tag" }, "Suggestion"), " ", item.suggestion, " ",
+        el("a", { href: item.href }, "Open energy")));
+  }
+
+  const HEALTH = { nominal: "Nominal", degraded: "Degraded", fault: "Fault", standby: "Standby" };
 
   function svg(tag, attrs, ...children) {
     const node = document.createElementNS("http://www.w3.org/2000/svg", tag);
@@ -779,11 +766,7 @@
     return node;
   }
 
-  function reactor(data) {
-    const state = aggregateHealth(data);
-    const counts = data.integration_counts || {};
-    const tracked = Object.entries(counts).filter(([s]) => s !== "not_implemented").reduce((sum, [, n]) => sum + n, 0);
-    const operational = counts.operational || 0;
+  function reactor(s) {
     const ring = svg("svg", { viewBox: "0 0 120 120", "aria-hidden": "true", focusable: "false" });
     ring.append(
       svg("circle", { class: "r-outer", cx: 60, cy: 60, r: 56 }),
@@ -792,30 +775,36 @@
       svg("circle", { class: "r-inner", cx: 60, cy: 60, r: 30 }),
       svg("circle", { class: "r-core", cx: 60, cy: 60, r: 18 }),
       svg("circle", { class: "r-heart", cx: 60, cy: 60, r: 8 }));
-    const ratio = tracked ? `${operational} of ${tracked} tracked sources operational` : "No tracked sources yet";
+    const ratio = s.automations_monitored ? `${s.automations_healthy} of ${s.automations_monitored} automations healthy` : "No automation has run yet";
+    const open = [s.issues ? plural(s.issues, "issue") : null, s.actions ? `${s.actions} to act on` : null].filter(Boolean);
     let bar = null;
-    if (tracked) {
+    if (s.automations_monitored) {
       bar = el("div", { class: "hud-bar", "aria-hidden": "true" });
-      bar.style.setProperty("--v", String(operational / tracked));
+      bar.style.setProperty("--v", String(s.automations_healthy / s.automations_monitored));
     }
-    return widget("System status", "Aggregate source health", { className: `reactor-widget health-${state}` },
-      el("div", { class: "reactor", role: "img", "aria-label": `System status: ${HEALTH[state].label}. ${ratio}.` },
-        ring, el("p", { class: "reactor-state", "aria-hidden": "true" }, HEALTH[state].label), bar),
-      el("p", { class: "reactor-detail" }, `${HEALTH[state].detail} ${ratio}.`));
+    return widget("System status", ratio, { className: `reactor-widget health-${s.state}` },
+      el("div", { class: "reactor", role: "img", "aria-label": `System status: ${HEALTH[s.state]}. ${ratio}.` },
+        ring, el("p", { class: "reactor-state", "aria-hidden": "true" }, HEALTH[s.state]), bar),
+      el("p", { class: "reactor-detail" }, open.length ? open.join(" · ") : "Nothing needs you right now."),
+      el("a", { href: "#automations" }, "Automations"));
   }
 
   function alertItem(a) {
+    const label = { action: "ACT NOW", critical: "FAILED", warning: "CHECK" }[a.severity] || a.severity.toUpperCase();
     return el("li", { class: `alert alert-${a.severity}` },
-      el("strong", {}, a.severity === "action" ? "ACT NOW" : a.severity.toUpperCase()), " ", a.fact,
+      el("strong", {}, label), " ", a.fact,
       a.href ? [" ", el("a", { href: a.href }, "Open")] : null);
   }
 
   function instagramWidget(ig) {
     const latest = ig.latest_attempt;
+    const rows = [["Made today", typeof ig.drafts_today === "number" ? String(ig.drafts_today) : null],
+      ["Next post slot", ig.next_slot ? when(ig.next_slot) : null],
+      ["Last drafting run", latest ? `${when(latest.started_at)} · ${latest.outcome}` : null]].filter(([, v]) => v);
     return widget("Instagram", "Daily drafts", {},
-      el("p", {}, status(ig.status)),
-      el("p", { class: "big-number" }, String(ig.pending_drafts), el("span", { class: "muted" }, ` draft${ig.pending_drafts === 1 ? "" : "s"} awaiting review`)),
-      latest ? keyValues([["Last drafting run", when(latest.started_at)], ["Result", latest.outcome]]) : muted(ig.summary),
+      el("p", { class: "big-number" }, String(ig.pending_drafts), el("span", { class: "muted" }, ` draft${ig.pending_drafts === 1 ? "" : "s"} to review`)),
+      ig.status === "operational" ? null : muted(ig.summary),
+      rows.length ? keyValues(rows) : null,
       el("a", { href: "#instagram" }, ig.pending_drafts ? "Review drafts" : "Open Instagram"));
   }
 
@@ -844,38 +833,20 @@
     const longDate = new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/London", weekday: "long", day: "numeric", month: "long" }).format(now);
     $("view-title").textContent = greeting(now);
     $("view-status").textContent = `${longDate} · Europe/London`;
-    const energyState = data.energy.state === "available" ? "operational" : data.energy.state;
-    const latestRun = data.briefing.latest_run;
+    const fuels = data.energy.fuels || {};
+    const unavailable = { state: data.energy.state, reason: data.energy.state === "refresh_required"
+      ? "The energy database needs a refresh before readings can be shown." : "Energy data is not available yet." };
     view.append(el("div", { class: "widgets" },
-      reactor(data),
-      widget("Needs attention", "Facts from source health checks", { span: 2 },
-        data.attention.length === 0 ? muted("Nothing needs attention.") :
+      reactor(data.status),
+      widget("Needs attention", "From your automations' latest runs", { span: 3 },
+        data.attention.length === 0 ? muted("All clear. Every automation ran as expected.") :
           el("ul", { class: "alerts" }, data.attention.slice(0, 6).map(alertItem)),
-        data.attention.length > 6 ? el("a", { href: "#integrations" }, `View all ${data.attention.length}`) : null),
-      widget("Monthly grid", "This month", {}, monthGrid(data.date),
-        muted("No calendar source is connected yet, so no events are marked.")),
-      widget("Top 3 today", "AI-suggested priorities", {},
-        el("ol", { class: "slots" }, [1, 2, 3].map((n) => el("li", {}, el("span", { class: "slot-n" }, String(n)), el("span", { class: "muted" }, "Not available")))),
-        muted("Arrives in Phase 2 from the Notion task snapshot. Suggestions will be labelled and linked to evidence.")),
-      widget("Energy, last 7 days", "Electricity", { span: 2 },
-        el("p", {}, status(energyState), " ", basis("measured"), " ", basis("estimated")),
-        energyBars(data.energy.recent_days),
-        muted(data.energy.actual_bills.reason),
-        el("a", { href: "#energy" }, "Open energy")),
+        data.attention.length > 6 ? el("a", { href: "#automations" }, `View all ${data.attention.length}`) : null),
+      fuelWidget("electricity", fuels.electricity || unavailable),
+      fuelWidget("gas", fuels.gas || unavailable),
+      data.insights.length ? widget("Worth knowing", "Suggestions from your energy data, worked out by fixed rules", { span: 3 },
+        el("ul", { class: "insights" }, data.insights.map(insightItem))) : null,
       instagramWidget(data.instagram),
-      widget("Daily briefing", "Latest run", {},
-        latestRun ? keyValues([["Date", latestRun.report_date], ["Events", String(latestRun.calendar_events)],
-          ["Tasks", String(latestRun.tasks_processed)], ["Connector errors", String(latestRun.error_count)]]) :
-          muted("No briefing run recorded.")),
-      widget("Automations", "Execution evidence", {},
-        el("ul", { class: "plain" }, data.automations.map((j) => el("li", {}, status(j.status), ` ${j.name}`))),
-        el("a", { href: "#automations" }, "View automations")),
-      widget("Integrations", "Source health", {},
-        el("ul", { class: "plain" }, Object.entries(data.integration_counts).map(([s, n]) => el("li", {}, status(s), ` ${n}`))),
-        el("a", { href: "#integrations" }, "View integrations")),
-      widget("Not connected yet", "Missing data sources", { span: 2 },
-        el("ul", { class: "compact" }, data.missing_integrations.map((i) => el("li", {}, el("strong", {}, i.name), ` · ${i.summary}`))),
-        el("p", { class: "muted" }, data.not_yet_available.map((i) => `${i.item}: Phase ${i.phase}`).join(" · "))),
     ));
   }
   // Energy -----------------------------------------------------------------------------------

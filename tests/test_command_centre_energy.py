@@ -92,6 +92,7 @@ class DashboardSnapshotTests(EnergyTestCase):
             "{",
             "[]",
             json.dumps({"generated_at": "yesterday", "daily": [], "hourly": []}),
+            json.dumps({"generated_at": iso(self.now), "daily": [], "hourly": [], "latest_reading_at": []}),
             valid % (iso(self.now), "NaN"),
             valid % (iso(self.now), "-Infinity"),
             valid % (iso(self.now), "1e999"),

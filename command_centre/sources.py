@@ -153,6 +153,21 @@ def energy_snapshot(settings: Settings, now: datetime) -> dict:
     return result
 
 
+def energy_history(settings: Settings, now: datetime, snapshot: dict, days: int) -> list[dict]:
+    """Daily rows for both fuels over the last `days` London days, through the read-only MCP tool."""
+    if snapshot["state"] != "available":
+        return []
+    today = now.astimezone(LONDON).date()
+    try:
+        return dispatch(
+            "get_daily_consumption",
+            {"start": (today - timedelta(days=days)).isoformat(), "end": today.isoformat()},
+            settings.energy_db,
+        )
+    except (RefreshRequiredError, OSError, sqlite3.Error):
+        return []
+
+
 def energy_health(snapshot: dict, settings: Settings, now: datetime) -> dict:
     history = snapshot["sync_history"]
     latest = history[0] if history else {}
@@ -246,6 +261,7 @@ def energy_dashboard(settings: Settings) -> dict:
         or _instant(data.get("generated_at")) is None
         or not isinstance(data.get("daily"), list)
         or not isinstance(data.get("hourly"), list)
+        or not isinstance(data.get("latest_reading_at", {}), dict)
     ):
         return {"state": "invalid", "dashboard": None}
     return {"state": "available", "dashboard": {key: data[key] for key in DASHBOARD_KEYS if key in data}}
