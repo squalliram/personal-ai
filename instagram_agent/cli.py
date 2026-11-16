@@ -10,6 +10,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from notifications import command_centre_link, notify
 from octopus_energy.cli import load_env
 
 from . import analysis, cloudflare_client, drafts, following, publish, storage
@@ -130,6 +131,49 @@ def model_client(env: dict):
 
 
 def daily(conn, env: dict, media_dir: Path, now: datetime | None = None) -> str:
+    """`make_drafts`, then tell the owner when a day's drafts are ready or a run went wrong."""
+    now = now or _now()
+    outcome = make_drafts(conn, env, media_dir, now)
+    if outcome != "skipped":
+        _notify_daily(conn, env, outcome, now)
+    return outcome
+
+
+def _notify_daily(conn, env: dict, outcome: str, now: datetime) -> None:
+    today = now.astimezone(LONDON).date().isoformat()
+    page = command_centre_link(env, "instagram")
+    if outcome == "ok":
+        rows = conn.execute(
+            "SELECT status, review_score, scheduled_for, created_at FROM drafts WHERE created_on=?", (today,)
+        ).fetchall()
+        times = [
+            publish.posts_at(r["scheduled_for"], r["created_at"])
+            for r in rows
+            if r["scheduled_for"] and publish.will_post(r["status"], r["review_score"])
+        ]
+        if env.get("INSTAGRAM_AUTO_PUBLISH") != "1":
+            first = "posting is manual"
+        elif times:
+            first = "first posts at " + min(times).astimezone(LONDON).strftime("%H:%M")
+        else:
+            first = "none will post unless you approve one"
+        title = f"{len(rows)} Instagram drafts ready to review, {first}"
+        notify("instagram", "ok", title, page, key=f"instagram-drafts-ready:{today}", env=env, now=now)
+        return
+    if outcome == "gave_up":
+        title = "Instagram drafts gave up for today after repeated failures"
+        notify("instagram", "failed", title, page, key=f"instagram-drafts-gave-up:{today}", env=env, now=now)
+        return
+    if outcome == "not_configured":
+        title = "Instagram drafts not made: no AI provider key is set"
+        notify("instagram", "failed", title, page, key=f"instagram-drafts-unconfigured:{today}", env=env, now=now)
+        return
+    run = conn.execute("SELECT error FROM daily_runs WHERE run_on=? ORDER BY id DESC LIMIT 1", (today,)).fetchone()
+    error = run["error"] if run and run["error"] else "no reason recorded"
+    notify("instagram", "failed", f"Instagram drafts {outcome}: {error}", page, env=env, now=now)
+
+
+def make_drafts(conn, env: dict, media_dir: Path, now: datetime | None = None) -> str:
     """One cron tick: from 09:00 London make today's drafts, topping up to DAILY_DRAFTS until 12:00.
 
     A day stops after DAILY_ATTEMPTS failed or partial tries.

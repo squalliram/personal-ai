@@ -1,6 +1,7 @@
 import base64
 import io
 import json
+import sqlite3
 import stat
 import tempfile
 import unittest
@@ -137,7 +138,12 @@ class DailyTickTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         self.conn = storage.connect(self.root / "instagram.sqlite3")
-        self.env = {"OPENAI_API_KEY": "sk-test-secret", "INSTAGRAM_VOICE_FILE": str(self.root / "voice.md")}
+        self.notes = self.root / "notifications.sqlite3"
+        self.env = {
+            "OPENAI_API_KEY": "sk-test-secret",
+            "INSTAGRAM_VOICE_FILE": str(self.root / "voice.md"),
+            "NOTIFICATIONS_DB": str(self.notes),
+        }
 
     def tearDown(self):
         self.conn.close()
@@ -387,6 +393,96 @@ class CronInstallTests(unittest.TestCase):
             lines[2],
             "*/15 * * * * cd '/srv/my app' && ./scripts/instagram-daily.sh >/dev/null 2>&1 # personal-ai-instagram-daily",
         )
+
+
+class DailyNotificationTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.conn = storage.connect(self.root / "instagram.sqlite3")
+        self.addCleanup(self.conn.close)
+        self.db = self.root / "notifications.sqlite3"
+        self.env = {
+            "OPENAI_API_KEY": "sk-test-secret",
+            "INSTAGRAM_VOICE_FILE": str(self.root / "voice.md"),
+            "NOTIFICATIONS_DB": str(self.db),
+            "INSTAGRAM_AUTO_PUBLISH": "1",
+        }
+
+    def tick(self, ai=None, now=MORNING):
+        ai = ai or FakeAI([[raw_draft("a"), raw_draft("b"), raw_draft("c")]], [[90, 80, 70]])
+        with patch.object(cli, "model_client", return_value=ai if ai != "none" else None):
+            return cli.daily(self.conn, self.env, self.root / "drafts", now=now)
+
+    def notes(self):
+        if not self.db.exists():
+            return []
+        with sqlite3.connect(self.db) as conn:
+            return conn.execute("SELECT outcome, title, link FROM notifications ORDER BY id").fetchall()
+
+    def test_drafts_ready_says_when_the_first_one_posts(self):
+        self.assertEqual(self.tick(), "ok")
+        [(outcome, title, link)] = self.notes()
+        self.assertEqual((outcome, link), ("ok", "https://iramkhan.com/command-centre/#instagram"))
+        self.assertRegex(title, r"^3 Instagram drafts ready to review, first posts at [0-2][0-9]:[0-5][0-9]$")
+        self.assertEqual(self.tick(), "skipped")
+        self.assertEqual(len(self.notes()), 1)
+
+    def test_drafts_ready_without_auto_posting(self):
+        self.env.pop("INSTAGRAM_AUTO_PUBLISH")
+        self.tick()
+        self.assertEqual(self.notes()[0][1], "3 Instagram drafts ready to review, posting is manual")
+
+    def test_first_post_time_is_london_time(self):
+        self.tick()
+        title = self.notes()[0][1]
+        rows = self.conn.execute("SELECT scheduled_for, created_at FROM drafts").fetchall()
+        from instagram_agent import publish
+
+        first = min(publish.posts_at(r["scheduled_for"], r["created_at"]) for r in rows)
+        self.assertTrue(title.endswith(first.astimezone(cli.LONDON).strftime("%H:%M")))
+
+    def test_failures_partial_and_gave_up_are_reported(self):
+        for _ in range(3):
+            self.assertEqual(self.tick(FakeAI([[], [], []], [])), "failed")
+        self.assertEqual(self.tick(), "gave_up")
+        self.assertEqual(self.tick(), "gave_up")
+        notes = self.notes()
+        self.assertEqual([n[0] for n in notes], ["failed"] * 4)
+        self.assertTrue(notes[0][1].startswith("Instagram drafts failed: "))
+        self.assertEqual(notes[3][1], "Instagram drafts gave up for today after repeated failures")
+
+    def test_a_partial_run_is_reported(self):
+        self.assertEqual(
+            self.tick(FakeAI([[raw_draft("a"), raw_draft("b"), raw_draft("c")]], [[90, 80, 70]], fail_images_after=9)),
+            "partial",
+        )
+        self.assertEqual(
+            self.notes()[0][:2],
+            (
+                "failed",
+                "Instagram drafts partial: 1 of 3 drafts not made: slide image failed (OpenAI request failed (HTTP 500))",
+            ),
+        )
+
+    def test_not_configured_is_reported_once_a_day(self):
+        for _ in range(2):
+            self.assertEqual(self.tick("none"), "not_configured")
+        self.assertEqual(
+            self.notes(),
+            [
+                (
+                    "failed",
+                    "Instagram drafts not made: no AI provider key is set",
+                    "https://iramkhan.com/command-centre/#instagram",
+                )
+            ],
+        )
+
+    def test_skipped_sends_nothing(self):
+        self.assertEqual(self.tick(now=datetime(2026, 11, 12, 8, 45, tzinfo=timezone.utc)), "skipped")
+        self.assertEqual(self.notes(), [])
 
 
 if __name__ == "__main__":

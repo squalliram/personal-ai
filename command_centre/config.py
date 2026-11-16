@@ -55,6 +55,7 @@ class Settings:
     cloudflare_api_token: str | None = field(default=None, repr=False)
     passkeys_db: Path | None = None
     energy_refresh_dir: Path | None = None
+    notifications_db: Path | None = None
 
 
 def load_settings(root: Path = ROOT, environ: Mapping[str, str] | None = None) -> Settings:
@@ -94,4 +95,5 @@ def load_settings(root: Path = ROOT, environ: Mapping[str, str] | None = None) -
         cloudflare_api_token=(values.get(PREFIX + "CLOUDFLARE_API_TOKEN") or "").strip() or None,
         passkeys_db=path("PASSKEYS_DB", "data/command_centre_passkeys.sqlite3"),
         energy_refresh_dir=path("ENERGY_REFRESH_DIR", "data/energy-refresh"),
+        notifications_db=path("NOTIFICATIONS_DB", "data/notifications.sqlite3"),
     )

@@ -405,6 +405,7 @@ def install(
             "BRIEFING_REPORTS": str(checkout / "reports/daily"),
             "INSTAGRAM_DB": str(checkout / "data/instagram.sqlite3"),
             "INSTAGRAM_MEDIA": str(checkout / "data/instagram/drafts"),
+            "NOTIFICATIONS_DB": str(checkout / "data/notifications.sqlite3"),
             "PERMISSION": "recommend",
             "INSPECT_CRONTAB": "1",
         }
