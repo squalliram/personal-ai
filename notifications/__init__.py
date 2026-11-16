@@ -13,7 +13,7 @@ import re
 import sqlite3
 import sys
 from collections.abc import Callable, Mapping
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -25,6 +25,8 @@ OUTCOMES = ("ok", "failed", "info")
 TELEGRAM_API = "https://api.telegram.org/"
 TELEGRAM_TIMEOUT = 10
 MAX_SEND_ATTEMPTS = 3
+# A claimed send is someone else's until this passes, so overlapping calls never send a row twice.
+CLAIM_LEASE = timedelta(seconds=TELEGRAM_TIMEOUT * 3)
 # Older unsent rows retried per call, after the new one; a call stops at its first failed send.
 RETRY_BATCH = 3
 BOT_TOKEN = re.compile(r"[0-9]{1,20}:[A-Za-z0-9_-]{20,100}")
@@ -45,6 +47,7 @@ CREATE TABLE IF NOT EXISTS notifications (
     dedupe_key TEXT UNIQUE,
     delivery TEXT NOT NULL CHECK (delivery IN ('none', 'pending', 'sent', 'failed')),
     attempts INTEGER NOT NULL DEFAULT 0,
+    claimed_until TEXT,
     delivered_at TEXT,
     error TEXT
 );
@@ -122,12 +125,13 @@ def _message(row) -> str:
     return f"{text}\n{row['link']}" if row["link"] else text
 
 
-def _deliver(conn, row, token: str, chat_id: str, send: Callable, now: str) -> bool:
-    # Claim the attempt first so two processes never send the same row.
+def _deliver(conn, row, token: str, chat_id: str, send: Callable, now: datetime) -> bool:
+    stamp = now.isoformat(timespec="seconds")
     with conn:
         claimed = conn.execute(
-            "UPDATE notifications SET attempts=attempts+1 WHERE id=? AND delivery='pending' AND attempts=?",
-            (row["id"], row["attempts"]),
+            "UPDATE notifications SET attempts=attempts+1, claimed_until=? "
+            "WHERE id=? AND delivery='pending' AND attempts<? AND (claimed_until IS NULL OR claimed_until<?)",
+            ((now + CLAIM_LEASE).isoformat(timespec="seconds"), row["id"], MAX_SEND_ATTEMPTS, stamp),
         ).rowcount
     if not claimed:
         return True
@@ -137,14 +141,15 @@ def _deliver(conn, row, token: str, chat_id: str, send: Callable, now: str) -> b
         error = str(exc) if isinstance(exc, NotifyError) else type(exc).__name__
         with conn:
             conn.execute(
-                "UPDATE notifications SET error=?, delivery=CASE WHEN attempts>=? THEN 'failed' ELSE 'pending' END "
-                "WHERE id=?",
+                "UPDATE notifications SET error=?, claimed_until=NULL, "
+                "delivery=CASE WHEN attempts>=? THEN 'failed' ELSE 'pending' END WHERE id=?",
                 (error.replace(token, "[redacted]")[:200], MAX_SEND_ATTEMPTS, row["id"]),
             )
         return False
     with conn:
         conn.execute(
-            "UPDATE notifications SET delivery='sent', delivered_at=?, error=NULL WHERE id=?", (now, row["id"])
+            "UPDATE notifications SET delivery='sent', delivered_at=?, claimed_until=NULL, error=NULL WHERE id=?",
+            (stamp, row["id"]),
         )
     return True
 
@@ -175,7 +180,8 @@ def notify(
         if not SOURCE.fullmatch(source) or outcome not in OUTCOMES:
             raise ValueError("invalid notification")
         title = CONTROL.sub(" ", str(title)).strip()[:300] or "(no title)"
-        stamp = (now or datetime.now(timezone.utc)).isoformat(timespec="seconds")
+        now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        stamp = now.isoformat(timespec="seconds")
         token, chat_id = env.get("TELEGRAM_BOT_TOKEN", "").strip(), env.get("TELEGRAM_CHAT_ID", "").strip()
         configured = bool(token and chat_id)
         valid = configured and BOT_TOKEN.fullmatch(token) and CHAT_ID.fullmatch(chat_id)
@@ -195,11 +201,11 @@ def notify(
                 new_id = inserted.lastrowid
                 queue = conn.execute("SELECT * FROM notifications WHERE id=?", (new_id,)).fetchall()
                 queue += conn.execute(
-                    "SELECT * FROM notifications WHERE delivery='pending' AND id<>? ORDER BY id LIMIT ?",
-                    (new_id, RETRY_BATCH),
+                    "SELECT * FROM notifications WHERE delivery='pending' AND attempts<? AND id<>? ORDER BY id LIMIT ?",
+                    (MAX_SEND_ATTEMPTS, new_id, RETRY_BATCH),
                 ).fetchall()
                 for row in queue:
-                    if not _deliver(conn, row, token, chat_id, send, stamp):
+                    if not _deliver(conn, row, token, chat_id, send, now):
                         break
         finally:
             conn.close()

@@ -122,6 +122,29 @@ class NotifyTests(NotifierTestCase):
         notifications.notify("instagram", "failed", "b", env=self.env, send=telegram)
         self.assertEqual([(r["delivery"], r["attempts"]) for r in self.rows()], [("pending", 1), ("pending", 1)])
 
+    def test_overlapping_calls_never_send_a_row_twice(self):
+        sent = []
+
+        def slow(token, chat_id, text):
+            sent.append(text)
+            if text.endswith(" a"):  # a second caller runs while "a" is still being sent
+                notifications.notify("instagram", "ok", "b", env=self.env, send=slow)
+
+        notifications.notify("instagram", "ok", "a", env=self.env, send=slow)
+        self.assertEqual(sent, ["\u2705 a", "\u2705 b"])
+        self.assertEqual([(r["delivery"], r["attempts"]) for r in self.rows()], [("sent", 1), ("sent", 1)])
+
+    def test_an_abandoned_claim_is_retried_after_its_lease(self):
+        telegram = FakeTelegram()
+        notifications.notify("instagram", "ok", "a", env={"NOTIFICATIONS_DB": str(self.db)})
+        with sqlite3.connect(self.db) as conn:
+            conn.execute("UPDATE notifications SET delivery='pending', attempts=1, claimed_until=?", (NOW.isoformat(),))
+        notifications.notify("instagram", "ok", "b", env=self.env, now=NOW, send=telegram)
+        self.assertEqual([t for _, _, t in telegram.sent], ["\u2705 b"])
+        later = NOW + notifications.CLAIM_LEASE + notifications.CLAIM_LEASE
+        notifications.notify("instagram", "ok", "c", env=self.env, now=later, send=telegram)
+        self.assertEqual([t for _, _, t in telegram.sent], ["\u2705 b", "\u2705 c", "\u2705 a"])
+
     def test_errors_never_hold_the_token(self):
         def leaky(token, chat_id, text):
             raise notifications.NotifyError(f"boom {token}")
