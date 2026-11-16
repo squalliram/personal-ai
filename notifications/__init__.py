@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 import sqlite3
 import sys
 from collections.abc import Callable, Mapping
@@ -47,6 +48,7 @@ CREATE TABLE IF NOT EXISTS notifications (
     dedupe_key TEXT UNIQUE,
     delivery TEXT NOT NULL CHECK (delivery IN ('none', 'pending', 'sent', 'failed')),
     attempts INTEGER NOT NULL DEFAULT 0,
+    claim TEXT,
     claimed_until TEXT,
     delivered_at TEXT,
     error TEXT
@@ -125,13 +127,19 @@ def _message(row) -> str:
     return f"{text}\n{row['link']}" if row["link"] else text
 
 
-def _deliver(conn, row, token: str, chat_id: str, send: Callable, now: datetime) -> bool:
-    stamp = now.isoformat(timespec="seconds")
+def _deliver(conn, row, token: str, chat_id: str, send: Callable, clock: Callable[[], datetime]) -> bool:
+    now, claim = clock(), secrets.token_hex(8)
     with conn:
         claimed = conn.execute(
-            "UPDATE notifications SET attempts=attempts+1, claimed_until=? "
+            "UPDATE notifications SET attempts=attempts+1, claim=?, claimed_until=? "
             "WHERE id=? AND delivery='pending' AND attempts<? AND (claimed_until IS NULL OR claimed_until<?)",
-            ((now + CLAIM_LEASE).isoformat(timespec="seconds"), row["id"], MAX_SEND_ATTEMPTS, stamp),
+            (
+                claim,
+                (now + CLAIM_LEASE).isoformat(timespec="seconds"),
+                row["id"],
+                MAX_SEND_ATTEMPTS,
+                now.isoformat(timespec="seconds"),
+            ),
         ).rowcount
     if not claimed:
         return True
@@ -141,15 +149,16 @@ def _deliver(conn, row, token: str, chat_id: str, send: Callable, now: datetime)
         error = str(exc) if isinstance(exc, NotifyError) else type(exc).__name__
         with conn:
             conn.execute(
-                "UPDATE notifications SET error=?, claimed_until=NULL, "
-                "delivery=CASE WHEN attempts>=? THEN 'failed' ELSE 'pending' END WHERE id=?",
-                (error.replace(token, "[redacted]")[:200], MAX_SEND_ATTEMPTS, row["id"]),
+                "UPDATE notifications SET error=?, claim=NULL, claimed_until=NULL, "
+                "delivery=CASE WHEN attempts>=? THEN 'failed' ELSE 'pending' END WHERE id=? AND claim=?",
+                (error.replace(token, "[redacted]")[:200], MAX_SEND_ATTEMPTS, row["id"], claim),
             )
         return False
     with conn:
         conn.execute(
-            "UPDATE notifications SET delivery='sent', delivered_at=?, claimed_until=NULL, error=NULL WHERE id=?",
-            (stamp, row["id"]),
+            "UPDATE notifications SET delivery='sent', delivered_at=?, claim=NULL, claimed_until=NULL, error=NULL "
+            "WHERE id=? AND claim=?",
+            (clock().isoformat(timespec="seconds"), row["id"], claim),
         )
     return True
 
@@ -180,7 +189,11 @@ def notify(
         if not SOURCE.fullmatch(source) or outcome not in OUTCOMES:
             raise ValueError("invalid notification")
         title = CONTROL.sub(" ", str(title)).strip()[:300] or "(no title)"
+        fixed = now is not None
         now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        clock = (
+            (lambda: now) if fixed else (lambda: datetime.now(timezone.utc))
+        )  # each send claims at the time it starts
         stamp = now.isoformat(timespec="seconds")
         token, chat_id = env.get("TELEGRAM_BOT_TOKEN", "").strip(), env.get("TELEGRAM_CHAT_ID", "").strip()
         configured = bool(token and chat_id)
@@ -200,7 +213,7 @@ def notify(
             if inserted.rowcount and valid:
                 with conn:
                     conn.execute(
-                        "UPDATE notifications SET delivery='failed', claimed_until=NULL, error='send interrupted' "
+                        "UPDATE notifications SET delivery='failed', claim=NULL, claimed_until=NULL, error='send interrupted' "
                         "WHERE delivery='pending' AND attempts>=? AND claimed_until<?",
                         (MAX_SEND_ATTEMPTS, stamp),
                     )
@@ -211,7 +224,7 @@ def notify(
                     (MAX_SEND_ATTEMPTS, new_id, RETRY_BATCH),
                 ).fetchall()
                 for row in queue:
-                    if not _deliver(conn, row, token, chat_id, send, now):
+                    if not _deliver(conn, row, token, chat_id, send, clock):
                         break
         finally:
             conn.close()

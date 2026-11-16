@@ -149,6 +149,20 @@ class NotifyTests(NotifierTestCase):
         notifications.notify("instagram", "ok", "c", env=self.env, now=later, send=telegram)
         self.assertEqual([t for _, _, t in telegram.sent], ["\u2705 b", "\u2705 c", "\u2705 a"])
 
+    def test_a_sender_whose_claim_expired_cannot_overwrite_the_new_owner(self):
+        later = NOW + notifications.CLAIM_LEASE + notifications.CLAIM_LEASE
+        sent = []
+
+        def stale(token, chat_id, text):
+            sent.append(text)
+            if sent == ["\u2705 a"]:
+                notifications.notify("instagram", "ok", "b", env=self.env, now=later, send=stale)
+                raise notifications.NotifyError("Telegram request failed (HTTP 502)")
+
+        notifications.notify("instagram", "ok", "a", env=self.env, now=NOW, send=stale)
+        self.assertEqual(sent, ["\u2705 a", "\u2705 b", "\u2705 a"])
+        self.assertEqual([(r["delivery"], r["error"]) for r in self.rows()], [("sent", None), ("sent", None)])
+
     def test_an_abandoned_last_attempt_is_marked_failed(self):
         notifications.notify("instagram", "ok", "a", env={"COMMAND_CENTRE_NOTIFICATIONS_DB": str(self.db)})
         attempts = notifications.MAX_SEND_ATTEMPTS
