@@ -4,11 +4,14 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
 from octopus_energy import cli
 from octopus_energy.analytics import (
+    LONDON,
     _rate,
     anomalies,
     expensive_days,
@@ -225,6 +228,51 @@ class AnalyticsTests(unittest.TestCase):
         self.assertIsNone(summary(self.conn, start="2026-11-02")[0]["total_cost_gbp"])
         self.assertEqual(len(expensive_days(self.conn)), 1)
 
+    def half_hours(self, meter, day, skip=()):
+        start = datetime.fromisoformat(day).replace(tzinfo=LONDON).astimezone(timezone.utc)
+        end = (datetime.fromisoformat(day) + timedelta(days=1)).replace(tzinfo=LONDON).astimezone(timezone.utc)
+        slot = 0
+        while start < end:
+            if slot not in skip:
+                stop = start + timedelta(minutes=30)
+                self.reading(meter, start.isoformat(), stop.isoformat(), 0.2)
+            start, slot = start + timedelta(minutes=30), slot + 1
+
+    def test_days_record_whether_readings_cover_the_whole_london_day(self):
+        meter = self.meter()
+        self.tariffs(meter)
+        self.half_hours(meter, "2026-11-02")
+        self.half_hours(meter, "2026-11-03", skip={20})
+        self.half_hours(meter, "2026-03-29")  # 23-hour clock-change day
+        self.half_hours(meter, "2026-10-25")  # 25-hour clock-change day
+        complete = {row["date"]: row["complete"] for row in self.daily()}
+        self.assertEqual(complete, {"2026-03-29": 1, "2026-10-25": 1, "2026-11-02": 1, "2026-11-03": 0})
+
+    def test_a_reading_across_midnight_covers_the_start_of_the_next_day(self):
+        meter = self.meter()
+        self.reading(meter, "2026-11-01T00:00:00Z", "2026-11-02T01:00:00Z", 5)
+        self.reading(meter, "2026-11-02T01:00:00Z", "2026-11-03T00:00:00Z", 5)
+        complete = {row["date"]: row["complete"] for row in self.daily()}
+        self.assertEqual(complete, {"2026-11-01": 1, "2026-11-02": 1})
+
+    def test_every_supply_point_must_cover_the_day(self):
+        first, second = self.meter(), self.meter(point="second-point", serial="second-meter")
+        self.half_hours(first, "2026-11-02")
+        self.half_hours(second, "2026-11-02", skip={47})
+        self.assertEqual(self.daily()[0]["complete"], 0)
+
+    def test_older_daily_table_gains_the_completeness_column(self):
+        self.conn.execute("DROP TABLE daily_costs")
+        self.conn.execute(
+            "CREATE TABLE daily_costs (date TEXT NOT NULL, fuel TEXT NOT NULL, consumption_kwh REAL,"
+            " unit_cost_gbp REAL, standing_charge_gbp REAL, total_cost_gbp REAL, PRIMARY KEY(date,fuel))"
+        )
+        self.conn.execute("INSERT INTO daily_costs VALUES('2026-11-01','electricity',2,.2,.5,.7)")
+        self.conn.commit()
+        with closing(connect(self.database)) as upgraded:
+            row = dict(upgraded.execute("SELECT * FROM daily_costs").fetchone())
+        self.assertEqual((row["total_cost_gbp"], row["complete"]), (0.7, None))
+
     def test_legacy_not_null_database_is_migrated_and_recomputed_once(self):
         meter = self.meter(fuel="gas")
         self.tariffs(meter)
@@ -235,7 +283,9 @@ class AnalyticsTests(unittest.TestCase):
             " consumption_kwh REAL NOT NULL, unit_cost_gbp REAL NOT NULL,"
             " standing_charge_gbp REAL NOT NULL, total_cost_gbp REAL NOT NULL, PRIMARY KEY(date,fuel))"
         )
-        self.conn.execute("INSERT INTO daily_costs VALUES('2026-11-01','gas',2,.2,.5,.7)")
+        self.conn.execute(
+            "INSERT INTO daily_costs(date,fuel,consumption_kwh,unit_cost_gbp,standing_charge_gbp,total_cost_gbp) VALUES('2026-11-01','gas',2,.2,.5,.7)"
+        )
         self.conn.commit()
         with connect(self.database) as migrated:
             self.assertIsNone(migrated.execute("SELECT total_cost_gbp FROM daily_costs").fetchone()[0])
@@ -259,7 +309,9 @@ class AnalyticsTests(unittest.TestCase):
             " consumption_kwh REAL NOT NULL, unit_cost_gbp REAL NOT NULL,"
             " standing_charge_gbp REAL NOT NULL, total_cost_gbp REAL NOT NULL, PRIMARY KEY(date,fuel))"
         )
-        self.conn.execute("INSERT INTO daily_costs VALUES('2026-11-01','electricity',2,.2,.5,.7)")
+        self.conn.execute(
+            "INSERT INTO daily_costs(date,fuel,consumption_kwh,unit_cost_gbp,standing_charge_gbp,total_cost_gbp) VALUES('2026-11-01','electricity',2,.2,.5,.7)"
+        )
         self.conn.commit()
         with self.assertRaises(ValueError):
             connect(self.database)
@@ -346,7 +398,9 @@ class AnalyticsTests(unittest.TestCase):
     def test_recompute_failure_rolls_back_metadata_creation_and_derived_data(self):
         meter = self.meter(fuel="gas")
         self.reading(meter, "invalid", "invalid")
-        self.conn.execute("INSERT INTO daily_costs VALUES('2026-11-01','electricity',2,.2,.5,.7)")
+        self.conn.execute(
+            "INSERT INTO daily_costs(date,fuel,consumption_kwh,unit_cost_gbp,standing_charge_gbp,total_cost_gbp) VALUES('2026-11-01','electricity',2,.2,.5,.7)"
+        )
         self.conn.commit()
         with self.assertRaises(ValueError):
             recompute_daily_costs(self.conn, gas_units="kwh")
@@ -450,7 +504,9 @@ class AnalyticsTests(unittest.TestCase):
             " consumption_kwh REAL NOT NULL, unit_cost_gbp REAL NOT NULL,"
             " standing_charge_gbp REAL NOT NULL, total_cost_gbp REAL NOT NULL, PRIMARY KEY(date,fuel))"
         )
-        self.conn.execute("INSERT INTO daily_costs VALUES('2026-11-01','gas',2,.2,.5,.7)")
+        self.conn.execute(
+            "INSERT INTO daily_costs(date,fuel,consumption_kwh,unit_cost_gbp,standing_charge_gbp,total_cost_gbp) VALUES('2026-11-01','gas',2,.2,.5,.7)"
+        )
         self.conn.commit()
         self.assertEqual(self.conn.execute("PRAGMA journal_mode").fetchone()[0], "wal")
         self.assertEqual(self.conn.execute("PRAGMA synchronous").fetchone()[0], 1)

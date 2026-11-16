@@ -711,14 +711,15 @@
     const width = 280 / days.length;
     const chart = svg("svg", { viewBox: "0 0 280 100", class: "bars day-bars", role: "img",
       "aria-label": `${fuel === "gas" ? "Gas" : "Electricity"}, last ${days.length} days: ` +
-        days.map((d) => `${dayLabel(d.date)} ${typeof d.kwh === "number" ? `${d.kwh.toFixed(1)} kWh` : "no reading"}`).join("; ") });
+        days.map((d) => `${dayLabel(d.date)} ${typeof d.kwh === "number" ? `${d.kwh.toFixed(1)} kWh${d.complete === false ? " (partial)" : ""}` : "no reading"}`).join("; ") });
     days.forEach((d, i) => {
       const measured = typeof d.kwh === "number";
+      const partial = measured && d.complete === false;
       const height = measured ? Math.max(2, (d.kwh / max) * 74) : 2;
       const recent = i >= days.length - 7;
       chart.append(svg("rect", { x: i * width + 2, y: 80 - height, width: width - 4, height, rx: 2,
-        class: measured ? (recent ? "" : "prev") : "missing" },
-      svg("title", {}, `${dayLabel(d.date)}: ${measured ? `${d.kwh.toFixed(2)} kWh (measured)` : "no reading"}` +
+        class: measured && !partial ? (recent ? "" : "prev") : "missing" },
+      svg("title", {}, `${dayLabel(d.date)}: ${measured ? `${d.kwh.toFixed(2)} kWh (measured${partial ? ", some readings missing" : ""})` : "no reading"}` +
         (typeof d.cost === "number" ? `, £${d.cost.toFixed(2)} (estimated)` : ""))));
       if ((days.length - 1 - i) % 2 === 0) {
         chart.append(svg("text", { x: i * width + width / 2, y: 96, "text-anchor": "middle" }, String(Number(d.date.slice(8)))));

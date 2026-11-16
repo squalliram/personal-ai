@@ -67,7 +67,7 @@ def _complete_through(fuel: str, dashboard: dict | None, today: date) -> date:
 
 def _sums(series: dict[date, dict], days: list[date]) -> tuple[float | None, float | None]:
     rows = [series.get(day) for day in days]
-    if any(row is None or row["kwh"] is None for row in rows):
+    if any(row is None or row["kwh"] is None or not row["complete"] for row in rows):
         return None, None
     kwh = sum(row["kwh"] for row in rows)
     cost = None if any(row["cost"] is None for row in rows) else round(sum(row["cost"] for row in rows), 2)
@@ -117,7 +117,12 @@ def energy_fuels(energy: dict, history: list[dict], dashboard: dict | None, now:
                 key = date.fromisoformat(row["date"])
             except ValueError:
                 continue
-            series[key] = {"kwh": _number(row.get("consumption_kwh")), "cost": _number(row.get("total_cost_gbp"))}
+            series[key] = {
+                "kwh": _number(row.get("consumption_kwh")),
+                "cost": _number(row.get("total_cost_gbp")),
+                # Only an explicit False marks missing readings; older databases have not checked yet.
+                "complete": row.get("complete") is not False,
+            }
         through = _complete_through(fuel, dashboard, today)
         this_kwh, this_cost = _sums(series, _span(through, 7))
         last_kwh, last_cost = _sums(series, _span(through - timedelta(days=7), 7))
@@ -128,7 +133,7 @@ def energy_fuels(energy: dict, history: list[dict], dashboard: dict | None, now:
             "basis": {"kwh": "measured", "cost": "estimated"},
             "through": through.isoformat(),
             "days": [
-                {"date": day.isoformat(), **series.get(day, {"kwh": None, "cost": None})}
+                {"date": day.isoformat(), **series.get(day, {"kwh": None, "cost": None, "complete": False})}
                 for day in _span(through, CHART_DAYS)
             ],
             "week": {
@@ -251,7 +256,11 @@ def _unusual_insight(fuel: str, info: dict, anomalies: list[dict]) -> dict | Non
             and _number(row.get("consumption_kwh"))
         ):
             recent.append((day, float(row["consumption_kwh"])))
-    usual = [series[d]["kwh"] for d in _span(through, 28) if d in series and series[d]["kwh"] is not None]
+    usual = [
+        series[d]["kwh"]
+        for d in _span(through, 28)
+        if d in series and series[d]["kwh"] is not None and series[d]["complete"]
+    ]
     if not recent or len(usual) < 14:
         return None
     day, kwh = max(recent)
