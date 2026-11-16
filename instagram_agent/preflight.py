@@ -8,6 +8,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from . import drafts, publish, storage
+from .analysis import LONDON
 from .drafts import DRAFT_ID_RE
 from .graph import GraphAPIError
 
@@ -48,6 +49,7 @@ def _public_error(env: dict) -> str | None:
         if (
             parts.scheme != "https"
             or not parts.hostname
+            or parts.port == 0
             or parts.username
             or parts.password
             or parts.query
@@ -153,7 +155,7 @@ def run(conn, env: dict, media_dir: Path, now: datetime, *, draft_id: str, clien
         check(
             "publish_window",
             schedule_ok,
-            f"Publish time {when.isoformat(timespec='minutes')} is not more than 3 hours past"
+            f"Publish time {when.astimezone(LONDON).isoformat(timespec='minutes')} is not more than 3 hours past"
             if schedule_ok
             else "Publish time is missing, invalid, or more than 3 hours past",
         )

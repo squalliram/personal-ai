@@ -153,16 +153,31 @@ class PreflightTests(unittest.TestCase):
 
     def test_unsafe_public_configuration_fails(self):
         self.add()
-        for url in ("http://iramkhan.com/ig-media", "https://[bad"):
+        for url in (
+            "http://iramkhan.com/ig-media",
+            "https://[bad",
+            "https://iramkhan.com:bad/ig-media",
+            "https://iramkhan.com:99999/ig-media",
+        ):
             with self.subTest(url=url):
                 report = self.preflight(env={**self.env, "INSTAGRAM_PUBLIC_URL": url})
                 self.assertFalse(report["ok"])
                 self.assertFalse(self.check(report, "public_media")["ok"])
+        report = self.preflight(env={**self.env, "INSTAGRAM_PUBLIC_URL": "https://iramkhan.com:8443/ig-media"})
+        self.assertTrue(report["ok"], report)
+        self.assertTrue(self.check(report, "public_media")["ok"])
         target = self.root / "target"
         target.mkdir()
         self.public.symlink_to(target, target_is_directory=True)
         report = self.preflight()
         self.assertFalse(self.check(report, "public_media")["ok"])
+
+    def test_veto_publish_time_is_displayed_in_london_during_bst(self):
+        self.add(slot="2026-07-15T12:00+01:00")
+        with self.conn:
+            self.conn.execute("UPDATE drafts SET created_at='2026-07-15T10:30:00+00:00' WHERE draft_id=?", (DRAFT,))
+        report = self.preflight(now=datetime(2026, 7, 15, 11, 0, tzinfo=timezone.utc))
+        self.assertIn("2026-07-15T12:30+01:00", self.check(report, "publish_window")["detail"])
 
     def test_other_eligible_drafts_must_be_resolved(self):
         self.add()
