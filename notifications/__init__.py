@@ -198,6 +198,12 @@ def notify(
                     (stamp, source, outcome, title, safe_link(link), key, delivery, error),
                 )
             if inserted.rowcount and valid:
+                with conn:
+                    conn.execute(
+                        "UPDATE notifications SET delivery='failed', claimed_until=NULL, error='send interrupted' "
+                        "WHERE delivery='pending' AND attempts>=? AND claimed_until<?",
+                        (MAX_SEND_ATTEMPTS, stamp),
+                    )
                 new_id = inserted.lastrowid
                 queue = conn.execute("SELECT * FROM notifications WHERE id=?", (new_id,)).fetchall()
                 queue += conn.execute(

@@ -145,6 +145,19 @@ class NotifyTests(NotifierTestCase):
         notifications.notify("instagram", "ok", "c", env=self.env, now=later, send=telegram)
         self.assertEqual([t for _, _, t in telegram.sent], ["\u2705 b", "\u2705 c", "\u2705 a"])
 
+    def test_an_abandoned_last_attempt_is_marked_failed(self):
+        notifications.notify("instagram", "ok", "a", env={"NOTIFICATIONS_DB": str(self.db)})
+        attempts = notifications.MAX_SEND_ATTEMPTS
+        with sqlite3.connect(self.db) as conn:
+            conn.execute(
+                "UPDATE notifications SET delivery='pending', attempts=?, claimed_until=?", (attempts, NOW.isoformat())
+            )
+        notifications.notify("instagram", "ok", "b", env=self.env, now=NOW, send=FakeTelegram())
+        self.assertEqual(self.rows()[0]["delivery"], "pending")
+        later = NOW + notifications.CLAIM_LEASE + notifications.CLAIM_LEASE
+        notifications.notify("instagram", "ok", "c", env=self.env, now=later, send=FakeTelegram())
+        self.assertEqual((self.rows()[0]["delivery"], self.rows()[0]["error"]), ("failed", "send interrupted"))
+
     def test_errors_never_hold_the_token(self):
         def leaky(token, chat_id, text):
             raise notifications.NotifyError(f"boom {token}")
