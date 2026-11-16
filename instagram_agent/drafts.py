@@ -169,6 +169,7 @@ def tag(ai: AI, ctx: dict, drafts: list[dict]) -> None:
 def review(ai: AI, ctx: dict, drafts: list[dict], *, rules: str) -> None:
     payload = {
         "top_benchmark_posts": ctx["top_benchmark_posts"],
+        "approved_examples": ctx["approved_examples"],
         "drafts": [
             {k: d[k] for k in ("category", "topic", "caption", "hashtags")}
             | {"slides": [s["text"] for s in d["slides"]]}
