@@ -142,7 +142,7 @@ class DailyTickTests(unittest.TestCase):
         self.env = {
             "OPENAI_API_KEY": "sk-test-secret",
             "INSTAGRAM_VOICE_FILE": str(self.root / "voice.md"),
-            "NOTIFICATIONS_DB": str(self.notes),
+            "COMMAND_CENTRE_NOTIFICATIONS_DB": str(self.notes),
         }
 
     def tearDown(self):
@@ -406,7 +406,7 @@ class DailyNotificationTests(unittest.TestCase):
         self.env = {
             "OPENAI_API_KEY": "sk-test-secret",
             "INSTAGRAM_VOICE_FILE": str(self.root / "voice.md"),
-            "NOTIFICATIONS_DB": str(self.db),
+            "COMMAND_CENTRE_NOTIFICATIONS_DB": str(self.db),
             "INSTAGRAM_AUTO_PUBLISH": "1",
             "INSTAGRAM_ACCESS_TOKEN": "IGtoken-secret",
             "INSTAGRAM_USER_ID": "17841408862128347",

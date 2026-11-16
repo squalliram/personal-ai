@@ -5,7 +5,7 @@ import re
 import sqlite3
 import tempfile
 import unittest
-from contextlib import redirect_stderr
+from contextlib import closing, redirect_stderr
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -58,7 +58,11 @@ class NotifierTestCase(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.db = self.root / "notifications.sqlite3"
-        self.env = {"NOTIFICATIONS_DB": str(self.db), "TELEGRAM_BOT_TOKEN": TOKEN, "TELEGRAM_CHAT_ID": "-1001234"}
+        self.env = {
+            "COMMAND_CENTRE_NOTIFICATIONS_DB": str(self.db),
+            "TELEGRAM_BOT_TOKEN": TOKEN,
+            "TELEGRAM_CHAT_ID": "-1001234",
+        }
 
     def rows(self):
         with sqlite3.connect(self.db) as conn:
@@ -80,7 +84,7 @@ class NotifyTests(NotifierTestCase):
 
     def test_without_telegram_settings_it_only_stores(self):
         telegram = FakeTelegram()
-        env = {"NOTIFICATIONS_DB": str(self.db)}
+        env = {"COMMAND_CENTRE_NOTIFICATIONS_DB": str(self.db)}
         self.assertTrue(notifications.notify("instagram", "info", "Hello", env=env, send=telegram))
         self.assertEqual(telegram.sent, [])
         self.assertEqual(self.rows()[0]["delivery"], "none")
@@ -136,7 +140,7 @@ class NotifyTests(NotifierTestCase):
 
     def test_an_abandoned_claim_is_retried_after_its_lease(self):
         telegram = FakeTelegram()
-        notifications.notify("instagram", "ok", "a", env={"NOTIFICATIONS_DB": str(self.db)})
+        notifications.notify("instagram", "ok", "a", env={"COMMAND_CENTRE_NOTIFICATIONS_DB": str(self.db)})
         with sqlite3.connect(self.db) as conn:
             conn.execute("UPDATE notifications SET delivery='pending', attempts=1, claimed_until=?", (NOW.isoformat(),))
         notifications.notify("instagram", "ok", "b", env=self.env, now=NOW, send=telegram)
@@ -146,7 +150,7 @@ class NotifyTests(NotifierTestCase):
         self.assertEqual([t for _, _, t in telegram.sent], ["\u2705 b", "\u2705 c", "\u2705 a"])
 
     def test_an_abandoned_last_attempt_is_marked_failed(self):
-        notifications.notify("instagram", "ok", "a", env={"NOTIFICATIONS_DB": str(self.db)})
+        notifications.notify("instagram", "ok", "a", env={"COMMAND_CENTRE_NOTIFICATIONS_DB": str(self.db)})
         attempts = notifications.MAX_SEND_ATTEMPTS
         with sqlite3.connect(self.db) as conn:
             conn.execute(
@@ -173,7 +177,7 @@ class NotifyTests(NotifierTestCase):
 
     def test_a_broken_notifier_never_breaks_the_caller(self):
         (self.root / "blocker").write_text("not a directory")
-        env = {**self.env, "NOTIFICATIONS_DB": str(self.root / "blocker" / "n.sqlite3")}
+        env = {**self.env, "COMMAND_CENTRE_NOTIFICATIONS_DB": str(self.root / "blocker" / "n.sqlite3")}
         err = io.StringIO()
         with redirect_stderr(err):
             self.assertFalse(notifications.notify("instagram", "ok", "x", env=env, send=FakeTelegram()))
@@ -198,9 +202,11 @@ class NotifyTests(NotifierTestCase):
 
     def test_only_https_links_are_kept_and_titles_are_cleaned(self):
         for link in ("http://example.test/", "javascript:alert(1)", "https://exa mple.test/", "https://" + "a" * 600):
-            notifications.notify("instagram", "info", "x", link, env={"NOTIFICATIONS_DB": str(self.db)})
+            notifications.notify("instagram", "info", "x", link, env={"COMMAND_CENTRE_NOTIFICATIONS_DB": str(self.db)})
         self.assertEqual({r["link"] for r in self.rows()}, {None})
-        notifications.notify("instagram", "info", "a\x00b\x1bc" + "z" * 400, env={"NOTIFICATIONS_DB": str(self.db)})
+        notifications.notify(
+            "instagram", "info", "a\x00b\x1bc" + "z" * 400, env={"COMMAND_CENTRE_NOTIFICATIONS_DB": str(self.db)}
+        )
         title = self.rows()[-1]["title"]
         self.assertTrue(title.startswith("a b c"))
         self.assertEqual(len(title), 300)
@@ -216,7 +222,7 @@ class NotifyTests(NotifierTestCase):
 
     def test_reads_settings_from_the_env_file(self):
         (self.root / ".env").write_text(
-            f"TELEGRAM_BOT_TOKEN={TOKEN}\nTELEGRAM_CHAT_ID=42\nNOTIFICATIONS_DB={self.db}\n"
+            f"TELEGRAM_BOT_TOKEN={TOKEN}\nTELEGRAM_CHAT_ID=42\nCOMMAND_CENTRE_NOTIFICATIONS_DB={self.db}\n"
         )
         telegram = FakeTelegram()
         cwd = os.getcwd()
@@ -266,7 +272,7 @@ class InboxApiTests(NotifierTestCase):
         return client
 
     def test_lists_newest_first_with_pages(self):
-        env = {"NOTIFICATIONS_DB": str(self.db)}
+        env = {"COMMAND_CENTRE_NOTIFICATIONS_DB": str(self.db)}
         for n in range(12):
             notifications.notify("instagram", "ok" if n % 2 else "failed", f"n{n}", "https://example.test/x", env=env)
         before = self.db.read_bytes()
@@ -306,6 +312,17 @@ class InboxApiTests(NotifierTestCase):
         deploy = (ROOT / "deploy/command-centre/deploy_host.py").read_text()
         self.assertIn('"NOTIFICATIONS_DB": str(checkout / "data/notifications.sqlite3")', deploy)
         self.assertIn("*.sqlite3", (ROOT / ".gitignore").read_text().splitlines())
+
+    def test_the_inbox_reads_the_database_the_notifier_writes(self):
+        from command_centre.config import load_settings
+
+        custom = self.root / "elsewhere/notes.sqlite3"
+        env = {"COMMAND_CENTRE_NOTIFICATIONS_DB": str(custom)}
+        self.assertTrue(notifications.notify("instagram", "ok", "a", env=env))
+        settings = load_settings(self.root, env)
+        self.assertEqual(settings.notifications_db, custom)
+        with closing(notifications.connect(settings.notifications_db)) as conn:
+            self.assertEqual([r["title"] for r in notifications.recent(conn)[0]], ["a"])
 
 
 class InboxFrontendTests(unittest.TestCase):

@@ -49,7 +49,7 @@ class PublishCase(unittest.TestCase):
         self.addCleanup(self.conn.close)
         self.media, self.public = self.root / "drafts", self.root / "public"
         self.notes = self.root / "notifications.sqlite3"
-        self.env = {**ENV, "INSTAGRAM_PUBLIC_DIR": str(self.public), "NOTIFICATIONS_DB": str(self.notes)}
+        self.env = {**ENV, "INSTAGRAM_PUBLIC_DIR": str(self.public), "COMMAND_CENTRE_NOTIFICATIONS_DB": str(self.notes)}
         self.checked = []
 
     def add(self, draft_id="a" * 16, *, score=80, slot=SLOT, made=MADE, slides=3, data=JPEG):

@@ -188,7 +188,7 @@ def notify(
         delivery, error = ("pending", None) if valid else ("failed", "invalid Telegram settings")
         if not configured:
             delivery, error = "none", None
-        path = Path(env.get("NOTIFICATIONS_DB") or DEFAULT_DATABASE).expanduser()
+        path = Path(env.get("COMMAND_CENTRE_NOTIFICATIONS_DB") or DEFAULT_DATABASE).expanduser()
         conn = connect(path)
         try:
             with conn:
