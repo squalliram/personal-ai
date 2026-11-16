@@ -61,7 +61,7 @@ class EnergyFuelsTests(unittest.TestCase):
         electricity, gas = found["electricity"], found["gas"]
         self.assertEqual(electricity["through"], "2026-11-14")
         self.assertEqual(len(electricity["days"]), insights.CHART_DAYS)
-        self.assertEqual(electricity["days"][-1], {"date": "2026-11-14", "kwh": 10.0, "cost": 2.5})
+        self.assertEqual(electricity["days"][-1], {"date": "2026-11-14", "kwh": 10.0, "cost": 2.5, "complete": True})
         self.assertEqual(electricity["week"]["kwh"], 70.0)
         self.assertEqual(electricity["week"]["change"], 0.0)
         self.assertEqual(electricity["basis"], {"kwh": "measured", "cost": "estimated"})
@@ -85,11 +85,44 @@ class EnergyFuelsTests(unittest.TestCase):
         self.assertIsNone(found["electricity"]["week"]["kwh"])
         self.assertIsNone(found["electricity"]["week"]["change"])
 
+    def test_a_day_with_missing_readings_leaves_the_week_unknown(self):
+        partial = TODAY - timedelta(days=3)
+        rows = history(kwh=lambda day: 4.0 if day == partial else 10.0)
+        for row in rows:
+            row["complete"] = row["date"] != partial.isoformat()
+        found = fuels(rows)["electricity"]
+        self.assertIsNone(found["week"]["kwh"])
+        self.assertIsNone(found["week"]["change"])
+        day = next(d for d in found["days"] if d["date"] == partial.isoformat())
+        self.assertEqual((day["kwh"], day["complete"]), (4.0, False))
+
+    def test_rows_never_checked_for_completeness_still_count(self):
+        rows = history()
+        for row in rows:
+            row["complete"] = None
+        self.assertEqual(fuels(rows)["electricity"]["week"]["kwh"], 70.0)
+
 
 class EnergyInsightTests(unittest.TestCase):
     def insights(self, rows, dashboard=None, anomalies=()):
         energy = {"state": "available", "anomalies": list(anomalies)}
         return insights.energy_insights(energy, insights.energy_fuels(energy, rows, dashboard, NOW))
+
+    def test_missing_readings_do_not_look_like_a_drop(self):
+        partial = {(TODAY - timedelta(days=n)).isoformat() for n in (2, 4)}
+        rows = history(kwh=lambda day: 3.0 if day.isoformat() in partial else 10.0)
+        for row in rows:
+            row["complete"] = row["date"] not in partial
+        self.assertEqual(self.insights(rows), [])
+
+    def test_partial_days_are_left_out_of_the_typical_day(self):
+        spike = TODAY - timedelta(days=2)
+        rows = history(kwh=lambda day: 40.0 if day == spike else 1.0 if day.day % 2 else 10.0)
+        for row in rows:
+            row["complete"] = date.fromisoformat(row["date"]).day % 2 == 0 or row["date"] == spike.isoformat()
+        anomaly = {"date": spike.isoformat(), "fuel": "electricity", "consumption_kwh": 40.0}
+        (item,) = [i for i in self.insights(rows, anomalies=[anomaly]) if i["id"] == "electricity-unusual"]
+        self.assertEqual(item["evidence"]["typical_kwh"], 10.0)
 
     def test_steady_usage_produces_no_filler(self):
         self.assertEqual(self.insights(history() + history("gas", lambda day: 30.0)), [])

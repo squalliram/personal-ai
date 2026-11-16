@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 from bisect import bisect_right
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from statistics import mean, pstdev
 from zoneinfo import ZoneInfo
 
@@ -61,6 +61,24 @@ class _Rates:
             if boundary >= end:
                 return value
             cursor = boundary
+
+
+def _covers_day(day: str, readings: list) -> bool:
+    """Every supply point read that day has readings spanning the whole London day (23, 24 or 25 hours)."""
+    start = datetime.fromisoformat(day).replace(tzinfo=LONDON).astimezone(timezone.utc)
+    end = (datetime.fromisoformat(day) + timedelta(days=1)).replace(tzinfo=LONDON).astimezone(timezone.utc)
+    points: dict[str, list] = defaultdict(list)
+    for row in readings:
+        points[row["point_id"]].append((_instant(row["interval_start"]), _instant(row["interval_end"])))
+    for spans in points.values():
+        cursor = start
+        for left, right in sorted(spans):
+            if left > cursor:
+                return False
+            cursor = max(cursor, right)
+        if cursor < end:
+            return False
+    return True
 
 
 def _rate(conn: sqlite3.Connection, meter_id: int, kind: str, instant: str) -> float | None:
@@ -121,7 +139,11 @@ def _recompute_daily_costs(conn: sqlite3.Connection, gas_units: str) -> None:
                 break
             standing += rate / 100
         total = unit_cost + standing if unit_cost is not None and standing is not None else None
-        conn.execute("INSERT INTO daily_costs VALUES(?,?,?,?,?,?)", (day, fuel, kwh, unit_cost, standing, total))
+        conn.execute(
+            "INSERT INTO daily_costs(date,fuel,consumption_kwh,unit_cost_gbp,standing_charge_gbp,total_cost_gbp,complete)"
+            " VALUES(?,?,?,?,?,?,?)",
+            (day, fuel, kwh, unit_cost, standing, total, int(_covers_day(day, readings))),
+        )
 
 
 def summary(conn: sqlite3.Connection, start: str | None = None, end: str | None = None) -> list[dict]:

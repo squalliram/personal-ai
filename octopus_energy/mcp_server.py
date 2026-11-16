@@ -79,16 +79,23 @@ def dispatch(name: str, arguments: dict, database: Path) -> list[dict]:
         if name == "get_energy_summary":
             return summary(conn, arguments.get("start"), arguments.get("end"))
         if name == "get_daily_consumption":
-            return _confirmed_gas_totals(
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(daily_costs)")}
+            complete = "complete" if "complete" in columns else "NULL complete"
+            rows = _confirmed_gas_totals(
                 conn,
                 [
                     dict(r)
                     for r in conn.execute(
-                        "SELECT date,fuel,consumption_kwh,total_cost_gbp FROM daily_costs WHERE date>=? AND date<? ORDER BY date",
+                        f"SELECT date,fuel,consumption_kwh,total_cost_gbp,{complete} FROM daily_costs"
+                        " WHERE date>=? AND date<? ORDER BY date",
                         (arguments["start"], arguments["end"]),
                     )
                 ],
             )
+            for row in rows:
+                # True: readings cover the whole London day; False: some are missing; None: not yet checked.
+                row["complete"] = None if row["complete"] is None else bool(row["complete"])
+            return rows
         if name == "get_monthly_bill_comparison":
             return _confirmed_gas_totals(
                 conn,
