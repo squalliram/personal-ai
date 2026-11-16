@@ -1798,10 +1798,12 @@
   async function inbox(view) {
     const body = el("div", {});
     view.append(card("Inbox", muted("Notifications from your agents and scheduled jobs, newest first. Times are London time."), body));
+    let generation = 0;
     async function show() {
+      const ticket = ++generation; // a later page choice supersedes this request
       const epoch = cacheEpoch;
       const result = await api(`api/v1/notifications?page=${inboxView.page}&per_page=25`);
-      if (epoch !== cacheEpoch) return;
+      if (epoch !== cacheEpoch || ticket !== generation) return;
       if (result.status === 401) { showLogin("Your session has ended. Sign in again."); return; }
       if (!result.ok) { body.replaceChildren(muted(`The inbox could not be loaded (${(result.data && result.data.error) || result.status}).`)); return; }
       const data = result.data;

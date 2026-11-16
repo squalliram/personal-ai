@@ -332,6 +332,7 @@ class InboxFrontendTests(unittest.TestCase):
         self.assertIn("api/v1/notifications?page=", script)
         self.assertIn('link.startsWith("https://")', script)
         self.assertRegex(script, re.compile(r"const VIEWS = \{[^}]*\binbox\b"))
+        self.assertIn("if (epoch !== cacheEpoch || ticket !== generation) return;", script)
 
 
 class TelegramDeployTests(unittest.TestCase):
