@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import csv
+import email.parser
+import email.policy
 import hashlib
 import hmac
 import io
@@ -28,6 +30,7 @@ from zoneinfo import ZoneInfo
 import notifications
 from instagram_agent import cloudflare_client, openai_client
 from instagram_agent import storage as instagram_storage
+from instagram_agent import uploads as instagram_uploads
 
 from . import assistant, energy_refresh, insights, passkeys, sources
 from .audit import AuditLog
@@ -118,6 +121,46 @@ def _json_body(environ: dict, limit: int = MAX_BODY_BYTES) -> tuple[object, Resu
         return json.loads(environ["wsgi.input"].read(length)), None
     except (ValueError, UnicodeDecodeError):
         return None, _error(400, "invalid_request")
+
+
+def _photo_form(environ: dict) -> tuple[tuple[str, list[bytes]] | None, Result | None]:
+    """The note and photo files from a multipart/form-data upload, with nothing else allowed."""
+    content_type = environ.get("CONTENT_TYPE", "")
+    if content_type.split(";")[0].strip().lower() != "multipart/form-data" or "boundary=" not in content_type:
+        return None, _error(415, "multipart_required")
+    try:
+        length = int(environ.get("CONTENT_LENGTH") or 0)
+    except ValueError:
+        return None, _error(400, "invalid_request")
+    if not 0 < length <= instagram_uploads.MAX_UPLOAD_BYTES:
+        return None, _error(413 if length > 0 else 400, "upload_too_large" if length > 0 else "invalid_request")
+    body = environ["wsgi.input"].read(length)
+    if len(body) != length:
+        return None, _error(400, "invalid_request")
+    header = f"Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n".encode("latin-1", "replace")
+    message = email.parser.BytesParser(policy=email.policy.HTTP).parsebytes(header + body)
+    if not message.is_multipart() or message.defects:
+        return None, _error(400, "invalid_request")
+    notes, photos = [], []
+    for part in message.iter_parts():
+        name = part.get_param("name", header="content-disposition")
+        data = part.get_payload(decode=True)
+        if part.get_content_disposition() != "form-data" or not isinstance(data, bytes):
+            return None, _error(400, "invalid_request")
+        if name == "note" and part.get_filename() is None:
+            notes.append(data)
+        elif name == "photos" and part.get_filename() is not None:
+            photos.append(data)
+        else:
+            return None, _error(400, "invalid_request")
+        if len(photos) > instagram_uploads.MAX_PHOTOS:
+            return None, _error(400, "photo_count")
+    if len(notes) != 1:
+        return None, _error(400, "invalid_note")
+    try:
+        return (notes[0].decode("utf-8"), photos), None
+    except UnicodeDecodeError:
+        return None, _error(400, "invalid_note")
 
 
 def csv_cell(value: object) -> object:
@@ -249,6 +292,11 @@ class CommandCentreApp:
             ("GET", "/api/v1/instagram/drafts"): Route(self.instagram_drafts, Permission.READ),
             ("GET", "/api/v1/instagram/slide"): Route(self.instagram_slide, Permission.READ),
             ("POST", "/api/v1/instagram/decision"): Route(self.instagram_decision, Permission.RECOMMEND, csrf=True),
+            ("POST", "/api/v1/instagram/uploads"): Route(self.instagram_upload, Permission.RECOMMEND, csrf=True),
+            ("POST", "/api/v1/instagram/uploads/delete"): Route(
+                self.instagram_upload_delete, Permission.RECOMMEND, csrf=True
+            ),
+            ("GET", "/api/v1/instagram/upload-photo"): Route(self.instagram_upload_photo, Permission.READ),
             ("GET", "/api/v1/notifications"): Route(self.notifications, Permission.READ),
             ("POST", "/api/v1/notifications"): Route(self.notification_ingest, None, bearer=True),
         }
@@ -1066,7 +1114,79 @@ class CommandCentreApp:
         return 201, {"id": stored}, []
 
     def instagram_drafts(self, request: Request) -> Result:
-        return 200, sources.instagram_drafts(self.settings), []
+        return 200, {**sources.instagram_drafts(self.settings), "uploads_on": instagram_uploads.available()}, []
+
+    def _instagram_ready(self) -> bool:
+        path, media = self.settings.instagram_db, self.settings.instagram_media
+        return bool(path and media and path.is_file() and not path.is_symlink() and not media.is_symlink())
+
+    def instagram_upload(self, request: Request) -> Result:
+        """Add the owner's photos and note to the queue; the daily run turns the oldest into a draft."""
+        if not self._instagram_ready():
+            return _error(404, "not_found")
+        if not instagram_uploads.available():
+            return _error(503, "uploads_unavailable")
+        form, error = _photo_form(request.environ)
+        if error:
+            return error
+        try:
+            note = instagram_uploads.clean_note(form[0])
+            prepared = instagram_uploads.prepare(form[1])
+        except instagram_uploads.PhotoError as exc:
+            self.audit.record("instagram_upload", "refused", actor="owner", reason=exc.code, client=request.client)
+            return _error(413 if exc.code == "photo_too_large" else 400, exc.code)
+        conn = sqlite3.connect(self.settings.instagram_db, timeout=5)
+        try:
+            upload_id = instagram_uploads.save(conn, self.settings.instagram_media, note, prepared, self._now())
+        finally:
+            conn.close()
+        with self._collect_lock:
+            self._collected = None
+        self.audit.record(
+            "instagram_upload", "saved", actor="owner", upload=upload_id, photos=len(prepared), client=request.client
+        )
+        return 200, {"upload_id": upload_id, "photos": len(prepared)}, []
+
+    def instagram_upload_delete(self, request: Request) -> Result:
+        body, error = _json_body(request.environ)
+        if error:
+            return error
+        if (
+            not isinstance(body, dict)
+            or set(body) != {"upload_id"}
+            or not isinstance(body["upload_id"], str)
+            or not instagram_uploads.UPLOAD_ID.fullmatch(body["upload_id"])
+        ):
+            return _error(400, "invalid_request")
+        if not self._instagram_ready():
+            return _error(404, "not_found")
+        conn = sqlite3.connect(self.settings.instagram_db, timeout=5)
+        try:
+            deleted = instagram_uploads.delete(conn, self.settings.instagram_media, body["upload_id"])
+        except sqlite3.OperationalError:
+            deleted = False  # no uploads table yet
+        finally:
+            conn.close()
+        if not deleted:
+            return _error(404, "not_found")
+        with self._collect_lock:
+            self._collected = None
+        self.audit.record("instagram_upload", "deleted", actor="owner", upload=body["upload_id"], client=request.client)
+        return 200, {"upload_id": body["upload_id"], "deleted": True}, []
+
+    def instagram_upload_photo(self, request: Request) -> Result:
+        upload, number = request.query("upload") or "", request.query("n") or ""
+        if not instagram_uploads.UPLOAD_ID.fullmatch(upload) or not number.isdigit():
+            return _error(400, "invalid_parameters")
+        if not 1 <= int(number) <= instagram_uploads.MAX_PHOTOS:
+            return _error(400, "invalid_parameters")
+        media = self.settings.instagram_media
+        if media is None or media.is_symlink() or (media / instagram_uploads.FOLDER).is_symlink():
+            return _error(404, "not_found")
+        try:
+            return 200, (instagram_uploads.read_photo(media, upload, f"thumb-{int(number)}.jpg"), "image/jpeg"), []
+        except OSError:
+            return _error(404, "not_found")
 
     def instagram_slide(self, request: Request) -> Result:
         draft, number = request.query("draft") or "", request.query("n") or ""

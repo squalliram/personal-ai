@@ -13,7 +13,7 @@ from pathlib import Path
 from notifications import command_centre_link, notify
 from octopus_energy.cli import load_env
 
-from . import analysis, cloudflare_client, drafts, following, publish, storage
+from . import analysis, cloudflare_client, drafts, following, publish, storage, uploads
 from .analysis import LONDON
 from .cloudflare_client import CloudflareAI
 from .graph import GRAPH_HOST, GRAPH_VERSION, INSTAGRAM_HOST, GraphAPIError, GraphClient
@@ -139,28 +139,44 @@ def daily(conn, env: dict, media_dir: Path, now: datetime | None = None) -> str:
     return outcome
 
 
+def _short(note: str, limit: int = 60) -> str:
+    return note if len(note) <= limit else note[: limit - 1].rstrip() + "…"
+
+
+def _posting(env: dict, rows) -> str:
+    """When the first of these drafts posts, for the notification title."""
+    times = [
+        publish.posts_at(r["scheduled_for"], r["created_at"])
+        for r in rows
+        if r["scheduled_for"] and publish.will_post(r["status"], r["review_score"])
+    ]
+    if not publish.configured(env):
+        return "posting is manual"
+    if times:
+        return ("posts at " if len(rows) == 1 else "first posts at ") + min(times).astimezone(LONDON).strftime("%H:%M")
+    return "it won't post unless you approve it" if len(rows) == 1 else "none will post unless you approve one"
+
+
 def _notify_daily(conn, env: dict, outcome: str, now: datetime) -> None:
     today = now.astimezone(LONDON).date().isoformat()
     page = command_centre_link(env, "instagram")
+    if outcome in ("ok", "partial"):
+        for row in conn.execute(
+            "SELECT u.upload_id, u.note, d.status, d.review_score, d.scheduled_for, d.created_at FROM uploads u "
+            "JOIN drafts d ON d.draft_id=u.draft_id WHERE d.created_on=?",
+            (today,),
+        ).fetchall():
+            title = f'Your photos ("{_short(row["note"])}") are now an Instagram draft, {_posting(env, [row])}'
+            notify("instagram", "ok", title, page, key=f"instagram-upload-draft:{row['upload_id']}", env=env, now=now)
     if outcome == "ok":
         rows = conn.execute(
-            "SELECT status, review_score, scheduled_for, created_at FROM drafts WHERE created_on=?", (today,)
+            "SELECT status, review_score, scheduled_for, created_at FROM drafts WHERE created_on=? AND draft_id NOT "
+            "IN (SELECT draft_id FROM uploads WHERE draft_id IS NOT NULL)",
+            (today,),
         ).fetchall()
-        times = [
-            publish.posts_at(r["scheduled_for"], r["created_at"])
-            for r in rows
-            if r["scheduled_for"] and publish.will_post(r["status"], r["review_score"])
-        ]
-        if not publish.configured(env):
-            first = "posting is manual"
-        elif times:
-            first = ("posts at " if len(rows) == 1 else "first posts at ") + min(times).astimezone(LONDON).strftime(
-                "%H:%M"
-            )
-        else:
-            first = "it won't post unless you approve it" if len(rows) == 1 else "none will post unless you approve one"
-        title = f"{len(rows)} Instagram draft{'' if len(rows) == 1 else 's'} ready to review, {first}"
-        notify("instagram", "ok", title, page, key=f"instagram-drafts-ready:{today}", env=env, now=now)
+        if rows:
+            title = f"{len(rows)} Instagram draft{'' if len(rows) == 1 else 's'} ready to review, {_posting(env, rows)}"
+            notify("instagram", "ok", title, page, key=f"instagram-drafts-ready:{today}", env=env, now=now)
         return
     if outcome == "gave_up":
         title = "Instagram drafts gave up for today after repeated failures"
@@ -200,23 +216,26 @@ def make_drafts(conn, env: dict, media_dir: Path, now: datetime | None = None) -
         except GraphAPIError:
             pass  # Draft from yesterday's data rather than miss noon.
     skills = env.get("INSTAGRAM_SKILLS_DIR")
+    wanted, stored = DAILY_DRAFTS - have, 0
     try:
-        found = drafts.generate(
-            conn,
-            ai,
-            now,
-            count=DAILY_DRAFTS - have,
-            rules=drafts.load_rules(Path(skills).expanduser() if skills else None),
-            voice=_read(env.get("INSTAGRAM_VOICE_FILE", "agents/instagram-voice.md")),
-        )
+        rules = drafts.load_rules(Path(skills).expanduser() if skills else None)
+        voice = _read(env.get("INSTAGRAM_VOICE_FILE", "agents/instagram-voice.md"))
+        # The owner's oldest waiting photos come first; the AI carousel only fills what they don't.
+        upload = uploads.oldest(conn)
+        if upload is not None:
+            draft = drafts.generate_from_upload(conn, ai, now, upload, media_dir, rules=rules, voice=voice)
+            if draft is None:
+                raise AIError("the agents wrote no usable post from your photos")
+            stored += drafts.store_upload_draft(conn, draft, upload, media_dir, now) is not None
         dropped: list[str] = []
-        stored = drafts.render_and_store(conn, ai, found, media_dir, now, dropped)
+        if stored < wanted:
+            found = drafts.generate(conn, ai, now, count=wanted - stored, rules=rules, voice=voice)
+            stored += drafts.render_and_store(conn, ai, found, media_dir, now, dropped)
     except (AIError, OSError) as exc:
         error = str(exc) if isinstance(exc, AIError) else type(exc).__name__
         with conn:
-            storage.record_run(conn, today, stamp, "failed", error=error)
-        return "failed"
-    wanted = DAILY_DRAFTS - have
+            storage.record_run(conn, today, stamp, "partial" if stored else "failed", stored, error=error[:500])
+        return "partial" if stored else "failed"
     outcome = "ok" if stored >= wanted else "partial" if stored else "failed"
     error = None
     if stored < wanted:

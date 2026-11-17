@@ -34,7 +34,7 @@ class FakeAI(OpenAIClient):
         self.creates, self.scores, self.calls, self.images = list(creates), list(scores), [], 0
         self.fail_images_after = fail_images_after
 
-    def chat_json(self, system, user):
+    def chat_json(self, system, user, *, images=()):
         self.calls.append((system, json.loads(user)))
         if system.startswith("You are the Create agent"):
             return {"drafts": self.creates.pop(0)}

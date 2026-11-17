@@ -21,7 +21,7 @@ button{color:var(--ink);background:var(--raised);border:1px solid var(--line);bo
 button:hover{border-color:var(--accent);color:var(--accent);box-shadow:0 0 14px rgba(0,229,255,.25);box-shadow:0 0 14px color-mix(in srgb,var(--accent) 30%,transparent)}
 button.primary{background:var(--interface);color:#01060c;border:0;font-weight:700;box-shadow:0 0 22px rgba(0,229,255,.45)}
 button.primary:hover{color:#01060c;box-shadow:0 0 32px rgba(0,229,255,.75)}
-button:focus-visible,a:focus-visible,input:focus-visible{outline:2px solid var(--interface);outline-offset:3px;box-shadow:0 0 0 5px rgba(0,229,255,.18)}
+button:focus-visible,a:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px solid var(--interface);outline-offset:3px;box-shadow:0 0 0 5px rgba(0,229,255,.18)}
 .skip{position:absolute;left:-999px;display:inline-flex;align-items:center;min-height:44px}.skip:focus{left:8px;top:8px;background:var(--bg);color:var(--link);border:1px solid var(--interface);padding:8px 12px;z-index:30}
 [hidden]{display:none!important}
 .eyebrow{color:var(--accent);font-family:var(--mono);letter-spacing:.3em;font-size:.72rem;font-weight:600;margin:0;text-shadow:0 0 14px rgba(0,229,255,.55)}
@@ -303,6 +303,9 @@ tbody tr:hover td{background:rgba(0,229,255,.04)}
 .ig-slides img{display:block;width:100%;height:auto;aspect-ratio:4/5;object-fit:cover;border:1px solid var(--line)}.ig-slides figcaption{margin-top:.3rem;font-size:.8rem;color:var(--muted);overflow-wrap:anywhere}
 .ig-caption{white-space:pre-wrap}.ig-actions{display:flex;gap:.6rem;margin-top:.8rem}
 .ig-actions{align-items:center;flex-wrap:wrap}.ig-downloads a{margin-left:.5rem}
+.ig-upload{display:grid;gap:.5rem;max-width:36rem}.ig-upload label{font-weight:600}
+.ig-upload input,.ig-upload textarea{width:100%;box-sizing:border-box;padding:10px 14px;border:1px solid var(--line);border-radius:2px;background:rgba(0,229,255,.04);color:var(--ink);font:inherit;min-height:44px}
+.ig-upload-item{border-top:1px solid var(--line);padding-top:.75rem;margin-top:.75rem}.ig-thumbs{grid-template-columns:repeat(auto-fill,minmax(90px,1fr))}
 .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
 .assistant-fab{position:fixed;right:1.25rem;bottom:1.25rem;z-index:8;display:inline-flex;align-items:center;gap:.6rem;min-height:56px;padding:.4rem 1.1rem .4rem .5rem;border-radius:999px;border:1px solid var(--interface);background:rgba(1,10,18,.9);color:var(--interface);font-family:var(--mono);letter-spacing:.16em;text-transform:uppercase;font-size:.72rem;box-shadow:0 0 24px rgba(0,229,255,.35)}
 .assistant-fab:hover{box-shadow:0 0 34px rgba(0,229,255,.6)}

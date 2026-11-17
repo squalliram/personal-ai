@@ -57,7 +57,7 @@ def unpack_wheels(target: Path, wheels: dict, requirements: Path) -> None:
 
 
 def vendor(release: Path, wheels: dict | None = None) -> bool:
-    """Install the hash-pinned passkey dependencies into <release>/vendor; passkeys stay off on failure.
+    """Install the hash-pinned dependencies into <release>/vendor; passkeys and photo uploads stay off on failure.
 
     Wheels shipped by the deploy runner are preferred, because the host may have no pip or no PyPI access.
     """
