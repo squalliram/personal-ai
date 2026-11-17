@@ -45,7 +45,7 @@ class PublishDashboardTests(unittest.TestCase):
         self.source = self.root / "source"
         self.source.mkdir()
         (self.source / "index.html").write_text("<html>synthetic dashboard</html>")
-        (self.source / "data.json").write_text('{"daily":[],"hourly":[]}')
+        (self.source / "data.json").write_text('{"generated_at":"2026-11-05T12:00:00+00:00","daily":[],"hourly":[]}')
         (self.source / "status.json").write_bytes(status(request_id="0123456789abcdef" * 2))
         (self.source / "refresh.php").write_text(
             "<?php\nconst ENERGY_REFRESH_DIRECTORY_HEX = '__ENERGY_REFRESH_DIRECTORY_HEX__';\n"
@@ -164,6 +164,40 @@ class PublishDashboardTests(unittest.TestCase):
             with self.subTest(args=args):
                 self.assertNotEqual(self.publish(*args).returncode, 0)
                 self.assertEqual(self.snapshot(), before)
+
+    def test_invalid_dashboard_data_is_refused_and_keeps_the_published_snapshot(self):
+        self.protection()
+        before = self.previous_files()
+        row = {"fuel": "gas", "date": "2026-11-04", "kwh": 1.5, "cost": None}
+        for bad in (
+            {},
+            {"daily": [], "hourly": []},
+            {"generated_at": "not-a-date", "daily": [], "hourly": []},
+            {"generated_at": "2026-11-05T12:00:00Z", "daily": [{**row, "fuel": "steam"}], "hourly": []},
+            {"generated_at": "2026-11-05T12:00:00Z", "daily": [row, row], "hourly": []},
+            {"generated_at": "2026-11-05T12:00:00Z", "daily": [{"fuel": "gas", "date": "2026-11-04"}], "hourly": []},
+            {"generated_at": "2026-11-05T12:00:00Z", "daily": [], "hourly": [{"fuel": "gas", "hour": 24, "kwh": 1}]},
+            {"generated_at": "2026-11-05T12:00:00Z", "daily": [], "hourly": [], "latest_day": []},
+            {"generated_at": "2026-11-05T12:00:00Z", "daily": ["x"], "hourly": []},
+            {"generated_at": "2026-11-05T12:00:00Z", "daily": [], "hourly": ["x"]},
+        ):
+            with self.subTest(bad=bad):
+                (self.source / "data.json").write_text(json.dumps(bad))
+                with self.assertRaises(publisher.PublicationError) as caught:
+                    publisher.publish(self.source, self.target, self.app)
+                self.assertEqual(caught.exception.category, "nothing_changed")
+                self.assertEqual(self.snapshot(), before)
+
+    def test_valid_dashboard_data_with_rows_is_published(self):
+        self.protection()
+        data = {
+            "generated_at": "2026-11-05T12:00:00+00:00",
+            "daily": [{"fuel": "electricity", "date": "2026-11-04", "kwh": 10, "cost": 2.5, "cost_status": "complete"}],
+            "hourly": [{"fuel": "electricity", "hour": 7, "kwh": 0.4}],
+        }
+        (self.source / "data.json").write_text(json.dumps(data))
+        publisher.publish(self.source, self.target, self.app)
+        self.assertEqual(json.loads((self.target / "data.json").read_text()), data)
 
     def test_exactly_one_php_placeholder_is_required(self):
         self.protection()
@@ -350,6 +384,27 @@ class PublishDashboardTests(unittest.TestCase):
         self.assertEqual((self.target / "status.json").read_bytes(), (other / "status.json").read_bytes())
         self.assertEqual((self.target / "data.json").read_bytes(), (self.source / "data.json").read_bytes())
         self.assertEqual((self.target / "index.html").read_bytes(), (self.source / "index.html").read_bytes())
+
+    def test_termination_right_after_a_swap_still_rolls_that_file_back(self):
+        self.protection()
+        before = self.previous_files()
+        replace, swaps = os.replace, 0
+
+        def swap_then_terminate(source, target):
+            nonlocal swaps
+            replace(source, target)
+            if source.parent.name.startswith(".energy-publish-"):
+                swaps += 1
+                if swaps == 2:
+                    os.kill(os.getpid(), signal.SIGTERM)  # handler raises before the caller's next statement
+
+        previous = signal.signal(signal.SIGTERM, publisher._interrupt)
+        self.addCleanup(signal.signal, signal.SIGTERM, previous)
+        with patch("octopus_energy.publisher.os.replace", side_effect=swap_then_terminate):
+            with self.assertRaises(publisher.PublicationError) as caught:
+                publisher.publish(self.source, self.target, self.app)
+        self.assertEqual(caught.exception.category, "rolled_back")
+        self.assertEqual(self.snapshot(), before)
 
     def test_sigterm_rolls_back_completed_swaps_before_exit(self):
         self.protection()
