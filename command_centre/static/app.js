@@ -1717,15 +1717,22 @@
     box.checked = draft.reel.hold;
     box.addEventListener("change", async () => {
       box.disabled = true;
-      const result = await api("api/v1/instagram/hold", { method: "POST", body: { draft_id: draft.draft_id, hold: box.checked } });
+      const body = { draft_id: draft.draft_id, hold: box.checked };
+      const definite = (r) => r.ok || [400, 401, 404, 409].includes(r.status);
+      let result = await api("api/v1/instagram/hold", { method: "POST", body });
+      // Setting the same hold again is harmless, so resend until the server gives a definite answer:
+      // then any earlier copy still in flight sets the same value.
+      for (let tries = 0; !definite(result) && tries < 3; tries++) {
+        status.textContent = "Couldn't confirm the hold change. Trying again…";
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        result = await api("api/v1/instagram/hold", { method: "POST", body });
+      }
       if (result.status === 401) { showLogin("Your session has ended. Sign in again."); return; }
       if (!result.ok) {
         const code = (result.data && result.data.error) || result.status;
-        if (![400, 404, 409].includes(result.status)) {
-          // The change may have been saved; reload the stored hold rather than guess.
-          status.textContent = "Couldn't confirm the hold change. Reloading…";
-          clearCache();
-          render();
+        if (!definite(result)) {
+          box.indeterminate = true;
+          status.textContent = "The hold state is unknown: the server didn't answer. Refresh the page before relying on it.";
           return;
         }
         status.textContent = `Could not change the hold. ${DECISION_ERRORS[code] || `(${code})`}`;
