@@ -355,6 +355,14 @@ def render_due(
                 failed += 1
                 notify_failure(row, error, final)
             with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                latest = conn.execute("SELECT reel FROM drafts WHERE draft_id=?", (row["draft_id"],)).fetchone()
+                try:
+                    hold = json.loads(latest[0] or "{}").get("hold") if latest else None
+                except (TypeError, ValueError, AttributeError):
+                    hold = None
+                if hold is not None:
+                    reel["hold"] = hold  # set by the owner while this rendered
                 conn.execute(
                     "UPDATE drafts SET reel=? WHERE draft_id=? AND kind='reel'",
                     (json.dumps(reel, ensure_ascii=False), row["draft_id"]),
