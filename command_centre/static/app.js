@@ -1841,12 +1841,15 @@
       if (files.length < 1 || files.length > MAX_PHOTOS) { status.textContent = UPLOAD_ERRORS.photo_count; return; }
       if (!note.value.trim()) { status.textContent = UPLOAD_ERRORS.invalid_note; return; }
       submit.disabled = true;
+      const signIn = signInCount;
       status.textContent = "Preparing photos…";
       const body = new FormData();
       body.append("note", note.value.trim());
       for (const [i, file] of files.entries()) body.append("photos", await shrink(file), `photo-${i + 1}.jpg`);
+      if (signIn !== signInCount) return;
       status.textContent = "Uploading…";
       const result = await api("api/v1/instagram/uploads", { method: "POST", body });
+      if (signIn !== signInCount) return;
       if (result.status === 401) { showLogin("Your session has ended. Sign in again."); return; }
       if (!result.ok) {
         const code = (result.data && result.data.error) || result.status;
@@ -1957,7 +1960,9 @@
   async function deleteUpload(upload, button, status) {
     if (!window.confirm("Delete these photos? They won't be posted.")) return;
     button.disabled = true;
+    const signIn = signInCount;
     const result = await api("api/v1/instagram/uploads/delete", { method: "POST", body: { upload_id: upload.upload_id } });
+    if (signIn !== signInCount) return;
     if (result.status === 401) { showLogin("Your session has ended. Sign in again."); return; }
     if (!result.ok) {
       const gone = result.status === 404;

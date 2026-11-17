@@ -813,12 +813,29 @@ class CommandCentreApp:
             )
         return providers
 
+    def _notify_env(self) -> dict[str, str]:
+        settings = self.settings
+        env = {"COMMAND_CENTRE_NOTIFICATIONS_DB": str(settings.notifications_db)}
+        if settings.telegram_bot_token and settings.telegram_chat_id:
+            env |= {"TELEGRAM_BOT_TOKEN": settings.telegram_bot_token, "TELEGRAM_CHAT_ID": settings.telegram_chat_id}
+        return env
+
+    def _assistant_failed(self, reason: str, title: str) -> None:
+        """Tell the owner the website Jarvis could not answer, at most once an hour per reason."""
+        if self.settings.notifications_db is None:
+            return
+        hour = datetime.fromtimestamp(self.clock(), timezone.utc).strftime("%Y-%m-%dT%H")
+        env = self._notify_env()
+        link = notifications.command_centre_link(env, "settings")
+        self.notify("jarvis", "failed", title, link, key=f"assistant:{reason}:{hour}", env=env)
+
     def assistant_status(self, request: Request) -> Result:
         return 200, {"available": bool(self._assistant_providers())}, []
 
     def ask_assistant(self, request: Request) -> Result:
         providers = self._assistant_providers()
         if not providers:
+            self._assistant_failed("not_configured", "Website Jarvis can't answer: no AI provider is configured")
             return _error(503, "assistant_not_configured")
         body, error = _json_body(request.environ)
         if error:
@@ -831,6 +848,7 @@ class CommandCentreApp:
             return _error(400, "invalid_request")
         if not self.assistant_limiter.hit("all"):
             self.audit.record("assistant", "rate_limited", actor="owner", client=request.client)
+            self._assistant_failed("rate_limited", "Website Jarvis hit its limit of 30 questions an hour")
             return _error(429, "rate_limited", [("Retry-After", "600")])
         data = self._collect()
         context = assistant.build_context(
@@ -850,6 +868,7 @@ class CommandCentreApp:
                 {"answer": answer[:2000], "model": client.text_model, "generated_at": self._iso(self.clock())},
                 [],
             )
+        self._assistant_failed("unavailable", "Website Jarvis couldn't answer: every AI provider failed")
         return _error(502, "assistant_unavailable")
 
     def modules(self, request: Request) -> Result:
@@ -1098,10 +1117,7 @@ class CommandCentreApp:
         ):
             audit("invalid", actor="ingest")
             return _error(400, "invalid_parameters")
-        env = {"COMMAND_CENTRE_NOTIFICATIONS_DB": str(settings.notifications_db)}
-        if settings.telegram_bot_token and settings.telegram_chat_id:
-            env |= {"TELEGRAM_BOT_TOKEN": settings.telegram_bot_token, "TELEGRAM_CHAT_ID": settings.telegram_chat_id}
-        stored = self.notify(source, body["outcome"], title, link, env=env)
+        stored = self.notify(source, body["outcome"], title, link, env=self._notify_env())
         if not stored:
             audit("failure", actor=source, result=body["outcome"])
             return _error(500, "internal_error")
