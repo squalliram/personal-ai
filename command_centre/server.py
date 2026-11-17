@@ -27,6 +27,12 @@ class Handler(WSGIRequestHandler):
     # The TLS handshake runs on the first read in the worker thread; this bounds a client that never completes it.
     timeout = 10
 
+    def get_environ(self) -> dict:
+        environ = super().get_environ()
+        # Server-owned: wsgiref derives wsgi.url_scheme from HTTPS, not from the wrapped socket.
+        environ["HTTPS"] = "on" if isinstance(self.connection, ssl.SSLSocket) else "off"
+        return environ
+
     def handle(self) -> None:
         # Mirrors WSGIRequestHandler.handle so the Server header omits the Python version.
         self.raw_requestline = self.rfile.readline(65537)

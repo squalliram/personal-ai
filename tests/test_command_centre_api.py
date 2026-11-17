@@ -182,6 +182,14 @@ class SessionLifecycleTests(ApiTestCase):
         self.client.cookies = cookie  # a replayed cookie must stay dead
         self.assertEqual(self.client.request("GET", "/api/v1/overview").status, 401)
 
+    def test_repeated_cross_origin_rejections_do_not_grow_the_audit_log_without_bound(self):
+        for _ in range(50):
+            response = self.client.request("POST", "/api/v1/session", body={}, origin="http://evil.example")
+            self.assertEqual(response.status, 403)
+        rejected = [e for e in self.app.audit.recent(limit=200) if e["outcome"] == "cross_origin_rejected"]
+        self.assertGreater(len(rejected), 0)
+        self.assertLessEqual(len(rejected), 10)
+
     def test_cross_origin_state_change_is_refused_even_with_csrf_token(self):
         self.client.login()
         response = self.client.request(
