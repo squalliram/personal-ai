@@ -73,18 +73,19 @@ def published(conn: sqlite3.Connection) -> list:
 
 
 def due(conn: sqlite3.Connection, now: datetime) -> list[tuple]:
-    """(post, checkpoint) pairs whose checkpoint has come and has not been reported or given up."""
-    done = {
-        (row[0], row[1])
-        for row in conn.execute("SELECT media_id, checkpoint FROM post_reports WHERE notified_at IS NOT NULL")
-    }
+    """(post, checkpoint) pairs whose checkpoint has come and has not been reported, plus exhausted checkpoints
+    whose failure alert is not yet stored (retried even after the collection window closes)."""
+    rows = conn.execute("SELECT media_id, checkpoint, attempts, notified_at FROM post_reports").fetchall()
+    done = {(row[0], row[1]) for row in rows if row[3] is not None}
+    unalerted = {(row[0], row[1]) for row in rows if row[3] is None and (row[2] or 0) >= MAX_ATTEMPTS}
     found = []
     for post in published(conn):
         at = parse_time(post["published_at"])
         if at is None:
             continue
         for name, after, grace in CHECKPOINTS:
-            if after <= now - at < after + grace and (post["media_id"], name) not in done:
+            key = (post["media_id"], name)
+            if key in unalerted or (after <= now - at < after + grace and key not in done):
                 found.append((post, name))
     return sorted(found, key=lambda item: item[0]["published_at"])
 

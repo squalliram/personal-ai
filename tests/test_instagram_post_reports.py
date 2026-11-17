@@ -182,10 +182,10 @@ class PostReportTests(Case):
             for tick in range(post_report.MAX_ATTEMPTS + 1):
                 post_report.tick(self.conn, self.env, start + timedelta(minutes=15 * tick), client=graph)
         self.assertEqual(len(graph.calls), post_report.MAX_ATTEMPTS)
-        post_report.tick(self.conn, self.env, start + timedelta(hours=3), client=graph)
+        post_report.tick(self.conn, self.env, start + timedelta(days=10), client=graph)  # past both windows
         self.assertEqual(len(graph.calls), post_report.MAX_ATTEMPTS)
         self.assertEqual([r[0] for r in self.inbox()], ["failed"])
-        self.assertEqual(post_report.tick(self.conn, self.env, start + timedelta(hours=4), client=graph), "reports 0")
+        self.assertEqual(post_report.tick(self.conn, self.env, start + timedelta(days=30), client=graph), "reports 0")
 
     def test_missed_checkpoints_are_skipped_not_backfilled(self):
         self.publish()
