@@ -6,6 +6,7 @@ Run by the deploy (`deploy-dashboard.yml`) so the answer is in the job log. Read
 from __future__ import annotations
 
 import os
+import re
 import resource
 import shutil
 import subprocess
@@ -43,6 +44,11 @@ def tool_version(path: str) -> str:
     return first[0][:120] if result.returncode == 0 and first else f"unusable (exit {result.returncode})"
 
 
+def _unescape(field: str) -> str:
+    """mountinfo writes a space as \\040 (and tab, newline, backslash as octal too)."""
+    return re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), field)
+
+
 def _mounts(mountinfo: str) -> tuple[list[tuple[str, Path]], dict[str, list[tuple[str, Path]]]]:
     """Every mount of the cgroup v2 hierarchy and of each v1 controller, with the cgroup at that mount's root."""
     v2: list[tuple[str, Path]] = []
@@ -52,7 +58,7 @@ def _mounts(mountinfo: str) -> tuple[list[tuple[str, Path]], dict[str, list[tupl
         fields, fs = left.split(), right.split()
         if not sep or len(fields) < 5 or len(fs) < 3:
             continue
-        mount = (fields[3], Path(fields[4]))
+        mount = (_unescape(fields[3]), Path(_unescape(fields[4])))
         if fs[0] == "cgroup2":
             v2.append(mount)
         elif fs[0] == "cgroup":
