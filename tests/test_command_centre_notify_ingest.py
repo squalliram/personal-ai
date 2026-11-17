@@ -158,6 +158,7 @@ class IngestTests(IngestTestCase):
         self.assertEqual(response.status, 503)
         self.assertEqual(response.json(), {"error": "not_configured"})
         self.assertEqual(self.audit(app)[0][:2], ("notification_ingest", "not_configured"))
+        self.assertEqual([self.post(app=app).status for _ in range(30)][-1], 429)
 
     def test_storage_failure_is_500(self):
         app = self.make(FakeNotify(None), notify_ingest_token=TOKEN, notifications_db=self.root / "n.sqlite3")

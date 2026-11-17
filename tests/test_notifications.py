@@ -215,6 +215,17 @@ class NotifyTests(NotifierTestCase):
         self.assertEqual(len(self.rows()), 2)
         self.assertEqual(len(telegram.sent), 2)
 
+    def test_a_delivery_bookkeeping_failure_still_returns_the_stored_id(self):
+        stderr = io.StringIO()
+        with (
+            patch.object(notifications, "_deliver", side_effect=sqlite3.OperationalError("locked")),
+            redirect_stderr(stderr),
+        ):
+            stored = notifications.notify("instagram", "ok", "x", env=self.env, send=FakeTelegram())
+        self.assertEqual(stored, self.rows()[0]["id"])
+        self.assertEqual(self.rows()[0]["delivery"], "pending")
+        self.assertIn("delivery deferred (OperationalError)", stderr.getvalue())
+
     def test_only_https_links_are_kept_and_titles_are_cleaned(self):
         for link in ("http://example.test/", "javascript:alert(1)", "https://exa mple.test/", "https://" + "a" * 600):
             notifications.notify("instagram", "info", "x", link, env={"COMMAND_CENTRE_NOTIFICATIONS_DB": str(self.db)})

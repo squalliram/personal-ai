@@ -1009,12 +1009,13 @@ class CommandCentreApp:
             self.audit.record("notification_ingest", outcome, actor=actor, client=request.client, **detail)
 
         settings = self.settings
-        if not settings.notify_ingest_token or settings.notifications_db is None:
-            audit("not_configured")
-            return _error(503, "not_configured")
+        # Throttle first so no branch, including not_configured, does unbounded work per request.
         if not self.ingest_limiter.hit(request.client):
             audit("rate_limited")
             return _error(429, "rate_limited", [("Retry-After", "600")])
+        if not settings.notify_ingest_token or settings.notifications_db is None:
+            audit("not_configured")
+            return _error(503, "not_configured")
         if not self._ingest_authorized(request.environ):
             audit("unauthorized")
             return _error(401, "authentication_required", [("WWW-Authenticate", "Bearer")])
