@@ -76,7 +76,14 @@ def _split_by_london_day(row) -> list[dict]:
     duration = (end - start).total_seconds()
     base = {"meter_id": row["meter_id"], "point_id": row["point_id"], "original": (start, end)}
     if duration <= 0:
-        return [{**base, "day": start.astimezone(LONDON).date().isoformat(), "span": (start, end), "kwh": row["consumption_kwh"]}]
+        return [
+            {
+                **base,
+                "day": start.astimezone(LONDON).date().isoformat(),
+                "span": (start, end),
+                "kwh": row["consumption_kwh"],
+            }
+        ]
     segments, cursor = [], start
     while cursor < end:
         day = cursor.astimezone(LONDON).date()

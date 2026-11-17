@@ -24,7 +24,9 @@ class BriefingTests(unittest.TestCase):
         tasks = [{"title": None}, {"title": "Deliver"}]
         ranked = rank_tasks(tasks, date(2026, 11, 5))
         self.assertEqual([task["title"] for task in ranked], [None, "Deliver"])
-        text = render(date(2026, 11, 5), datetime(2026, 11, 5, 8, tzinfo=ZoneInfo("Europe/London")), [{"title": None}], tasks, [])
+        text = render(
+            date(2026, 11, 5), datetime(2026, 11, 5, 8, tzinfo=ZoneInfo("Europe/London")), [{"title": None}], tasks, []
+        )
         self.assertIn("Untitled task", text)
         self.assertIn("Untitled event", text)
         self.assertNotIn(": None", text)

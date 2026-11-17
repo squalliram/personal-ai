@@ -19,7 +19,6 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-
 # Fields the renderer reads; every other key passes through unvalidated.
 CONSUMED = ("id", "title", "start", "end", "due", "priority", "location", "url")
 

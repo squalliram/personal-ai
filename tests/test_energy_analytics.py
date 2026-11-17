@@ -260,9 +260,12 @@ class AnalyticsTests(unittest.TestCase):
         self.tariffs(meter)
         self.reading(meter, "2026-11-01T23:30:00Z", "2026-11-02T00:30:00Z", 2)
         start = datetime(2026, 11, 2, 0, 30, tzinfo=timezone.utc)
+
+        def iso(moment):
+            return moment.isoformat().replace("+00:00", "Z")
+
         for index in range(47):
             first = start + timedelta(minutes=30 * index)
-            iso = lambda moment: moment.isoformat().replace("+00:00", "Z")
             self.reading(meter, iso(first), iso(first + timedelta(minutes=30)), 1)
         days = {row["date"]: row for row in self.daily()}
         self.assertAlmostEqual(days["2026-11-01"]["consumption_kwh"], 1)

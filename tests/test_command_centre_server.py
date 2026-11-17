@@ -146,8 +146,22 @@ class TlsServerTests(unittest.TestCase):
         root = Path(directory.name)
         cert, key = root / "cert.pem", root / "key.pem"
         subprocess.run(
-            ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", str(key), "-out", str(cert),
-             "-subj", "/CN=localhost", "-days", "1"],
+            [
+                "openssl",
+                "req",
+                "-x509",
+                "-newkey",
+                "rsa:2048",
+                "-nodes",
+                "-keyout",
+                str(key),
+                "-out",
+                str(cert),
+                "-subj",
+                "/CN=localhost",
+                "-days",
+                "1",
+            ],
             check=True,
             capture_output=True,
         )
