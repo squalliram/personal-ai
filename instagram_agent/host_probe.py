@@ -43,9 +43,10 @@ def tool_version(path: str) -> str:
     return first[0][:120] if result.returncode == 0 and first else f"unusable (exit {result.returncode})"
 
 
-def _mounts(mountinfo: str) -> tuple[tuple[str, Path] | None, dict[str, tuple[str, Path]]]:
-    """Where the cgroup v2 hierarchy and each v1 controller are mounted (and which cgroup is that mount's root)."""
-    v2, v1 = None, {}
+def _mounts(mountinfo: str) -> tuple[list[tuple[str, Path]], dict[str, list[tuple[str, Path]]]]:
+    """Every mount of the cgroup v2 hierarchy and of each v1 controller, with the cgroup at that mount's root."""
+    v2: list[tuple[str, Path]] = []
+    v1: dict[str, list[tuple[str, Path]]] = {}
     for line in mountinfo.splitlines():
         left, sep, right = line.partition(" - ")
         fields, fs = left.split(), right.split()
@@ -53,24 +54,35 @@ def _mounts(mountinfo: str) -> tuple[tuple[str, Path] | None, dict[str, tuple[st
             continue
         mount = (fields[3], Path(fields[4]))
         if fs[0] == "cgroup2":
-            v2 = mount
+            v2.append(mount)
         elif fs[0] == "cgroup":
-            v1.update({opt: mount for opt in fs[2].split(",") if opt in CGROUP_V1_FILES})
+            for opt in fs[2].split(","):
+                if opt in CGROUP_V1_FILES:
+                    v1.setdefault(opt, []).append(mount)
     return v2, v1
 
 
-def _chain(where: str, mount: tuple[str, Path]) -> list[Path]:
-    """The process's cgroup folder and its ancestors below the mount, innermost first."""
-    mount_root, point = mount
-    if mount_root != "/" and (where == mount_root or where.startswith(mount_root + "/")):
-        where = where[len(mount_root) :]
-    parts = [part for part in where.split("/") if part]
-    return [point.joinpath(*parts[:n]) for n in range(len(parts), 0, -1)] or [point]
+def _inside(where: str, mount_root: str) -> bool:
+    return mount_root == "/" or where == mount_root or where.startswith(mount_root.rstrip("/") + "/")
+
+
+def _chain(where: str, mounts: list[tuple[str, Path]]) -> list[Path]:
+    """The process's cgroup folder and its ancestors up to the mount point, innermost first.
+
+    Uses the mount whose root contains the process's cgroup most closely; unrelated bind mounts are ignored.
+    """
+    usable = [m for m in mounts if _inside(where, m[0])]
+    if not usable:
+        return []
+    mount_root, point = max(usable, key=lambda m: len(m[0]))
+    rest = where[len(mount_root) :] if mount_root != "/" else where
+    parts = [part for part in rest.split("/") if part]
+    return [point.joinpath(*parts[:n]) for n in range(len(parts), -1, -1)]
 
 
 def cgroup_files(membership: str, mountinfo: str = "", root: Path = CGROUP_ROOT) -> list[tuple[Path, str]]:
     """This process's own cgroup limit files (from /proc/self/cgroup and mountinfo), then its ancestors'."""
-    v2_mount, v1_mounts = _mounts(mountinfo)
+    v2_mounts, v1_mounts = _mounts(mountinfo)
     found = []
     for line in membership.splitlines():
         parts = line.split(":", 2)
@@ -78,14 +90,17 @@ def cgroup_files(membership: str, mountinfo: str = "", root: Path = CGROUP_ROOT)
             continue
         _, controllers, where = parts
         if controllers == "":
-            chain = _chain(where, v2_mount or ("/", root))
-            for name, label in CGROUP_V2_FILES.items():
+            chain = _chain(where, v2_mounts or [("/", root)])
+            for name, label in CGROUP_V2_FILES.items() if chain else ():
                 found += [(chain[0] / name, label)] + [(up / name, f"{label} (parent {up.name})") for up in chain[1:]]
         for controller in controllers.split(","):
             if controller in CGROUP_V1_FILES:
                 name, label = CGROUP_V1_FILES[controller]
-                chain = _chain(where, v1_mounts.get(controller, ("/", root / controller)))
-                found += [(chain[0] / name, label)] + [(up / name, f"{label} (parent {up.name})") for up in chain[1:]]
+                chain = _chain(where, v1_mounts.get(controller) or [("/", root / controller)])
+                if chain:
+                    found += [(chain[0] / name, label)] + [
+                        (up / name, f"{label} (parent {up.name})") for up in chain[1:]
+                    ]
     return found
 
 
