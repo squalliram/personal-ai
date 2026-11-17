@@ -69,17 +69,19 @@ def start(conn: sqlite3.Connection, media_dir: Path, note: str, size: int, now: 
     if not isinstance(size, int) or isinstance(size, bool) or not 0 < size <= MAX_CLIP_BYTES:
         raise ClipError("clip_too_large" if isinstance(size, int) and size > 0 else "invalid_size")
     root = uploads.private_root(media_dir, FOLDER)
+    cutoff = (now - STALE_UPLOAD).isoformat(timespec="seconds")
     with conn:
         conn.execute(TABLE)
         stale = [
-            r[0]
-            for r in conn.execute(
-                "SELECT clip_id FROM clips WHERE status='uploading' AND created_at<?",
-                ((now - STALE_UPLOAD).isoformat(timespec="seconds"),),
-            )
+            r[0] for r in conn.execute("SELECT clip_id FROM clips WHERE status='uploading' AND created_at<?", (cutoff,))
         ]
     for clip_id in stale:
-        delete(conn, media_dir, clip_id)
+        with conn:  # rechecked: a clip finished meanwhile is no longer stale
+            gone = conn.execute(
+                "DELETE FROM clips WHERE clip_id=? AND status='uploading' AND created_at<?", (clip_id, cutoff)
+            ).rowcount
+        if gone:
+            shutil.rmtree(folder(media_dir, clip_id), ignore_errors=True)
     clip_id = secrets.token_hex(8)
     (root / clip_id).mkdir(mode=0o700)
     os.close(_open(root / clip_id / PART, os.O_WRONLY | os.O_CREAT | os.O_EXCL))
@@ -112,7 +114,10 @@ def append(conn: sqlite3.Connection, media_dir: Path, clip_id: str, offset: int,
     fd = _open(folder(media_dir, clip_id) / PART, os.O_WRONLY | os.O_APPEND)
     with os.fdopen(fd, "wb") as out:
         fcntl.flock(out, fcntl.LOCK_EX)  # one chunk at a time
-        if os.fstat(out.fileno()).st_size != offset:
+        have = os.fstat(out.fileno()).st_size
+        if offset < have and offset + length <= have:
+            return _replay(folder(media_dir, clip_id) / PART, offset, stream, length, have)
+        if have != offset:
             raise ClipError("wrong_offset")
         left = length
         while left:
@@ -126,12 +131,28 @@ def append(conn: sqlite3.Connection, media_dir: Path, clip_id: str, offset: int,
         return offset + length
 
 
+def _replay(part: Path, offset: int, stream, length: int, have: int) -> int:
+    """A chunk sent again after its reply was lost: accepted if it is byte-identical to what is stored."""
+    with part.open("rb") as stored:
+        stored.seek(offset)
+        left = length
+        while left:
+            data = stream.read(min(left, 1024 * 1024))
+            if not data or stored.read(len(data)) != data:
+                raise ClipError("wrong_offset")
+            left -= len(data)
+    return have
+
+
 def finish(conn: sqlite3.Connection, media_dir: Path, clip_id: str, *, check=video.check) -> dict:
     """Check the whole clip; keep it `waiting` and return its facts, or drop it and raise the problems."""
     row = _uploading(conn, clip_id)
     if row is None:
         raise ClipError("not_found")
     part = folder(media_dir, clip_id) / PART
+    for done in (folder(media_dir, clip_id) / f"clip.{ext}" for ext in ("mp4", "mov")):
+        if not part.exists() and done.is_file() and not done.is_symlink():
+            done.rename(part)  # an earlier finish renamed it but didn't commit
     if part.is_symlink() or not part.is_file() or part.stat().st_size != row["size"]:
         raise ClipError("incomplete")
     facts, problems = check(part)
