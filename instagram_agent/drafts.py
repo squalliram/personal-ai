@@ -317,7 +317,7 @@ def _with_render(draft: dict, raw, extra: dict, picked: dict | None, tracks: lis
     reel = {**draft["reel"], **extra, "render": "pending"}
     by_id = {t["track_id"]: t for t in tracks}
     track_id = (picked or {}).get("track_id") if (picked or {}).get("pick") == "track" else raw.get("music_track")
-    if picked and track_id in by_id:
+    if picked and isinstance(track_id, str) and track_id in by_id:
         song = by_id[track_id]
         reel["music"] = {"track_id": track_id, "mix": picked.get("mix", "under"), "title": song["title"]}
         reel["music"]["licence"] = song["licence"]
