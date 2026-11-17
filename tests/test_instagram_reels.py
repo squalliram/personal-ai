@@ -113,6 +113,12 @@ class VideoCheckTests(Case):
                 _, problems = self.headers(data)
                 self.assertTrue(any(words in p for p in problems), problems)
 
+    def test_damaged_headers_are_a_problem_not_a_crash(self):
+        for empty, trak in ((b"tkhd", box(b"tkhd")), (b"mdhd", box(b"mdia", box(b"mdhd")))):
+            data = box(b"ftyp", b"isom\0\0\0\0") + box(b"moov", box(b"trak", trak))
+            with self.subTest(empty):
+                self.assertEqual(self.headers(data)[1], ["its headers are damaged; export it again"])
+
     def test_not_a_video_and_mov_brand(self):
         self.assertIn("it isn't an MP4 or MOV file", self.headers(b"\xff\xd8\xff" + b"\0" * 64)[1])
         self.assertEqual(self.headers(mp4(brand=b"qt  "), name="c.mov")[0]["ext"], "mov")
@@ -243,6 +249,22 @@ class ReelDraftTests(Case):
         self.assertEqual(self.conn.execute("SELECT status FROM clips").fetchone()[0], "used")
         title = self.conn.execute("SELECT 1").fetchone()
         self.assertIsNotNone(title)
+
+    def test_a_waiting_clip_whose_file_was_lost_is_dropped_and_the_day_falls_back(self):
+        clip_id = self.waiting_clip()
+        (self.media / "clips" / clip_id / "clip.mp4").unlink()
+        env = {
+            "OPENAI_API_KEY": "sk-test",
+            "COMMAND_CENTRE_NOTIFICATIONS_DB": str(self.root / "n.sqlite3"),
+            "INSTAGRAM_VOICE_FILE": str(self.root / "voice.md"),
+        }
+        with (
+            patch.object(cli, "model_client", return_value=ReelAI(REEL)),
+            patch.object(drafts, "generate", return_value=[]) as fallback,
+        ):
+            cli.daily(self.conn, env, self.media, now=NOW)
+        fallback.assert_called_once()
+        self.assertIsNone(clips.oldest(self.conn))
 
     def test_a_clip_deleted_mid_run_makes_no_draft(self):
         clip_id = self.waiting_clip()

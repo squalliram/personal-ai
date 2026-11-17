@@ -396,8 +396,8 @@ def store_clip_draft(conn, draft: dict, clip, media_dir: Path, now: datetime) ->
                 raise OSError("clip file is a symlink")
             source.rename(folder / name)
         except FileNotFoundError:
-            if clips.is_waiting(conn, clip["clip_id"]):
-                raise
+            # Deleted meanwhile, or lost by an interrupted move: drop it so it can't block later days.
+            clips.delete(conn, media_dir, clip["clip_id"])
             shutil.rmtree(folder, ignore_errors=True)
             return None
         [slot] = _free_slots(conn, now, 1)

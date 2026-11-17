@@ -250,6 +250,9 @@ def make_drafts(conn, env: dict, media_dir: Path, now: datetime | None = None) -
         # The owner's oldest waiting clip comes first (a reel replaces the day's carousel), then their oldest
         # photos; the AI carousel only fills what they don't.
         clip = clips.oldest(conn)
+        while clip is not None and not clips.clip_file(media_dir, clip).is_file():
+            clips.delete(conn, media_dir, clip["clip_id"])  # its file was lost; don't let it block every day
+            clip = clips.oldest(conn)
         upload = uploads.oldest(conn) if clip is None else None
         if clip is not None:
             draft = drafts.generate_from_clip(conn, ai, now, clip, rules=rules, voice=voice)
