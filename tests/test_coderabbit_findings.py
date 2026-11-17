@@ -76,24 +76,15 @@ class CodeRabbitFindingsTests(unittest.TestCase):
             ),
         )
 
-    def test_outcome_prefers_coderabbits_confirmation(self):
-        def thread(resolved, outdated, *replies):
-            nodes = [{"author": {"login": "coderabbitai"}, "body": "finding"}]
-            nodes += [{"author": {"login": "coderabbitai"}, "body": body} for body in replies]
-            return {"isResolved": resolved, "isOutdated": outdated, "comments": {"nodes": nodes}}
+    def test_only_coderabbit_resolving_its_thread_counts_as_confirmed(self):
+        def thread(resolved, outdated, resolver=None):
+            return {"isResolved": resolved, "isOutdated": outdated, "resolvedBy": resolver and {"login": resolver}}
 
-        self.assertEqual(
-            findings.outcome(thread(True, False, "This addresses the finding.")), "fixed (confirmed by CodeRabbit)"
-        )
-        self.assertEqual(findings.outcome(thread(True, False)), "resolved")
-        self.assertEqual(
-            findings.outcome(thread(False, False, "This addresses the finding only for empty inputs.")), "open"
-        )
-        self.assertEqual(
-            findings.outcome(thread(True, False, "This addresses the finding by rejecting partially written files.")),
-            "fixed (confirmed by CodeRabbit)",
-        )
+        self.assertEqual(findings.outcome(thread(True, False, "coderabbitai[bot]")), "fixed (confirmed by CodeRabbit)")
+        self.assertEqual(findings.outcome(thread(True, False, "squalliram")), "resolved")
+        self.assertEqual(findings.outcome(thread(True, True)), "resolved")
         self.assertEqual(findings.outcome(thread(False, True)), "outdated")
+        self.assertEqual(findings.outcome(thread(False, False)), "open")
         self.assertEqual(findings.outcome(None), "open")
 
     def test_renders_a_table_row_per_finding(self):
