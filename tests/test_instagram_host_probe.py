@@ -50,6 +50,14 @@ class HostProbeTests(unittest.TestCase):
         self.assertFalse(any("elsewhere" in str(path) for path in found))
         self.assertEqual(host_probe.cgroup_files("0::/x\n", "40 25 0:28 /other /mnt rw - cgroup2 cgroup2 rw\n"), [])
 
+    def test_a_full_mount_wins_over_a_subtree_mount_so_ancestors_show(self):
+        mountinfo = (
+            "32 25 0:28 / /sys/fs/cgroup rw - cgroup2 cgroup2 rw\n41 25 0:28 /lve /mnt/lve rw - cgroup2 cgroup2 rw\n"
+        )
+        found = dict(host_probe.cgroup_files("0::/lve/1001\n", mountinfo))
+        self.assertIn(Path("/sys/fs/cgroup/lve/memory.max"), found)
+        self.assertFalse(any("/mnt/lve" in str(path) for path in found))
+
     def test_unlimited_parents_are_left_out(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)

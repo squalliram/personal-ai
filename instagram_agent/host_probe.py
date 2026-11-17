@@ -69,12 +69,12 @@ def _inside(where: str, mount_root: str) -> bool:
 def _chain(where: str, mounts: list[tuple[str, Path]]) -> list[Path]:
     """The process's cgroup folder and its ancestors up to the mount point, innermost first.
 
-    Uses the mount whose root contains the process's cgroup most closely; unrelated bind mounts are ignored.
+    Uses the mount that shows the most of the path (the shortest root containing it); unrelated bind mounts are ignored.
     """
     usable = [m for m in mounts if _inside(where, m[0])]
     if not usable:
         return []
-    mount_root, point = max(usable, key=lambda m: len(m[0]))
+    mount_root, point = min(usable, key=lambda m: len(m[0]))
     rest = where[len(mount_root) :] if mount_root != "/" else where
     parts = [part for part in rest.split("/") if part]
     return [point.joinpath(*parts[:n]) for n in range(len(parts), -1, -1)]
