@@ -306,6 +306,7 @@ tbody tr:hover td{background:rgba(0,229,255,.04)}
   th,.status,.basis,.badge{font-size:.75rem}
   .delta,.kv dt{font-size:.78rem}
   .insight .tag{font-size:.72rem}
+  .insight-do a{display:inline-flex;align-items:center;min-height:44px}
   .widgets{grid-template-columns:1fr}
   .widget.span-2,.widget.span-3{grid-column:auto}
   .reactor svg{width:min(96px,40%)}
