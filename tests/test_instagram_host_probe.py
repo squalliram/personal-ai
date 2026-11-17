@@ -58,6 +58,11 @@ class HostProbeTests(unittest.TestCase):
         self.assertIn(Path("/sys/fs/cgroup/lve/memory.max"), found)
         self.assertFalse(any("/mnt/lve" in str(path) for path in found))
 
+    def test_escaped_mount_points_are_decoded(self):
+        mountinfo = "32 25 0:28 / /mnt/cgroup\\040limits rw - cgroup2 cgroup2 rw\n"
+        found = dict(host_probe.cgroup_files("0::/a\n", mountinfo))
+        self.assertIn(Path("/mnt/cgroup limits/a/memory.max"), found)
+
     def test_unlimited_parents_are_left_out(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
