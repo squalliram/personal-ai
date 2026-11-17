@@ -132,4 +132,5 @@ jobs:
             if [ \"\$(git rev-parse HEAD)\" != '$DEPLOY_SHA' ]; then \
             echo 'Checkout is not the tested commit; skipping Instagram setup.'; exit 0; fi && \
             . ./scripts/find-python.sh && \"\$PYTHON\" -m instagram_agent.env_install --env-file .env && \
-            ./scripts/install-instagram-daily.sh"
+            ./scripts/install-instagram-daily.sh && \
+            { \"\$PYTHON\" -m instagram_agent.host_probe || echo 'video host: probe failed'; }"
