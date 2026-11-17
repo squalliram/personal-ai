@@ -1872,10 +1872,12 @@
   };
 
   async function sendClip(file, note, status) {
+    const signIn = signInCount;
     const start = await api("api/v1/instagram/clips", { method: "POST", body: { note, size: file.size } });
     if (!start.ok) return start;
     const { clip_id: clipId, chunk_bytes: chunk } = start.data;
     for (let offset = 0; offset < file.size; offset += chunk) {
+      if (signIn !== signInCount) return { ok: false, status: -1, data: null };  // signed out meanwhile: stop sending
       status.textContent = `Uploading… ${Math.floor((offset / file.size) * 100)}%`;
       const part = file.slice(offset, Math.min(offset + chunk, file.size));
       let sent = await api(`api/v1/instagram/clips/chunk?clip=${clipId}&offset=${offset}`, { method: "POST", body: part });
