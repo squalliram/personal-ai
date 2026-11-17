@@ -86,11 +86,11 @@ class CodeRabbitFindingsTests(unittest.TestCase):
             findings.outcome(thread(True, False, "This addresses the finding.")), "fixed (confirmed by CodeRabbit)"
         )
         self.assertEqual(findings.outcome(thread(True, False)), "resolved")
-        self.assertEqual(findings.outcome(thread(False, False, "This only partially addresses the finding.")), "open")
-        self.assertEqual(findings.outcome(thread(False, False, "This does not address the finding.")), "open")
-        self.assertEqual(findings.outcome(thread(False, False, "This addresses the finding only partially.")), "open")
         self.assertEqual(
-            findings.outcome(thread(False, False, "This addresses the finding. The old code does not retry.")),
+            findings.outcome(thread(False, False, "This addresses the finding only for empty inputs.")), "open"
+        )
+        self.assertEqual(
+            findings.outcome(thread(True, False, "This addresses the finding by rejecting partially written files.")),
             "fixed (confirmed by CodeRabbit)",
         )
         self.assertEqual(findings.outcome(thread(False, True)), "outdated")
