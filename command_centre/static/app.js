@@ -1836,7 +1836,7 @@
       if (signIn !== signInCount) return;
       status.textContent = "Uploading…";
       const result = await api("api/v1/instagram/uploads", { method: "POST", body });
-      if (signIn !== signInCount) return;
+      if (signIn !== signInCount) { if (result.ok) clearCache(); return; }
       if (result.status === 401) { showLogin("Your session has ended. Sign in again."); return; }
       if (!result.ok) {
         const code = (result.data && result.data.error) || result.status;
@@ -1857,7 +1857,7 @@
     button.disabled = true;
     const signIn = signInCount;
     const result = await api("api/v1/instagram/uploads/delete", { method: "POST", body: { upload_id: upload.upload_id } });
-    if (signIn !== signInCount) return;
+    if (signIn !== signInCount) { if (result.ok) clearCache(); return; }
     if (result.status === 401) { showLogin("Your session has ended. Sign in again."); return; }
     if (!result.ok) {
       const gone = result.status === 404;
