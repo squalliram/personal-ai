@@ -262,7 +262,7 @@ class ReelDraftTests(Case):
         draft = drafts.normalise_reel_draft(REEL, 10.0)
         self.assertEqual(draft["kind"], "reel")
         self.assertEqual([b["text"] for b in draft["reel"]["on_screen"]], ["Bar Italia", "9/10, no notes"])
-        self.assertEqual(draft["reel"]["cover_ms"], 10000)
+        self.assertEqual(draft["reel"]["cover_ms"], 9900)
         self.assertEqual(draft["slides"][0]["text"], REEL["hook"])
         self.assertIsNone(drafts.normalise_reel_draft({**REEL, "hook": ""}, 10.0))
         self.assertIsNone(drafts.normalise_reel_draft({**REEL, "caption": "Hi #tag"}, 10.0))
@@ -493,7 +493,7 @@ class ReelCommandCentreTests(Case):
         self.assertEqual(shown["kind"], "reel")
         self.assertFalse(shown["will_post"])
         self.assertEqual(shown["reel"]["hook"], REEL["hook"])
-        self.assertEqual(shown["reel"]["cover_seconds"], 10.0)
+        self.assertEqual(shown["reel"]["cover_seconds"], 9.9)
 
 
 if __name__ == "__main__":

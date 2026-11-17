@@ -348,7 +348,9 @@ def normalise_reel_draft(raw, seconds: float) -> dict | None:
     beats = sorted(beats, key=lambda b: b["start"])[:5]
     if len(beats) < 2:
         return None
-    cover = _seconds(raw.get("cover_seconds"), seconds) or 0.0
+    cover = min(
+        _seconds(raw.get("cover_seconds"), seconds) or 0.0, max(math.floor(seconds * 10 - 1) / 10, 0.0)
+    )  # Meta: thumb_offset < duration
     return {
         "kind": "reel",
         "category": raw["category"],
