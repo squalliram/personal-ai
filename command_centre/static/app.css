@@ -406,7 +406,7 @@ tbody tr:hover td{background:rgba(0,229,255,.04)}
 .energy-action{border-left:2px solid var(--ok);padding:.45rem .75rem;background:linear-gradient(90deg,rgba(90,255,200,.1),rgba(0,0,0,.28) 60%)}
 .energy-section-title{font-family:var(--mono);font-size:.78rem;font-weight:600;letter-spacing:.2em;text-transform:uppercase;color:var(--muted);margin:0 0 .75rem}
 .energy-method{margin-top:.6rem}
-.energy-method summary{cursor:pointer;font-family:var(--mono);font-size:.72rem;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+.energy-method summary{cursor:pointer;padding:.85rem 0;font-family:var(--mono);font-size:.72rem;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
 .energy-method summary:hover,.energy-method summary:focus-visible{color:var(--interface)}
 .energy-records-head{display:flex;justify-content:space-between;align-items:baseline;gap:.5rem 1.5rem;flex-wrap:wrap;margin:0 0 .75rem}
 .energy-records-head .energy-section-title{margin:0}
