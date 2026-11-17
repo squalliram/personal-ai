@@ -28,7 +28,7 @@ Scope: `squalliram/personal-ai`, `squalliram/jarvis`, `squalliram/devin-orchestr
 
 ## Entry points
 
-- **Command Centre:** `GET /api/v1/health` and `POST /api/v1/session` are public; all other `/api/v1/*` routes need a session (READ). Hosted over TLS only (`SSL_PROTOCOL`/`SSL_CIPHER` check in `deploy/command-centre/passenger_wsgi.py`).
+- **Command Centre:** `GET /api/v1/health` and `POST /api/v1/session` are public; `POST /api/v1/notifications` (Jarvis result ingest) takes only the `NOTIFY_INGEST_TOKEN` bearer token, rate-limited to 30 per 10 minutes; all other `/api/v1/*` routes need a session (READ). Hosted over TLS only (`SSL_PROTOCOL`/`SSL_CIPHER` check in `deploy/command-centre/passenger_wsgi.py`).
 - **Energy dashboard:** static files plus `refresh.php` behind cPanel Basic Auth.
 - **Jarvis bridge:** WebSocket agent socket and HTTP endpoints (`/health`, `/stt`, `/img`, `/media`, `/file`, page proxy) on `JARVIS_BRIDGE_HOST` (default `127.0.0.1`). Indirect entry: any content the agent reads (web pages, search results, account connectors) can carry prompt injection.
 - **Orchestrator:** `POST /trigger`, `POST /webhook` (HMAC only if `GITHUB_WEBHOOK_SECRET` set), `GET /api/sessions` — no auth. Retired.
@@ -37,7 +37,7 @@ Scope: `squalliram/personal-ai`, `squalliram/jarvis`, `squalliram/devin-orchestr
 ## Assets
 
 - cPanel SSH private key, known_hosts, app path; the cPanel account hosting iramkhan.com.
-- `COMMAND_CENTRE_PASSWORD_HASH`, session tokens, audit DB (`data/command_centre.sqlite3`).
+- `COMMAND_CENTRE_PASSWORD_HASH`, `NOTIFY_INGEST_TOKEN` (anyone holding it can post to the owner's Inbox and Telegram), session tokens, audit DB (`data/command_centre.sqlite3`).
 - Octopus API key, MPAN/MPRN, energy SQLite databases; Notion/Calendar briefing content.
 - The owner's workstation (files, shell) and Claude/ElevenLabs/MCP credentials reachable through the Jarvis bridge.
 - Devin API key, GitHub PAT (orchestrator `.env`).

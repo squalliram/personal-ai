@@ -179,10 +179,11 @@ def notify(
     env: Mapping[str, str] | None = None,
     now: datetime | None = None,
     send: Callable[[str, str, str], None] = send_telegram,
-) -> bool:
-    """Store a notification and push it to Telegram if configured. Returns False if it couldn't be stored.
+) -> int | None:
+    """Store a notification and push it to Telegram if configured. Returns its inbox ID, or None if not stored.
 
-    `key` makes the call idempotent: a second notification with the same key is dropped.
+    `key` makes the call idempotent: a second notification with the same key is dropped (the first one's ID
+    is returned).
     """
     try:
         env = _env() if env is None else env
@@ -210,6 +211,10 @@ def notify(
                     "VALUES(?,?,?,?,?,?,?,?)",
                     (stamp, source, outcome, title, safe_link(link), key, delivery, error),
                 )
+            if inserted.rowcount:
+                stored = inserted.lastrowid
+            else:
+                stored = conn.execute("SELECT id FROM notifications WHERE dedupe_key=?", (key,)).fetchone()[0]
             if inserted.rowcount and valid:
                 with conn:
                     conn.execute(
@@ -228,7 +233,7 @@ def notify(
                         break
         finally:
             conn.close()
-        return True
+        return stored
     except Exception as exc:
         print(f"notifications: not stored ({type(exc).__name__})", file=sys.stderr)
-        return False
+        return None

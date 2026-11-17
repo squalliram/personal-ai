@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import hmac
 import io
 import ipaddress
@@ -64,6 +65,11 @@ PAGE_NUMBER = re.compile(r"[0-9]{1,6}")
 # Spreadsheet apps run a cell starting with any of these as a formula (OWASP "CSV injection").
 FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r", "\n", "\uff1d", "\uff0b", "\uff0d", "\uff20")
 TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_-]{43}")
+# Callers allowed to post results to the owner inbox with the ingest bearer token.
+INGEST_SOURCES = ("jarvis",)
+INGEST_OUTCOMES = ("ok", "failed")
+INGEST_FIELDS = {"source", "outcome", "title", "link"}
+MAX_INGEST_TITLE = 200
 CSP = (
     "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; "
     "font-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
@@ -77,6 +83,8 @@ class Route:
     handler: Callable[[Request], Result]
     permission: Permission | None
     csrf: bool = False
+    # Machine callers: the handler checks its own bearer token; no cookie session, Origin or CSRF check.
+    bearer: bool = False
 
 
 @dataclass
@@ -159,8 +167,10 @@ class CommandCentreApp:
         monotonic: Callable[[], float] = time.monotonic,
         cron_reader: CronReader = read_crontab,
         audit: AuditLog | None = None,
+        notify: Callable[..., int | None] = notifications.notify,
     ) -> None:
         self.settings, self.secure, self.clock, self.cron_reader = settings, secure, clock, cron_reader
+        self.notify = notify
         self.monotonic = monotonic
         self._collect_lock = threading.Lock()
         self._collected: tuple[tuple, float, dict] | None = None
@@ -192,6 +202,7 @@ class CommandCentreApp:
         self.api_limiter = RateLimiter(240, 60, clock=monotonic)
         self.assistant_limiter = RateLimiter(30, 60 * 60, clock=monotonic)
         self.passkey_options_limiter = RateLimiter(20, 15 * 60, clock=monotonic)
+        self.ingest_limiter = RateLimiter(30, 10 * 60, clock=monotonic)
         if settings.sessions_db:
             self.login_per_client = SqliteRateLimiter(settings.sessions_db, "login_client", 5, 900, clock=clock)
             self.login_global = SqliteRateLimiter(settings.sessions_db, "login_global", 20, 900, clock=clock)
@@ -200,6 +211,7 @@ class CommandCentreApp:
             self.passkey_options_limiter = SqliteRateLimiter(
                 settings.sessions_db, "passkey_options", 20, 900, clock=clock
             )
+            self.ingest_limiter = SqliteRateLimiter(settings.sessions_db, "notify_ingest", 30, 600, clock=clock)
         self.static = {
             path: ((STATIC_DIR / name).read_bytes(), content_type)
             for path, (name, content_type) in STATIC_FILES.items()
@@ -238,6 +250,7 @@ class CommandCentreApp:
             ("GET", "/api/v1/instagram/slide"): Route(self.instagram_slide, Permission.READ),
             ("POST", "/api/v1/instagram/decision"): Route(self.instagram_decision, Permission.RECOMMEND, csrf=True),
             ("GET", "/api/v1/notifications"): Route(self.notifications, Permission.READ),
+            ("POST", "/api/v1/notifications"): Route(self.notification_ingest, None, bearer=True),
         }
 
     # WSGI -------------------------------------------------------------------------------------
@@ -306,6 +319,8 @@ class CommandCentreApp:
                 return _error(405, "method_not_allowed", [("Allow", ", ".join(allowed))])
             return _error(404, "not_found")
         client = environ.get("REMOTE_ADDR", "unknown")
+        if route.bearer:
+            return route.handler(Request(environ, method, path, None, None, client))
         token = self._cookie_token(environ)
         session = self.sessions.get(token)
         actor = "owner" if session else "anonymous"
@@ -973,6 +988,65 @@ class CommandCentreApp:
             return 200, {**result, "state": "unavailable"}, []
         pages = max(1, -(-total // per_page))
         return 200, {**result, "state": "available", "entries": entries, "total": total, "pages": pages}, []
+
+    def _ingest_authorized(self, environ: dict) -> bool:
+        scheme, _, supplied = environ.get("HTTP_AUTHORIZATION", "").partition(" ")
+        expected = self.settings.notify_ingest_token or ""
+        # Digests have a fixed length, so the comparison time says nothing about the token.
+        return (
+            scheme.lower() == "bearer"
+            and hmac.compare_digest(
+                hashlib.sha256(supplied.strip().encode()).digest(), hashlib.sha256(expected.encode()).digest()
+            )
+            and bool(expected)
+        )
+
+    def notification_ingest(self, request: Request) -> Result:
+        """Store an agent result (Jarvis) in the owner inbox and push it to Telegram. Bearer token only."""
+
+        def audit(outcome: str, actor: str = "anonymous", **detail: object) -> None:
+            # Never the title, link or token: only what happened.
+            self.audit.record("notification_ingest", outcome, actor=actor, client=request.client, **detail)
+
+        settings = self.settings
+        if not settings.notify_ingest_token or settings.notifications_db is None:
+            audit("not_configured")
+            return _error(503, "not_configured")
+        if not self.ingest_limiter.hit(request.client):
+            audit("rate_limited")
+            return _error(429, "rate_limited", [("Retry-After", "600")])
+        if not self._ingest_authorized(request.environ):
+            audit("unauthorized")
+            return _error(401, "authentication_required", [("WWW-Authenticate", "Bearer")])
+        body, error = _json_body(request.environ)
+        if error and error[0] == 413:
+            audit("too_large", actor="ingest")
+            return error
+        source = body.get("source") if isinstance(body, dict) else None
+        link = body.get("link") if isinstance(body, dict) else None
+        title = body.get("title") if isinstance(body, dict) else None
+        if (
+            error
+            or not isinstance(body, dict)
+            or not {"source", "outcome", "title"} <= set(body) <= INGEST_FIELDS
+            or source not in INGEST_SOURCES
+            or body["outcome"] not in INGEST_OUTCOMES
+            or not isinstance(title, str)
+            or not 0 < len(title) <= MAX_INGEST_TITLE
+            or not title.strip()
+            or (link is not None and notifications.safe_link(link) is None)
+        ):
+            audit("invalid", actor="ingest")
+            return _error(400, "invalid_parameters")
+        env = {"COMMAND_CENTRE_NOTIFICATIONS_DB": str(settings.notifications_db)}
+        if settings.telegram_bot_token and settings.telegram_chat_id:
+            env |= {"TELEGRAM_BOT_TOKEN": settings.telegram_bot_token, "TELEGRAM_CHAT_ID": settings.telegram_chat_id}
+        stored = self.notify(source, body["outcome"], title, link, env=env)
+        if not stored:
+            audit("failure", actor=source, result=body["outcome"])
+            return _error(500, "internal_error")
+        audit("success", actor=source, result=body["outcome"], notification=stored)
+        return 201, {"id": stored}, []
 
     def instagram_drafts(self, request: Request) -> Result:
         return 200, sources.instagram_drafts(self.settings), []

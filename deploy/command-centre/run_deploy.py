@@ -56,6 +56,9 @@ def main():
                 "openai_api_key": env.get("COMMAND_CENTRE_OPENAI_API_KEY", ""),
                 "cloudflare_account_id": env.get("COMMAND_CENTRE_CLOUDFLARE_ACCOUNT_ID", ""),
                 "cloudflare_api_token": env.get("COMMAND_CENTRE_CLOUDFLARE_API_TOKEN", ""),
+                "notify_ingest_token": env.get("COMMAND_CENTRE_NOTIFY_INGEST_TOKEN", ""),
+                "telegram_bot_token": env.get("COMMAND_CENTRE_TELEGRAM_BOT_TOKEN", ""),
+                "telegram_chat_id": env.get("COMMAND_CENTRE_TELEGRAM_CHAT_ID", ""),
                 "wheels": wheels(env.get("COMMAND_CENTRE_WHEELS_DIR", "")),
             }
         ).encode(),
