@@ -4,6 +4,8 @@ import json
 import sqlite3
 from pathlib import Path
 
+from . import uploads
+
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 DEFAULT_DATABASE = Path("data/instagram.sqlite3")
 
@@ -15,6 +17,7 @@ def connect(path: Path = DEFAULT_DATABASE) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
+    conn.execute(uploads.TABLE)
     return conn
 
 

@@ -548,6 +548,7 @@ def instagram_drafts(settings: Settings, limit: int = 30) -> dict:
         "basis": "inferred",
         "auto_publish": False,
         "drafts": [],
+        "uploads": [],
         "runs": [],
         "latest_attempt": None,
     }
@@ -568,6 +569,7 @@ def instagram_drafts(settings: Settings, limit: int = 30) -> dict:
                 "SELECT run_on,started_at,outcome,drafts,error FROM daily_runs ORDER BY id DESC LIMIT 10"
             ).fetchall()
             publishing = _publishing(conn)
+            waiting, notes = _uploads(conn)
             # Ticks every 15 minutes mostly skip, so find the latest real attempt separately.
             attempt = conn.execute(
                 "SELECT run_on,started_at,outcome,drafts,error FROM daily_runs WHERE outcome!='skipped' "
@@ -601,11 +603,31 @@ def instagram_drafts(settings: Settings, limit: int = 30) -> dict:
                 "publishing": row["draft_id"] in publishing["started"],
             }
         )
+    for draft in result["drafts"]:
+        draft["note"] = notes.get(draft["draft_id"])
+    result["uploads"] = waiting
     result["auto_publish"] = publishing["on"]
     result["runs"] = [dict(run) for run in runs]
     result["latest_attempt"] = dict(attempt) if attempt else None
     result["state"] = "available"
     return result
+
+
+def _uploads(conn) -> tuple[list[dict], dict[str, str]]:
+    """Photo uploads still waiting, oldest (next to post) first, and the owner's note for each drafted one."""
+    try:
+        rows = conn.execute("SELECT upload_id,created_at,note,photos,status,draft_id FROM uploads").fetchall()
+    except sqlite3.OperationalError:
+        return [], {}  # the daily run hasn't added the table yet
+    waiting = sorted(
+        (
+            {k: row[k] for k in ("upload_id", "created_at", "note", "photos")}
+            for row in rows
+            if row["status"] == "waiting"
+        ),
+        key=lambda u: (u["created_at"], u["upload_id"]),
+    )
+    return waiting, {row["draft_id"]: row["note"] for row in rows if row["draft_id"]}
 
 
 def instagram_health(snapshot: dict, now: datetime) -> dict:

@@ -124,7 +124,7 @@ def publish_draft(
     sleep: Callable[[float], None] = time.sleep,
     on_publish: Callable[[], None] = lambda: None,
 ) -> str:
-    """Containers for each slide, a carousel container, then media_publish (never retried). Returns the media ID."""
+    """Containers for each slide and the carousel (or one image), then media_publish (never retried). Returns the ID."""
     slides = json.loads(row["slides"])
     folder_in = media_dir / row["draft_id"]
     if folder_in.is_symlink():
@@ -140,8 +140,8 @@ def publish_draft(
         if not _is_jpeg(data):
             raise PublishError("Instagram only accepts JPEG slides")
         images.append(data)
-    if not 2 <= len(images) <= 20:
-        raise PublishError("a carousel needs 2-20 slides")
+    if not 1 <= len(images) <= 20:
+        raise PublishError("a post needs 1-20 slides")
     if public_dir.is_symlink() or (public_dir.exists() and not public_dir.is_dir()):
         raise PublishError("public media folder is not a directory")
     public_dir.mkdir(mode=0o755, parents=True, exist_ok=True)
@@ -161,13 +161,16 @@ def publish_draft(
             check(url, len(data))
             urls.append(url)
         user = client.user_id
-        children = [client.post(f"{user}/media", {"image_url": u, "is_carousel_item": "true"})["id"] for u in urls]
         caption = row["caption"] + ("\n\n" + row["hashtags"] if row["hashtags"] else "")
-        carousel = client.post(
-            f"{user}/media", {"media_type": "CAROUSEL", "children": ",".join(children), "caption": caption}
-        )["id"]
+        if len(urls) == 1:  # one uploaded photo is a single-image post
+            container = client.post(f"{user}/media", {"image_url": urls[0], "caption": caption})["id"]
+        else:
+            children = [client.post(f"{user}/media", {"image_url": u, "is_carousel_item": "true"})["id"] for u in urls]
+            container = client.post(
+                f"{user}/media", {"media_type": "CAROUSEL", "children": ",".join(children), "caption": caption}
+            )["id"]
         for _ in range(STATUS_POLLS):
-            status = client.get(carousel, {"fields": "status_code"}).get("status_code")
+            status = client.get(container, {"fields": "status_code"}).get("status_code")
             if status == "FINISHED":
                 break
             if status in ("ERROR", "EXPIRED"):
@@ -176,7 +179,7 @@ def publish_draft(
         else:
             raise PublishError("Instagram was still processing the carousel")
         on_publish()
-        return str(client.post(f"{user}/media_publish", {"creation_id": carousel}, retry=False)["id"])
+        return str(client.post(f"{user}/media_publish", {"creation_id": container}, retry=False)["id"])
     except KeyError:
         raise PublishError("Instagram returned no ID") from None
     finally:

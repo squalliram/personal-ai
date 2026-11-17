@@ -78,13 +78,14 @@
   async function api(path, options) {
     const opts = options || {};
     const headers = { Accept: "application/json" };
-    if (opts.body !== undefined) headers["Content-Type"] = "application/json";
+    const form = opts.body instanceof FormData;
+    if (opts.body !== undefined && !form) headers["Content-Type"] = "application/json";
     if (opts.method && opts.method !== "GET" && csrf) headers["X-CSRF-Token"] = csrf;
     let response;
     try {
       response = await fetch(path, {
         method: opts.method || "GET", headers, credentials: "same-origin", cache: "no-store",
-        body: opts.body === undefined ? undefined : JSON.stringify(opts.body), signal: opts.signal,
+        body: opts.body === undefined || form ? opts.body : JSON.stringify(opts.body), signal: opts.signal,
       });
     } catch {
       return { ok: false, status: 0, data: { error: "network_error" } };
@@ -1740,6 +1741,7 @@
       el("figcaption", {}, `${i + 1}. ${slide.text}`))));
     const children = [
       slides,
+      draft.note ? el("p", { class: "muted" }, `From your photos. Your note: ${draft.note}`) : null,
       el("p", { class: "ig-caption" }, draft.caption),
       el("p", { class: "muted" }, draft.hashtags.length ? `${draft.hashtags.length} hashtags: ${draft.hashtags.join(" ")}` : "No hashtags"),
       keyValues([
@@ -1772,6 +1774,111 @@
     return card(`${draft.created_on} · ${draft.topic}`, ...children);
   }
 
+  const MAX_PHOTOS = 10;
+  const MAX_SIDE = 2160;
+  const UPLOAD_ERRORS = {
+    photo_count: `Choose 1-${MAX_PHOTOS} photos.`,
+    photo_too_large: "A photo is too large. Try a smaller one.",
+    upload_too_large: "The photos are too large together. Try fewer at a time.",
+    unsupported_photo: "Only JPEG and PNG photos can be added.",
+    heic_unsupported: "That HEIC photo couldn't be converted on this device. Export it as JPEG and try again.",
+    unreadable_photo: "A photo couldn't be read. Try exporting it again.",
+    invalid_note: "Write a short note (up to 300 characters).",
+    uploads_unavailable: "Photo uploads aren't switched on for this server yet.",
+  };
+
+  // Phones take large HEIC or JPEG photos; send a smaller JPEG when the browser can decode it. The server still
+  // checks, strips metadata from and re-encodes every photo, whatever arrives.
+  async function shrink(file) {
+    try {
+      const bitmap = await createImageBitmap(file);
+      const scale = Math.min(1, MAX_SIDE / Math.max(bitmap.width, bitmap.height));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+      canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+      const context = canvas.getContext("2d");
+      context.fillStyle = "#fff";
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+      bitmap.close();
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.9));
+      if (blob) return blob;
+    } catch {
+      // Fall back to the original file.
+    }
+    return file;
+  }
+
+  function uploadCard(data, canDecide) {
+    const intro = muted("Add 1-10 of your own photos and a short note, like \"Dishoom Kings Cross, lamb raan, 8/10\". The next daily run turns the oldest waiting set into the day's draft instead of an AI one; the note is the only source for the place, dish, rating or price.");
+    if (!canDecide) return card("Add your photos", intro, muted("Adding photos needs RECOMMEND permission."));
+    if (data.state !== "available") return card("Add your photos", intro, muted("Not available until the Instagram agent has run on this server."));
+    if (!data.uploads_on) return card("Add your photos", intro, muted(UPLOAD_ERRORS.uploads_unavailable));
+    const photos = el("input", { id: "ig-photos", type: "file", name: "photos", accept: "image/jpeg,image/png,image/heic,image/heif", multiple: "", required: "" });
+    const note = el("textarea", { id: "ig-note", name: "note", rows: "3", maxlength: "300", required: "", placeholder: "Dishoom Kings Cross, lamb raan, 8/10" });
+    const submit = el("button", { type: "submit", class: "primary" }, "Add photos");
+    const status = el("p", { class: "muted", role: "status" });
+    const form = el("form", { class: "ig-upload" },
+      el("label", { for: "ig-photos" }, "Photos (1-10, JPEG or PNG; iPhone photos are converted)"), photos,
+      el("label", { for: "ig-note" }, "Note"), note,
+      el("div", { class: "ig-actions" }, submit), status);
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const files = Array.from(photos.files || []);
+      if (files.length < 1 || files.length > MAX_PHOTOS) { status.textContent = UPLOAD_ERRORS.photo_count; return; }
+      if (!note.value.trim()) { status.textContent = UPLOAD_ERRORS.invalid_note; return; }
+      submit.disabled = true;
+      status.textContent = "Preparing photos…";
+      const body = new FormData();
+      body.append("note", note.value.trim());
+      for (const [i, file] of files.entries()) body.append("photos", await shrink(file), `photo-${i + 1}.jpg`);
+      status.textContent = "Uploading…";
+      const result = await api("api/v1/instagram/uploads", { method: "POST", body });
+      if (result.status === 401) { showLogin("Your session has ended. Sign in again."); return; }
+      if (!result.ok) {
+        const code = (result.data && result.data.error) || result.status;
+        status.textContent = `Could not add the photos. ${UPLOAD_ERRORS[code] || `(${code})`}`;
+        submit.disabled = false;
+        return;
+      }
+      clearCache();
+      render();
+    });
+    return card("Add your photos", intro, form);
+  }
+
+  const uploadPhotoUrl = (upload, n) => `api/v1/instagram/upload-photo?upload=${encodeURIComponent(upload.upload_id)}&n=${n}`;
+
+  async function deleteUpload(upload, button, status) {
+    if (!window.confirm("Delete these photos? They won't be posted.")) return;
+    button.disabled = true;
+    const result = await api("api/v1/instagram/uploads/delete", { method: "POST", body: { upload_id: upload.upload_id } });
+    if (result.status === 401) { showLogin("Your session has ended. Sign in again."); return; }
+    if (!result.ok) {
+      status.textContent = result.status === 404 ? "Already used or deleted. Refresh to see the queue." : `Could not delete them (${(result.data && result.data.error) || result.status}).`;
+      clearCache();
+      return;
+    }
+    clearCache();
+    render();
+  }
+
+  function waitingCard(uploads, canDecide) {
+    if (!uploads.length) return null;
+    return card("Your photos waiting", muted(`Oldest first: the first set becomes the next daily draft. ${uploads.length} waiting.`),
+      uploads.map((upload, index) => {
+        const status = el("p", { class: "muted", role: "status" });
+        const remove = canDecide ? el("button", { type: "button" }, "Delete") : null;
+        if (remove) remove.addEventListener("click", () => deleteUpload(upload, remove, status));
+        return el("div", { class: "ig-upload-item" },
+          el("p", {}, el("strong", {}, index === 0 ? "Next: " : `${index + 1}. `), upload.note),
+          el("p", { class: "muted" }, `${upload.photos} photo${upload.photos === 1 ? "" : "s"} · added ${when(upload.created_at)}`),
+          el("div", { class: "ig-slides ig-thumbs" }, Array.from({ length: upload.photos }, (_, i) =>
+            el("img", { src: uploadPhotoUrl(upload, i + 1), alt: `Photo ${i + 1}`, width: "135", height: "169", loading: "lazy" }))),
+          remove ? el("div", { class: "ig-actions" }, remove) : null, status);
+      }));
+  }
+
   async function instagram(view) {
     const data = await load("api/v1/instagram/drafts");
     if (!data) return;
@@ -1784,6 +1891,9 @@
       last ? keyValues([["Last run", when(last.started_at)], ["Result", last.outcome], ["Drafts made", last.drafts],
         ...(last.error ? [["Error", last.error]] : [])])
         : muted(data.state === "not_configured" ? "Not connected: there is no Instagram database on this server yet." : "No daily run recorded yet.")));
+    view.append(uploadCard(data, canDecide));
+    const waiting = waitingCard(data.uploads || [], canDecide);
+    if (waiting) view.append(waiting);
     for (const draft of data.drafts) view.append(draftCard(draft, canDecide, data.auto_publish));
   }
 

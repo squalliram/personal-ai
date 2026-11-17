@@ -56,6 +56,8 @@ From 09:00 London time, the first tick of the day:
 5. The image model draws every slide at 1024×1280 (4:5 portrait). OpenAI's image model also draws the slide's short text onto it. Cloudflare's FLUX.2 klein garbles lettering, so with Cloudflare the slides are clean photos and the caption carries the words. A slide image that fails gets one more try; if it still fails, that draft is dropped and the reason is recorded. Cloudflare returns JPEGs and OpenAI returns PNGs; each is saved in the format it arrives in.
 6. The draft gets a publish slot: the best audience hour from `best_hours`, from 12:00 onwards (18:00 until there's data). If that hour has passed today, the slot is the same hour tomorrow.
 
+If photos of your own are waiting (see [Your own photos](#your-own-photos)), the oldest set is used instead of steps 2-5.
+
 If a run makes no draft, later ticks before 12:00 try again; after 12:00 a day with a draft is left as it is. A day gives up after 3 failed attempts, so a broken key can't run up costs. Runs are recorded in `daily_runs` and shown on the Instagram page.
 
 Benchmark captions and hashtags are other people's text. The prompts tell the agents to treat them as data and never follow instructions in them. The output is validated before it is stored: category, slide count and length, caption length and real hashtags only.
@@ -68,6 +70,16 @@ Benchmark captions and hashtags are other people's text. The prompts tell the ag
 - **OpenAI (paid):** `gpt-5-mini` writes and `gpt-image-2.5-flare` draws. A day costs 3-9 text calls and 5-8 images.
 
 Models can be changed with `CLOUDFLARE_TEXT_MODEL` / `CLOUDFLARE_IMAGE_MODEL` or `OPENAI_TEXT_MODEL` / `OPENAI_IMAGE_MODEL`.
+
+## Your own photos
+
+**Add your photos** on the Command Centre's Instagram page takes 1-10 photos and a short note, such as "Dishoom Kings Cross, lamb raan, 8/10", and works in a phone browser. It needs a RECOMMEND session, CSRF and same-origin, and every upload, refusal and deletion is written to the audit log.
+
+- **Checks:** the type comes from each file's first bytes (JPEG or PNG), not its name or declared type. Limits: 10 photos, 12 MB each, 50 MB per upload, 50 megapixels, a 300-character note. The browser converts HEIC (iPhone) photos and shrinks large ones to JPEG before sending when it can; a HEIC file that still arrives is refused with a message to export it as JPEG.
+- **Cleaning:** Pillow (hash-pinned in `deploy/command-centre/requirements.txt`, installed into each release's `vendor/`) decodes each photo, applies its EXIF rotation, converts it to sRGB and saves a new 1080×1350 (4:5) JPEG, or 1080×1080 when the first photo is landscape, centre-cropped. No EXIF, GPS, ICC profile or comment is copied. The cleaned files are kept privately under `uploads/<id>/` in the media folder; the originals are never stored. Without Pillow the form is turned off.
+- **Queue:** waiting uploads are listed oldest first under **Your photos waiting**, with thumbnails, and can be deleted until a daily run uses them.
+- **Drafting:** the first tick of a day with a waiting upload sends the note and up to 4 of the photos (540 px thumbnails, low detail) to **Create**, which writes the caption and a short description per photo in the voice file's style, then **Tags** and **Review** as usual. The note is the only evidence for the venue, dish, rating, price and anything else factual: Create is told not to add anything the note doesn't say, and Review scores a draft that does under 50. A model that can't take images is asked again with the note only. The photos become the slides, in upload order, of a normal draft with the usual slot, veto hour and auto-publish rule, and the upload is marked used and its folder deleted. A notification says the photos are now a draft. If every round fails, the upload stays waiting for the next run; with no upload the day gets an AI draft.
+- **Posting:** a single photo posts as one image, several as a carousel.
 
 ## Reviewing in the Command Centre
 
@@ -84,13 +96,13 @@ Both need a RECOMMEND session, CSRF and same-origin, and both are written to the
 
 - **What posts:** approved drafts, and pending drafts scoring 70 or more. Rejected and weaker pending drafts never post.
 - **When:** at `max(scheduled_for, created_at + 1 hour)`, so there is always at least an hour to reject a draft. A draft more than 3 hours past its time is skipped rather than posted late.
-- **How:** Meta's [content publishing API](https://developers.facebook.com/docs/instagram-platform/content-publishing): a container per JPEG slide (`is_carousel_item=true`), a `CAROUSEL` container with the caption and hashtags, a `status_code` check, then `media_publish`. Instagram Login tokens (`IG...`) use `graph.instagram.com`, Facebook Login tokens `graph.facebook.com`.
+- **How:** Meta's [content publishing API](https://developers.facebook.com/docs/instagram-platform/content-publishing): a container per JPEG slide (`is_carousel_item=true`), a `CAROUSEL` container with the caption and hashtags (a one-photo draft gets a single image container with the caption instead), a `status_code` check, then `media_publish`. Instagram Login tokens (`IG...`) use `graph.instagram.com`, Facebook Login tokens `graph.facebook.com`.
 - **Public slides:** Meta fetches each image from a URL, so the slides are copied to a random 32-character folder under `INSTAGRAM_PUBLIC_DIR`, checked to be reachable, and deleted when the call finishes.
 - **Failures:** recorded in `publish_runs` and shown on the draft. A failure before `media_publish` is retried on the next tick, up to 3 times. `media_publish` itself is never retried, and a crash after it started marks the draft failed with "check Instagram", so a post can't go out twice.
 
 ## Notifications
 
-`daily` and `publish.tick` report through the shared `notifications` package: "1 Instagram draft ready to review, posts at HH:MM" once a day, "Instagram post is live: <topic>" with the post's permalink, and a failure for every failed post attempt and every failed, partial, not-configured or given-up drafting run (none for `skipped`). Each one is stored in `data/notifications.sqlite3` and listed newest first on the Command Centre **Inbox** page. With the `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` secrets set, the deploy writes them to the server's `.env` and each notification is also sent to that chat; a failed send is retried on later notifications, up to 3 times. Links point at `COMMAND_CENTRE_URL` (repository variable, default `https://iramkhan.com/command-centre/`). A notification problem never stops drafting or posting.
+`daily` and `publish.tick` report through the shared `notifications` package: "1 Instagram draft ready to review, posts at HH:MM" once a day (or 'Your photos ("<note>") are now an Instagram draft, posts at HH:MM' when it came from an upload), "Instagram post is live: <topic>" with the post's permalink, and a failure for every failed post attempt and every failed, partial, not-configured or given-up drafting run (none for `skipped`). Each one is stored in `data/notifications.sqlite3` and listed newest first on the Command Centre **Inbox** page. With the `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` secrets set, the deploy writes them to the server's `.env` and each notification is also sent to that chat; a failed send is retried on later notifications, up to 3 times. Links point at `COMMAND_CENTRE_URL` (repository variable, default `https://iramkhan.com/command-centre/`). A notification problem never stops drafting or posting.
 
 ## How the numbers are worked out
 

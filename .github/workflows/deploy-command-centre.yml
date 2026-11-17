@@ -52,7 +52,7 @@ jobs:
           successes=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/test.yml/runs?branch=main&event=push&head_sha=$DEPLOY_SHA&status=success" --jq '.workflow_runs | length')
           test "$successes" -gt 0 || { echo "Successful main push tests required."; exit 1; }
           echo "ready=true" >> "$GITHUB_OUTPUT"
-      - name: Download hash-pinned passkey wheels for the host
+      - name: Download hash-pinned Command Centre wheels (passkeys, Pillow) for the host
         if: steps.tested.outputs.ready == 'true'
         run: >-
           python -m pip download --no-deps --only-binary=":all:" --require-hashes

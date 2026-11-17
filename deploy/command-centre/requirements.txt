@@ -1,5 +1,7 @@
-# Passkey (WebAuthn) signature checks. Installed with --require-hashes into each release's
-# vendor/ directory by deploy_host.py, and into CI by test.yml. Linux x86_64/aarch64 wheels only.
+# Installed with --require-hashes into each release's vendor/ directory by deploy_host.py, and into
+# CI by test.yml. Linux x86_64/aarch64 manylinux2014 wheels only.
+# cryptography, cffi, pycparser: passkey (WebAuthn) signature checks.
+# pillow: decodes uploaded Instagram photos, drops EXIF/GPS and re-encodes them as JPEG.
 cryptography==48.0.1 \
     --hash=sha256:f0d27a5696721ef7a672b8c810f6aded391058e0b9486e63e6d93baf765da691 \
     --hash=sha256:3752f2dbc8f07a30aad2932c986cea495b03bb554887828225da104f732852b6 \
@@ -18,3 +20,6 @@ cffi==2.0.0 \
     --hash=sha256:b21e08af67b8a103c71a250401c78d5e0893beff75e28c53c98f4de42f774062
 pycparser==2.23 \
     --hash=sha256:e5c6e8d3fbad53479cab09ac03729e0a9faf2bee3db8208a550daf5af81a5934
+pillow==12.2.0 \
+    --hash=sha256:b86024e52a1b269467a802258c25521e6d742349d760728092e1bc2d135b4d76 \
+    --hash=sha256:03e7e372d5240cc23e9f07deca4d775c0817bffc641b01e9c3af208dbd300987

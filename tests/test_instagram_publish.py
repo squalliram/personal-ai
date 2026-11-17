@@ -102,6 +102,16 @@ class PublishTests(PublishCase):
         self.assertEqual([p.name for p in self.public.iterdir()], ["index.html"])
         self.assertEqual(self.tick(FakeGraph()), "published 0, failed 0")
 
+    def test_a_single_photo_posts_as_one_image(self):
+        self.add(slides=1)
+        graph = FakeGraph()
+        self.assertEqual(self.tick(graph), "published 1, failed 0")
+        self.assertEqual(len(graph.posts), 2)
+        path, params, _ = graph.posts[0]
+        self.assertEqual(path, "17841408862128347/media")
+        self.assertEqual(params, {"image_url": self.checked[0], "caption": "Save this.\n\n#coffee #london"})
+        self.assertEqual(graph.posts[1], ("17841408862128347/media_publish", {"creation_id": "c1"}, False))
+
     def test_rejected_weak_and_future_drafts_are_not_posted(self):
         self.add("a" * 16)
         self.add("b" * 16, score=60)
