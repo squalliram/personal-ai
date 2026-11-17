@@ -39,7 +39,7 @@ What the repo shows about the cPanel/CloudLinux host:
 
 So processing is staged:
 
-- **Phase 1, no ffmpeg:** post my clip as it is. A small pure-Python MP4/MOV box reader checks container, `moov` position, duration, resolution and codec tags against Meta's spec (section 3). If the clip fails, the draft is marked "needs re-export" instead of being sent to Meta. The cover is a `thumb_offset` frame that Create picks from the note's timing (default 0). Because nothing can be burned in, the on-screen text is shown on the draft as a script and the caption's first line carries the hook. Simplest, but the reel has no text overlay.
+- **Phase 1, no ffmpeg:** post my clip as it is. A small pure-Python MP4/MOV box reader checks every limit in Meta's Reels spec (section 3) that can be read from the file's headers: container and edit lists, `moov` position, duration, file size, width, frame rate, video and audio codec, audio sample rate and channels, and average bitrates. Anything it can't read (closed GOP, progressive scan, chroma subsampling) is left to Meta's `status_code`; an `ERROR` there also marks the draft "needs re-export". If the clip fails, the draft is marked "needs re-export" instead of being sent to Meta. The cover is a `thumb_offset` frame that Create picks from the note's timing (default 0). Because nothing can be burned in, the on-screen text is shown on the draft as a script and the caption's first line carries the hook. Simplest, but the reel has no text overlay.
 - **Phase 2, with ffmpeg:** if phase 0 finds ffmpeg, or a pinned static build can be shipped like the wheels (checksum-verified, about 80 MB), add:
   - trim to the agent's in and out points
   - join up to 3 clips
@@ -48,7 +48,7 @@ So processing is staged:
   - re-encode to H.264, AAC 48 kHz, `+faststart`
   - export the chosen cover frame as JPEG for `cover_url`
 
-  Each job runs with `nice` under a time limit. If it fails, the clip posts as it is, without overlays (only if it already meets the spec).
+  Each job runs with `nice` under a time limit. If a job fails, the draft stops and asks me to retry the processing or Approve the original. It never falls back to the original by itself, because that would post footage the trim was meant to cut.
 - **Optional later:** Workers AI Whisper (`@cf/openai/whisper`) could transcribe the clip's audio so the caption can quote what I say. Llama 4 Scout accepts images, so it could look at a few extracted frames (needs ffmpeg). Both fit in the free neurons, but neither is checked on this account yet.
 
 ## 3. Publishing a reel through Meta's official API
