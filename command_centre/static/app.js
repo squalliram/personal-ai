@@ -1877,6 +1877,7 @@
     for (let attempt = 0; attempt < 2; attempt += 1) {
       if (signIn !== signInCount) return { ok: false, status: -1, data: null };
       const done = await api("api/v1/instagram/clips/finish", { method: "POST", body: { clip_id: clipId } });
+      if (signIn !== signInCount) return { ok: false, status: -1, data: null }; // a newer session owns unfinishedClip
       if (done.status !== 0) { unfinishedClip = null; return done; }
     }
     unfinishedClip = { file, clipId }; // finishing again is safe; uploading again would queue it twice
