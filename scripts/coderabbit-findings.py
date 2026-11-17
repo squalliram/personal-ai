@@ -103,7 +103,7 @@ def nested(body: str) -> list[dict]:
 
 
 ADDRESSED = re.compile(r"✅ Addressed in commits? [0-9a-f]{7,40}")
-QUOTED = re.compile(r"```.*?```|`[^`\n]*`|^>.*$", re.S | re.M)
+QUOTED = re.compile(r"```.*?```|`[^`\n]*`|^>[^\n]*$", re.S | re.M)
 
 
 def outcome(thread: dict | None) -> str:

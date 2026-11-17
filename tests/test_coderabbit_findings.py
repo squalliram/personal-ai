@@ -113,6 +113,11 @@ class CodeRabbitFindingsTests(unittest.TestCase):
             with self.subTest(quoted=quoted):
                 reply = {"author": {"login": "coderabbitai"}, "body": quoted}
                 self.assertEqual(findings.outcome(with_comments(finding, reply)), "resolved by CodeRabbit")
+        after_quote = {
+            "author": {"login": "coderabbitai"},
+            "body": "> Fixed in a837eeb\n\n✅ Addressed in commit a837eeb",
+        }
+        self.assertEqual(findings.outcome(with_comments(finding, after_quote)), "fixed (confirmed by CodeRabbit)")
         ghost = with_comments(addressed, {"author": None, "body": "✅ Addressed in commit 1234567"})
         self.assertEqual(findings.outcome(ghost), "fixed (confirmed by CodeRabbit)")
         self.assertEqual(findings.outcome(thread(True, True)), "resolved")
