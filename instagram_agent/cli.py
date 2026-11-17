@@ -341,7 +341,7 @@ def main(argv: list[str] | None = None) -> int:
                 except BlockingIOError:
                     return 0  # The previous tick is still drafting.
                 outcome = daily(conn, env, args.media)
-                render.render_due(conn, args.media, _notify_render(env, _now()))
+                render.render_due(conn, args.media, _notify_render(env, _now()), _now())
                 published = publish.tick(conn, env, args.media, _now())
             print(outcome, published, sep="; ")
             return 0 if outcome in ("ok", "partial", "skipped", "gave_up") else 1

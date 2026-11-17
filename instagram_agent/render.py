@@ -16,9 +16,11 @@ import re
 import shutil
 import subprocess
 import textwrap
+from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
-from . import music, video
+from . import music, publish, video
 from .host_probe import find_tool
 
 WIDTH, HEIGHT, FPS = 1080, 1920, 30
@@ -302,8 +304,24 @@ def render(conn, media_dir: Path, draft_id: str, reel: dict, caps: dict | None =
     return {**reel, "file": OUT, "render": "done", "seconds": seconds, "cover_ms": cover, "bytes": facts["bytes"]}
 
 
-def render_due(conn, media_dir: Path, notify_failure=lambda row, error, final: None) -> str:
+def _reschedule(row, now: datetime) -> str | None:
+    """A reel rendered after its posting window posts now if it is still its London day, else not at all."""
+    if not row["scheduled_for"]:
+        return row["scheduled_for"]
+    when = publish.posts_at(row["scheduled_for"], row["created_at"])
+    if when + publish.STALE_AFTER >= now:
+        return row["scheduled_for"]
+    london = ZoneInfo("Europe/London")
+    if publish._instant(row["scheduled_for"]).astimezone(london).date() == now.astimezone(london).date():
+        return now.isoformat(timespec="seconds")
+    return None
+
+
+def render_due(
+    conn, media_dir: Path, notify_failure=lambda row, error, final: None, now: datetime | None = None
+) -> str:
     """Render every reel draft waiting for it, one at a time; skipped while another render runs."""
+    now = now or datetime.now(timezone.utc)
     media_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     with open(media_dir / LOCK, "w") as lock:
         try:
@@ -311,7 +329,8 @@ def render_due(conn, media_dir: Path, notify_failure=lambda row, error, final: N
         except BlockingIOError:
             return "render busy"
         rows = conn.execute(
-            "SELECT draft_id, topic, reel FROM drafts WHERE kind='reel' AND status IN ('pending','approved') "
+            "SELECT draft_id, topic, reel, scheduled_for, created_at FROM drafts "
+            "WHERE kind='reel' AND status IN ('pending','approved') "
             "ORDER BY scheduled_for"
         ).fetchall()
         done = failed = 0
@@ -322,6 +341,11 @@ def render_due(conn, media_dir: Path, notify_failure=lambda row, error, final: N
             try:
                 reel = render(conn, media_dir, row["draft_id"], reel)
                 done += 1
+                slot = _reschedule(row, now)
+                if slot is None:
+                    notify_failure(row, "it was made after its posting day ended", True)
+                with conn:
+                    conn.execute("UPDATE drafts SET scheduled_for=? WHERE draft_id=?", (slot, row["draft_id"]))
             except (RenderError, OSError, KeyError, TypeError, ValueError) as exc:
                 error = str(exc) if isinstance(exc, RenderError) else type(exc).__name__
                 tries = int(reel.get("render_attempts", 0)) + 1

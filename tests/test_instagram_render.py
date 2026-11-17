@@ -181,7 +181,7 @@ class RenderDueTests(Case):
         [row] = self.conn.execute("SELECT * FROM drafts").fetchall()
         self.assertFalse(publish.rendered(row))
         with patch.object(render, "render", side_effect=lambda c, m, d, reel: {**reel, "render": "done"}):
-            self.assertEqual(render.render_due(self.conn, self.media), "rendered 1, failed 0")
+            self.assertEqual(render.render_due(self.conn, self.media, now=NOW), "rendered 1, failed 0")
         [row] = self.conn.execute("SELECT * FROM drafts").fetchall()
         self.assertTrue(publish.rendered(row))
         import fcntl
@@ -189,6 +189,25 @@ class RenderDueTests(Case):
         with open(self.media / render.LOCK, "w") as held:
             fcntl.flock(held, fcntl.LOCK_EX)
             self.assertEqual(render.render_due(self.conn, self.media), "render busy")
+
+    def test_a_reel_made_after_its_window_posts_now_that_day_or_not_at_all(self):
+        self.add_reel(photo_reel())
+        told = []
+        late = datetime(2026, 11, 12, 22, 0, tzinfo=timezone.utc)
+        with patch.object(render, "render", side_effect=lambda c, m, d, reel: {**reel, "render": "done"}):
+            render.render_due(self.conn, self.media, lambda row, error, final: told.append(error), now=late)
+        self.assertEqual(self.conn.execute("SELECT scheduled_for FROM drafts").fetchone()[0], late.isoformat())
+        self.assertEqual(told, [])
+        with self.conn:
+            self.conn.execute(
+                "UPDATE drafts SET reel=?, scheduled_for=?", (json.dumps(photo_reel()), "2026-11-12T18:00:00+00:00")
+            )
+        with patch.object(render, "render", side_effect=lambda c, m, d, reel: {**reel, "render": "done"}):
+            render.render_due(
+                self.conn, self.media, lambda row, error, final: told.append(error), now=late + timedelta(hours=3)
+            )
+        self.assertIsNone(self.conn.execute("SELECT scheduled_for FROM drafts").fetchone()[0])
+        self.assertEqual(told, ["it was made after its posting day ended"])
 
     def test_a_deleted_or_unlicensed_track_fails_the_render(self):
         (self.media / "x").mkdir(parents=True)
