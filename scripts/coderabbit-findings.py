@@ -186,7 +186,7 @@ def cell(text: str) -> str:
     return re.sub(r"\s+", " ", str(text)).replace("|", "\\|")
 
 
-def render(prs: list[dict], findings: list[dict], now: datetime) -> str:
+def render(prs: list[dict], findings: list[dict], now: datetime, repos: tuple[str, ...] = REPOS) -> str:
     lines = [
         "# CodeRabbit findings log",
         "",
@@ -202,7 +202,7 @@ def render(prs: list[dict], findings: list[dict], now: datetime) -> str:
         "| Repository | PRs | PRs reviewed | Findings | Critical | Major | Minor | Trivial | Fixed or resolved |",
         "|---|---|---|---|---|---|---|---|---|",
     ]
-    for repo in REPOS:
+    for repo in repos:
         mine = [f for f in findings if f["repo"] == repo]
         sev = Counter(f["severity"] for f in mine)
         done = sum(f["outcome"].startswith(("fixed", "resolved")) for f in mine)
@@ -216,7 +216,7 @@ def render(prs: list[dict], findings: list[dict], now: datetime) -> str:
     lines += [f"| {cell(k)} | {v} |" for k, v in Counter(f["category"] for f in findings).most_common()]
     lines += ["", "### By outcome", "", "| Outcome | Findings |", "|---|---|"]
     lines += [f"| {k} | {v} |" for k, v in Counter(f["outcome"] for f in findings).most_common()]
-    for repo in REPOS:
+    for repo in repos:
         lines += ["", f"## {repo}"]
         for pr in (p for p in prs if p["repo"] == repo):
             mine = [f for f in findings if f["repo"] == repo and f["number"] == pr["number"]]
@@ -243,13 +243,13 @@ def main() -> None:
     parser.add_argument("--output", type=Path, default=OUTPUT)
     parser.add_argument("--repo", action="append", help="owner/name; repeatable (default: the owner's three repos)")
     args = parser.parse_args()
-    prs, findings = [], []
-    for repo in args.repo or REPOS:
+    prs, findings, repos = [], [], tuple(args.repo or REPOS)
+    for repo in repos:
         repo_prs, repo_findings = collect(repo)
         prs += repo_prs
         findings += repo_findings
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(render(prs, findings, datetime.now(LONDON)), encoding="utf-8")
+    args.output.write_text(render(prs, findings, datetime.now(LONDON), repos), encoding="utf-8")
     print(f"{len(findings)} findings across {len(prs)} PRs -> {args.output}")
 
 

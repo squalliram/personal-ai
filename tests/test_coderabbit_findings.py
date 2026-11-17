@@ -108,6 +108,10 @@ class CodeRabbitFindingsTests(unittest.TestCase):
             "| Major | Stability & Availability | Quick win | [Keep failed test runs out of the deployment queue (static analysis)]",
             text,
         )
+        other = [{**prs[0], "repo": "someone/else"}]
+        text = findings.render(other, [{**row, "repo": "someone/else"}], datetime(2026, 11, 17, tzinfo=timezone.utc), ("someone/else",))
+        self.assertIn("## someone/else", text)
+        self.assertIn("[Keep failed test runs out of the deployment queue (static analysis)]", text)
 
     def test_explains_a_pr_without_a_review(self):
         self.assertEqual(findings.review_note(["Review failed: the head commit changed"], False), "review failed")
