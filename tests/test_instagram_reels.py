@@ -507,6 +507,18 @@ class ReelPublishTests(Case):
         self.assertEqual(row[0], "pending")
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM publish_runs").fetchone()[0], 0)
 
+    def test_a_hold_then_a_failure_before_publishing_keeps_the_hold(self):
+        def hold_then_fail(*args, on_publish, **kwargs):
+            storage.hold_reel(self.conn, "b" * 16, True)
+            raise publish.PublishError("container status ERROR")
+
+        with patch.object(publish, "MAX_ATTEMPTS", 1), patch.object(publish, "publish_reel", hold_then_fail):
+            self.assertEqual(self.tick(ReelGraph()), "published 0, failed 0")
+        [row] = self.conn.execute("SELECT * FROM drafts").fetchall()
+        self.assertEqual(row["status"], "pending")
+        self.assertTrue(publish.held(row))
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM publish_runs").fetchone()[0], 0)
+
     def test_a_hold_set_while_rendering_survives_the_render(self):
         with self.conn:
             self.conn.execute("UPDATE drafts SET reel=json_set(reel, '$.render', 'pending')")

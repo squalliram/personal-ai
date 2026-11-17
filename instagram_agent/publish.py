@@ -365,6 +365,11 @@ def tick(conn, env: dict, media_dir: Path, now: datetime, client: GraphClient | 
         except (PublishError, GraphAPIError, OSError, ValueError) as exc:
             error = str(exc) if isinstance(exc, (PublishError, GraphAPIError)) else type(exc).__name__
             with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                now_row = conn.execute("SELECT status, kind, reel FROM drafts WHERE draft_id=?", (row["draft_id"],))
+                now_row = now_row.fetchone()
+                if not sent and now_row and now_row["status"] == "pending" and held(now_row):
+                    continue  # held during preparation: the owner decides, not the failure count
                 if sent:
                     error = f"{error}; outcome unknown, check Instagram"
                 _record(conn, row["draft_id"], stamp, "failed", error=error)
