@@ -96,11 +96,15 @@ class CodeRabbitFindingsTests(unittest.TestCase):
                 outcome = findings.outcome(with_comments(finding, {"author": {"login": "coderabbitai"}, "body": reply}))
                 self.assertEqual(outcome, "resolved by CodeRabbit")
         self.assertEqual(findings.outcome(thread(True, False, "coderabbitai[bot]")), "resolved by CodeRabbit")
-        marked = {**addressed, "createdAt": "2026-11-17T10:00:00Z", "updatedAt": "2026-11-17T11:00:00Z"}
-        later = {"author": {"login": "coderabbitai"}, "body": "One case remains.", "createdAt": "2026-11-17T12:00:00Z"}
-        self.assertEqual(findings.outcome(with_comments(marked, later)), "resolved by CodeRabbit")
-        remarked = {**marked, "updatedAt": "2026-11-17T13:00:00Z"}
-        self.assertEqual(findings.outcome(with_comments(remarked, later)), "fixed (confirmed by CodeRabbit)")
+        later = {"author": {"login": "coderabbitai"}, "body": "One case remains."}
+        self.assertEqual(findings.outcome(with_comments(addressed, later)), "resolved by CodeRabbit")
+        edited_after = {**addressed, "updatedAt": "2026-11-17T13:00:00Z"}
+        later_dated = {**later, "createdAt": "2026-11-17T12:00:00Z"}
+        self.assertEqual(findings.outcome(with_comments(edited_after, later_dated)), "resolved by CodeRabbit")
+        reconfirmed = {"author": {"login": "coderabbitai"}, "body": "✅ Addressed in commits 32bff8c to a853658"}
+        self.assertEqual(
+            findings.outcome(with_comments(finding, later, reconfirmed)), "fixed (confirmed by CodeRabbit)"
+        )
         ghost = with_comments(addressed, {"author": None, "body": "✅ Addressed in commit 1234567"})
         self.assertEqual(findings.outcome(ghost), "fixed (confirmed by CodeRabbit)")
         self.assertEqual(findings.outcome(thread(True, True)), "resolved")

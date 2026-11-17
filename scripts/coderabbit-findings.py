@@ -33,7 +33,7 @@ FILE_GROUP = re.compile(r"<summary>([^<:]+?\.[A-Za-z0-9]+)(?:-[\d-]+)?: \d+</sum
 NESTED = re.compile(r"^`(\d+(?:-\d+)?)`: (\*\*.*)$", re.M)
 QUERY = """query($o:String!,$r:String!,$n:Int!,$c:String){repository(owner:$o,name:$r){pullRequest(number:$n){
 reviewThreads(first:100,after:$c){pageInfo{hasNextPage endCursor}
-nodes{isResolved isOutdated resolvedBy{login} comments(first:100){nodes{databaseId author{login} body createdAt updatedAt}}}}}}}"""
+nodes{isResolved isOutdated resolvedBy{login} comments(first:100){nodes{databaseId author{login} body}}}}}}}"""
 
 
 def gh(*args: str):
@@ -111,17 +111,15 @@ def outcome(thread: dict | None) -> str:
     if thread["isResolved"]:
         if (thread.get("resolvedBy") or {}).get("login") not in ("coderabbitai", "coderabbitai[bot]"):
             return "resolved"
-        # CodeRabbit marks a verified finding by editing in "✅ Addressed in commit ..."; a later CodeRabbit reply
-        # (e.g. "one case remains", or a withdrawal) supersedes it. Only a mark that is its latest word counts.
-        events = []
-        for index, comment in enumerate(thread.get("comments", {}).get("nodes", [])):
-            if not (comment["author"] or {}).get("login", "").startswith("coderabbitai"):
-                continue
-            if ADDRESSED.search(comment["body"]):
-                events.append((comment.get("updatedAt") or comment.get("createdAt") or "", index, True))
-            elif index:
-                events.append((comment.get("createdAt") or "", index, False))
-        return "fixed (confirmed by CodeRabbit)" if events and max(events)[2] else "resolved by CodeRabbit"
+        # CodeRabbit marks a verified finding with "✅ Addressed in commit ...". Edit times don't show when the mark
+        # was added, so any later CodeRabbit reply (e.g. "one case remains", a withdrawal) makes the outcome neutral.
+        bodies = [
+            c["body"]
+            for c in thread.get("comments", {}).get("nodes", [])
+            if (c["author"] or {}).get("login", "").startswith("coderabbitai")
+        ]
+        confirmed = bodies and ADDRESSED.search(bodies[-1])
+        return "fixed (confirmed by CodeRabbit)" if confirmed else "resolved by CodeRabbit"
     return "outdated" if thread["isOutdated"] else "open"
 
 
