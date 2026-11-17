@@ -170,6 +170,25 @@ class ClipQueueTests(Case):
             clips.append(self.conn, self.media, clip_id, 0, io.BytesIO(b"x" * 100), 100)
         self.assertEqual(changed.exception.code, "wrong_offset")
 
+    def test_a_chunk_that_breaks_midway_leaves_nothing_behind(self):
+        data = mp4()
+
+        class Broken(io.BytesIO):
+            def read(self, n=-1):
+                if self.tell():
+                    raise OSError("connection reset")
+                return super().read(10)
+
+        clip_id = clips.start(self.conn, self.media, NOTE, len(data), NOW)
+        with self.assertRaises(OSError):
+            clips.append(self.conn, self.media, clip_id, 0, Broken(data[:100]), 100)
+        self.assertEqual((self.media / "clips" / clip_id / clips.PART).stat().st_size, 0)
+        self.assertEqual(clips.append(self.conn, self.media, clip_id, 0, io.BytesIO(data[:100]), 100), 100)
+
+    def test_rounded_times_stay_inside_the_clip(self):
+        self.assertEqual(drafts._seconds(3.06, 3.06), 3.0)
+        self.assertEqual(drafts._seconds(1.26, 3.06), 1.3)
+
     def test_finish_recovers_a_rename_that_was_not_committed(self):
         data = mp4()
         clip_id = clips.start(self.conn, self.media, NOTE, len(data), NOW)
