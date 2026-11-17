@@ -33,6 +33,12 @@ REVIEW = f"""**Actionable comments posted: 0**
 **Add a discovery-mode test for `start-energy.sh`.**
 
 Run the real launcher.
+
+`150`: **{ICON} Minor** · **Functional Correctness** · **Quick win**
+
+**Check the second launcher.**
+
+Based on learnings, it matters.
 </blockquote></details>
 </blockquote></details>
 <details><summary>{ICON} Review info</summary></details>
@@ -56,7 +62,8 @@ class CodeRabbitFindingsTests(unittest.TestCase):
         self.assertIsNone(findings.parse("@devin-ai-integration[bot] Confirmed. This addresses the finding."))
 
     def test_parses_findings_folded_into_a_review_body(self):
-        [nit] = findings.nested(REVIEW)
+        nit, second = findings.nested(REVIEW)
+        self.assertEqual((second["line"], second["flags"]), ("150", ["learnings"]))
         self.assertEqual(
             (nit["kind"], nit["path"], nit["line"], nit["severity"], nit["title"], nit["flags"]),
             (

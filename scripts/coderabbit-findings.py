@@ -89,12 +89,13 @@ def nested(body: str) -> list[dict]:
     marks = [(m.start(), "section", m.group(1)) for m in SECTION.finditer(text)]
     marks += [(m.start(), "file", m.group(1)) for m in FILE_GROUP.finditer(text)]
     marks += [(m.start(), "finding", m) for m in NESTED.finditer(text)]
-    for _, kind, value in sorted(marks, key=lambda mark: mark[0]):
+    marks.sort(key=lambda mark: mark[0])
+    for index, (_, kind, value) in enumerate(marks):
         if kind == "section":
             section = value
         elif kind == "file":
             path = value.strip()
-        elif section and (finding := parse(text[value.start() : value.start() + 4000])):
+        elif section and (finding := parse(text[value.start() : marks[index + 1][0] if index + 1 < len(marks) else None])):
             found.append({**finding, "kind": section, "path": path, "line": value.group(1)})
     return found
 
