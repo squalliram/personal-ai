@@ -1218,6 +1218,8 @@ class CommandCentreApp:
             clip_id = self._clip_call(lambda c: instagram_clips.start(c, media, note, body["size"], now))
         except (instagram_uploads.PhotoError, instagram_clips.ClipError) as exc:
             return _error(413 if exc.code == "clip_too_large" else 400, exc.code)
+        except OSError:
+            return _error(507, "storage_error")
         return 200, {"clip_id": clip_id, "chunk_bytes": instagram_clips.CHUNK_BYTES}, []
 
     def instagram_clip_chunk(self, request: Request) -> Result:
@@ -1237,8 +1239,10 @@ class CommandCentreApp:
             received = self._clip_call(lambda c: instagram_clips.append(c, media, clip_id, int(offset), stream, length))
         except instagram_clips.ClipError as exc:
             return _error(404 if exc.code == "not_found" else 409 if exc.code == "wrong_offset" else 400, exc.code)
-        except OSError:
+        except FileNotFoundError:
             return _error(404, "not_found")
+        except OSError:
+            return _error(507, "storage_error")
         return 200, {"clip_id": clip_id, "received": received}, []
 
     def instagram_clip_finish(self, request: Request) -> Result:

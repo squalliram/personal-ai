@@ -1868,6 +1868,7 @@
     clip_too_large: "The clip is over 300 MB. Export it at 1080p.",
     invalid_note: "Add a short note (up to 300 characters).",
     network_error: "The connection dropped. Try again.",
+    storage_error: "The server couldn't save the clip (it may be out of space). Try again later.",
   };
 
   async function sendClip(file, note, status) {
