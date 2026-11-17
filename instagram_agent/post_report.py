@@ -240,7 +240,8 @@ def report_one(conn, client: GraphClient, post, checkpoint: str, env: dict, now:
             ),
         )
     key = f"instagram-post-report:{post['media_id']}:{checkpoint}"
-    notify("instagram", "info", text, link or page, key=key, env=env, now=now)
+    if notify("instagram", "info", text, link or page, key=key, env=env, now=now) is None:
+        return False  # not stored: the next tick tries again while the checkpoint is due
     with conn:
         conn.execute(
             "UPDATE post_reports SET notified_at=? WHERE media_id=? AND checkpoint=?",
