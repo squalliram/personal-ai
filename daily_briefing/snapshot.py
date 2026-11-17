@@ -6,8 +6,8 @@ content: malformed items are dropped and reported as counted,
 content-free error strings, so a scheduled run still produces a briefing
 and an auditable run-log row instead of crashing silently.
 
-Field rules mirror what ``briefing.render`` consumes: strings or null
-only, and ``start``/``end``/``due`` must parse with the same ISO 8601
+Field rules mirror what ``briefing.render`` consumes: those fields are
+strings or null only, and ``start``/``end``/``due`` must parse with the same ISO 8601
 parser the renderer uses. Unknown keys pass through unchanged so the
 connector can add fields without a lockstep release.
 """
@@ -18,6 +18,10 @@ import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+
+
+# Fields the renderer reads; every other key passes through unvalidated.
+CONSUMED = ("id", "title", "start", "end", "due", "priority", "location", "url")
 
 
 @dataclass
@@ -47,7 +51,7 @@ def _clean_items(raw: object, kind: str, errors: list[str]) -> list[dict]:
         if not isinstance(item, dict):
             dropped += 1
             continue
-        if any(value is not None and not isinstance(value, str) for value in item.values()):
+        if any(item.get(key) is not None and not isinstance(item[key], str) for key in CONSUMED):
             dropped += 1
             continue
         if any(item.get(key) and not _iso_ok(item[key]) for key in ("start", "end", "due")):
@@ -80,6 +84,6 @@ def parse(data: object) -> Snapshot:
 def load(path: str | Path) -> Snapshot:
     try:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         return Snapshot(errors=[f"Snapshot input failure: {type(exc).__name__}"])
     return parse(data)
