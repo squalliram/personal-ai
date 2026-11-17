@@ -200,9 +200,7 @@ def _finish(conn: sqlite3.Connection, media_dir: Path, clip_id: str, check) -> d
     try:
         part.rename(final)
     except OSError as exc:
-        done = conn.execute(
-            "SELECT facts FROM clips WHERE clip_id=? AND status='waiting'", (clip_id,)
-        ).fetchone()
+        done = conn.execute("SELECT facts FROM clips WHERE clip_id=? AND status='waiting'", (clip_id,)).fetchone()
         if done is None or not done["facts"]:
             raise ClipError("not_found") from exc
         return json.loads(done["facts"])

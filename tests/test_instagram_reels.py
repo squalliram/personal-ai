@@ -221,7 +221,7 @@ class ClipQueueTests(Case):
                     clips.append(self.conn, self.media, clip_id, 0, io.BytesIO(data), len(data))
                     stored = {"ext": "mp4", "seconds": 12}
 
-                    def fail_rename(source, target):
+                    def fail_rename(source, target, status=status, clip_id=clip_id, stored=stored, error=error):
                         if status == "deleted":
                             clips.delete(self.conn, self.media, clip_id)
                         else:
@@ -233,8 +233,10 @@ class ClipQueueTests(Case):
                         raise error("rename failed")
 
                     with patch.object(Path, "rename", fail_rename):
+
                         def check(p):
                             return {"ext": "mp4", "seconds": 10}, []
+
                         if status == "waiting":
                             self.assertEqual(clips.finish(self.conn, self.media, clip_id, check=check), stored)
                         else:
