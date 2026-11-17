@@ -103,6 +103,7 @@ def nested(body: str) -> list[dict]:
 
 
 ADDRESSED = re.compile(r"✅ Addressed in commits? [0-9a-f]{7,40}")
+QUOTED = re.compile(r"```.*?```|`[^`\n]*`|^>.*$", re.S | re.M)
 
 
 def outcome(thread: dict | None) -> str:
@@ -118,7 +119,7 @@ def outcome(thread: dict | None) -> str:
             for c in thread.get("comments", {}).get("nodes", [])
             if (c["author"] or {}).get("login", "").startswith("coderabbitai")
         ]
-        confirmed = bodies and ADDRESSED.search(bodies[-1])
+        confirmed = bodies and ADDRESSED.search(QUOTED.sub("", bodies[-1]))
         return "fixed (confirmed by CodeRabbit)" if confirmed else "resolved by CodeRabbit"
     return "outdated" if thread["isOutdated"] else "open"
 

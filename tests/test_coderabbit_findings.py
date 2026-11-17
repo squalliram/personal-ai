@@ -105,6 +105,14 @@ class CodeRabbitFindingsTests(unittest.TestCase):
         self.assertEqual(
             findings.outcome(with_comments(finding, later, reconfirmed)), "fixed (confirmed by CodeRabbit)"
         )
+        for quoted in (
+            "The marker `✅ Addressed in commit a837eeb` was incorrect. I withdraw this finding.",
+            "> ✅ Addressed in commit a837eeb\n\nThat mark was wrong.",
+            "```\n✅ Addressed in commit a837eeb\n```\nNot fixed.",
+        ):
+            with self.subTest(quoted=quoted):
+                reply = {"author": {"login": "coderabbitai"}, "body": quoted}
+                self.assertEqual(findings.outcome(with_comments(finding, reply)), "resolved by CodeRabbit")
         ghost = with_comments(addressed, {"author": None, "body": "✅ Addressed in commit 1234567"})
         self.assertEqual(findings.outcome(ghost), "fixed (confirmed by CodeRabbit)")
         self.assertEqual(findings.outcome(thread(True, True)), "resolved")
