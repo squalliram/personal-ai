@@ -16,6 +16,20 @@ class HostProbeTests(unittest.TestCase):
         self.assertTrue(any(line.startswith("cpus: ") for line in report))
         self.assertTrue(any(line.startswith("disk free: ") for line in report))
 
+    def test_cgroup_limits_come_from_the_process_cgroup(self):
+        root = Path("/cg")
+        v2 = host_probe.cgroup_files("0::/user.slice/lve/1001\n", root)
+        self.assertIn((root / "user.slice/lve/1001/memory.max", "cgroup memory.max"), v2)
+        self.assertIn((root / "user.slice/lve/1001/cpu.max", "cgroup cpu.max"), v2)
+        v1 = host_probe.cgroup_files("4:memory:/lve/1001\n3:cpu,cpuacct:/lve/1001\n2:pids:/x\nbad\n", root)
+        self.assertEqual(
+            v1,
+            [
+                (root / "memory/lve/1001/memory.limit_in_bytes", "cgroup v1 memory limit"),
+                (root / "cpu/lve/1001/cpu.cfs_quota_us", "cgroup v1 cpu quota (us)"),
+            ],
+        )
+
     def test_missing_tool_is_not_found(self):
         with (
             mock.patch.object(host_probe.shutil, "which", return_value=None),
