@@ -4,6 +4,7 @@ name: Notify owner
 # POST /api/v1/notifications, using the NOTIFY_INGEST_TOKEN Actions secret, so the caller
 # (the Jarvis Builder Bot) never holds the token. Trigger with:
 #   gh workflow run notify-owner.yml -R squalliram/personal-ai -f title="..." [-f outcome=failed] [-f link=https://...]
+# The repo is public: the message never reaches the run log, but keep secrets out of it anyway.
 
 on:
   workflow_dispatch:
@@ -38,7 +39,5 @@ jobs:
       - name: Send to Inbox and Telegram
         env:
           NOTIFY_INGEST_TOKEN: ${{ secrets.NOTIFY_INGEST_TOKEN }}
-          NOTIFY_TITLE: ${{ inputs.title }}
-          NOTIFY_OUTCOME: ${{ inputs.outcome }}
-          NOTIFY_LINK: ${{ inputs.link }}
+        # The script reads the inputs from the event file, so the text is not listed in this public log.
         run: python3 scripts/notify-owner.py

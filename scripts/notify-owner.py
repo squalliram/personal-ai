@@ -2,8 +2,10 @@
 """Send one update to the owner's Command Centre Inbox and Telegram through the notification ingest.
 
 Run by .github/workflows/notify-owner.yml, so callers (the Jarvis Builder Bot) never hold the token.
-Reads NOTIFY_INGEST_TOKEN, NOTIFY_TITLE, NOTIFY_OUTCOME (ok/failed), optional NOTIFY_LINK and
-COMMAND_CENTRE_URL. Prints only the status and inbox ID, never the token or the message.
+Reads NOTIFY_INGEST_TOKEN and optional COMMAND_CENTRE_URL from the environment, and the message from the
+workflow_dispatch inputs in GITHUB_EVENT_PATH (title, outcome ok/failed, link), so the text never appears in
+the step's env listing of this public repo's run log; NOTIFY_TITLE / NOTIFY_OUTCOME / NOTIFY_LINK serve local
+runs. Prints only the status and inbox ID, never the token or the message.
 """
 
 from __future__ import annotations
@@ -90,10 +92,20 @@ def send(env: dict[str, str], opener=None) -> int:
     return stored
 
 
+def with_event_inputs(env: dict[str, str]) -> dict[str, str]:
+    path = env.get("GITHUB_EVENT_PATH")
+    if not path:
+        return env
+    with open(path, encoding="utf-8") as event:
+        inputs = json.load(event).get("inputs") or {}
+    names = {"title": "NOTIFY_TITLE", "outcome": "NOTIFY_OUTCOME", "link": "NOTIFY_LINK"}
+    return env | {var: str(inputs.get(name) or "") for name, var in names.items()}
+
+
 def main() -> int:
     try:
-        stored = send(dict(os.environ))
-    except (ValueError, RuntimeError) as exc:
+        stored = send(with_event_inputs(dict(os.environ)))
+    except (ValueError, RuntimeError, OSError) as exc:
         print(f"Notification not sent: {exc}", file=sys.stderr)
         return 1
     print(f"Notification stored (inbox ID {stored}) and passed to Telegram.")

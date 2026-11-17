@@ -85,6 +85,16 @@ class NotifyOwnerTests(unittest.TestCase):
                 self.assertIn(expected, str(caught.exception))
                 self.assertNotIn(TOKEN, str(caught.exception))
 
+    def test_workflow_inputs_come_from_the_event_file(self):
+        with TemporaryDirectory() as directory:
+            event = Path(directory) / "event.json"
+            event.write_text(json.dumps({"inputs": {"title": "From dispatch", "outcome": "failed", "link": ""}}))
+            env = SCRIPT["with_event_inputs"]({"NOTIFY_INGEST_TOKEN": TOKEN, "GITHUB_EVENT_PATH": str(event)})
+        self.assertEqual(SCRIPT["payload"](env), {"source": "jarvis", "outcome": "failed", "title": "From dispatch"})
+        self.assertIs(SCRIPT["with_event_inputs"](ENV), ENV)
+        workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/notify-owner.yml").read_text()
+        self.assertNotIn("inputs.title", workflow.split("jobs:", 1)[1])
+
     def test_command_centre_accepts_the_payload(self):
         calls = []
         with TemporaryDirectory() as directory:
