@@ -88,6 +88,7 @@ class CodeRabbitFindingsTests(unittest.TestCase):
         self.assertEqual(findings.outcome(thread(True, False)), "resolved")
         self.assertEqual(findings.outcome(thread(False, False, "This only partially addresses the finding.")), "open")
         self.assertEqual(findings.outcome(thread(False, False, "This does not address the finding.")), "open")
+        self.assertEqual(findings.outcome(thread(False, False, "This addresses the finding only partially.")), "open")
         self.assertEqual(
             findings.outcome(thread(False, False, "This addresses the finding. The old code does not retry.")),
             "fixed (confirmed by CodeRabbit)",

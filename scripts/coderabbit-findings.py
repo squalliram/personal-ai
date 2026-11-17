@@ -33,6 +33,7 @@ FILE_GROUP = re.compile(r"<summary>([^<:]+?\.[A-Za-z0-9]+)(?:-[\d-]+)?: \d+</sum
 NESTED = re.compile(r"^`(\d+(?:-\d+)?)`: (\*\*.*)$", re.M)
 CONFIRMED = re.compile(r"\baddresses (?:this|the) finding|Review thread resolved")
 HEDGED = re.compile(r"\b(?:partially|partly|not|n't|only)\W+(?:\w+\W+)?$", re.I)
+HEDGED_AFTER = re.compile(r"[^.!?\n]*\b(?:partially|partly|in part|not fully|only some)\b", re.I)
 QUERY = """query($o:String!,$r:String!,$n:Int!,$c:String){repository(owner:$o,name:$r){pullRequest(number:$n){
 reviewThreads(first:100,after:$c){pageInfo{hasNextPage endCursor}
 nodes{isResolved isOutdated comments(first:50){nodes{databaseId author{login} body}}}}}}}"""
@@ -106,7 +107,11 @@ def nested(body: str) -> list[dict]:
 
 def confirmed(body: str) -> bool:
     """CodeRabbit says the fix addresses the finding, not that it only partly does."""
-    return any(not HEDGED.search(body[max(0, m.start() - 40) : m.start()]) for m in CONFIRMED.finditer(body))
+    return any(
+        not HEDGED.search(body[max(0, m.start() - 40) : m.start()])
+        and not HEDGED_AFTER.match(body[m.end() : m.end() + 40])
+        for m in CONFIRMED.finditer(body)
+    )
 
 
 def outcome(thread: dict | None) -> str:
