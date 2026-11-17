@@ -1906,7 +1906,9 @@
       if (file.size > MAX_CLIP_BYTES) { status.textContent = CLIP_ERRORS.clip_too_large; return; }
       if (!note.value.trim()) { status.textContent = CLIP_ERRORS.invalid_note; return; }
       submit.disabled = true;
+      const signIn = signInCount;
       const result = await sendClip(file, note.value.trim(), status);
+      if (signIn !== signInCount) { if (result.ok) clearCache(); return; }
       if (result.status === 401) { showLogin("Your session has ended. Sign in again."); return; }
       if (!result.ok) {
         const code = (result.data && result.data.error) || result.status;
@@ -1928,7 +1930,9 @@
   async function deleteClip(clip, button, status) {
     if (!window.confirm("Delete this clip? It won't be posted.")) return;
     button.disabled = true;
+    const signIn = signInCount;
     const result = await api("api/v1/instagram/clips/delete", { method: "POST", body: { clip_id: clip.clip_id } });
+    if (signIn !== signInCount) { if (result.ok) clearCache(); return; }
     if (result.status === 401) { showLogin("Your session has ended. Sign in again."); return; }
     if (!result.ok) {
       const gone = result.status === 404;
