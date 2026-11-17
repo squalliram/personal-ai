@@ -321,7 +321,6 @@ def render_due(
     conn, media_dir: Path, notify_failure=lambda row, error, final: None, now: datetime | None = None
 ) -> str:
     """Render every reel draft waiting for it, one at a time; skipped while another render runs."""
-    now = now or datetime.now(timezone.utc)
     media_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     with open(media_dir / LOCK, "w") as lock:
         try:
@@ -341,7 +340,7 @@ def render_due(
             try:
                 reel = render(conn, media_dir, row["draft_id"], reel)
                 done += 1
-                slot = _reschedule(row, now)
+                slot = _reschedule(row, now or datetime.now(timezone.utc))  # the clock after a long render
                 if slot is None:
                     notify_failure(row, "it was made after its posting day ended", True)
                 with conn:
