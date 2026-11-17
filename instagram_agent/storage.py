@@ -222,10 +222,11 @@ def publishing_started(conn: sqlite3.Connection, draft_id: str) -> bool:
     return conn.execute(_LATEST_RUN_STARTED, (draft_id,)).fetchone() is not None
 
 
-def hold_reel(conn: sqlite3.Connection, draft_id: str, hold: bool, seen: bool | None = None) -> str:
+def hold_reel(conn: sqlite3.Connection, draft_id: str, hold: bool, version: int | None = None) -> str:
     """Hold a pending reel for approval, or release it: ok, not_found, not_pending or hold_changed.
 
-    `seen` is the hold the page showed; a delayed request whose page is out of date is refused."""
+    `version` is the hold version the page showed. Each change bumps it, so a delayed request from an
+    out-of-date page is refused unless it asks for the hold already stored."""
     with conn:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute("SELECT kind, status, reel FROM drafts WHERE draft_id=?", (draft_id,)).fetchone()
@@ -239,9 +240,12 @@ def hold_reel(conn: sqlite3.Connection, draft_id: str, hold: bool, seen: bool | 
             reel = {}
         reel = reel if isinstance(reel, dict) else {}
         current = reel.get("hold") is True
-        if seen is not None and current != seen and current != hold:
-            return "hold_changed"
+        stored = reel.get("hold_version")
+        stored = stored if isinstance(stored, int) and not isinstance(stored, bool) else 0
+        if version is not None and version != stored:
+            return "ok" if current == hold else "hold_changed"
         reel["hold"] = bool(hold)
+        reel["hold_version"] = stored + 1
         conn.execute("UPDATE drafts SET reel=? WHERE draft_id=?", (json.dumps(reel), draft_id))
     return "ok"
 

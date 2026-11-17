@@ -659,6 +659,7 @@ def _reel(reel) -> dict:
         "render": reel.get("render") if reel.get("render") in ("pending", "done", "failed") else None,
         "render_error": str(reel.get("render_error", "")) or None,
         "hold": reel.get("hold") is True,
+        "hold_version": reel["hold_version"] if type(reel.get("hold_version")) is int else 0,
         "trim": {"in": number(trim.get("in")), "out": number(trim.get("out"))} if isinstance(trim, dict) else None,
         "music": {k: str(song.get(k, "")) for k in ("title", "licence", "mix")} if isinstance(song, dict) else None,
     }
