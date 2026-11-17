@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -11,6 +12,7 @@ from .security import Permission
 
 ROOT = Path(__file__).resolve().parent.parent
 PREFIX = "COMMAND_CENTRE_"
+NOTIFY_INGEST_TOKEN = re.compile(r"[0-9a-fA-F]{64}")
 
 
 def _read_env_file(path: Path) -> dict[str, str]:
@@ -56,6 +58,9 @@ class Settings:
     passkeys_db: Path | None = None
     energy_refresh_dir: Path | None = None
     notifications_db: Path | None = None
+    notify_ingest_token: str | None = field(default=None, repr=False)
+    telegram_bot_token: str | None = field(default=None, repr=False)
+    telegram_chat_id: str | None = field(default=None, repr=False)
 
 
 def load_settings(root: Path = ROOT, environ: Mapping[str, str] | None = None) -> Settings:
@@ -66,6 +71,9 @@ def load_settings(root: Path = ROOT, environ: Mapping[str, str] | None = None) -
         value = Path(values.get(PREFIX + name) or default).expanduser()
         return value if value.is_absolute() else root / value
 
+    def text(name: str) -> str | None:
+        return (values.get(PREFIX + name) or "").strip() or None
+
     def optional_path(name: str) -> Path | None:
         value = values.get(PREFIX + name)
         if not value:
@@ -73,6 +81,7 @@ def load_settings(root: Path = ROOT, environ: Mapping[str, str] | None = None) -
         candidate = Path(value).expanduser()
         return candidate if candidate.is_absolute() else root / candidate
 
+    ingest = text("NOTIFY_INGEST_TOKEN")
     return Settings(
         root=root,
         energy_db=path("ENERGY_DB", "data/octopus_energy.sqlite3"),
@@ -96,4 +105,8 @@ def load_settings(root: Path = ROOT, environ: Mapping[str, str] | None = None) -
         passkeys_db=path("PASSKEYS_DB", "data/command_centre_passkeys.sqlite3"),
         energy_refresh_dir=path("ENERGY_REFRESH_DIR", "data/energy-refresh"),
         notifications_db=path("NOTIFICATIONS_DB", "data/notifications.sqlite3"),
+        # A malformed token leaves the ingest endpoint off rather than accepting a weak credential.
+        notify_ingest_token=ingest if NOTIFY_INGEST_TOKEN.fullmatch(ingest or "") else None,
+        telegram_bot_token=text("TELEGRAM_BOT_TOKEN"),
+        telegram_chat_id=text("TELEGRAM_CHAT_ID"),
     )
