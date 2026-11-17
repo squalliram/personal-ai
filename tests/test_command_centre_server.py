@@ -2,13 +2,18 @@ import http.client
 import json
 import os
 import shutil
+import socket
+import ssl
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
-from command_centre_fixtures import PASSWORD, PASSWORD_HASH, ROOT
+from command_centre_fixtures import PASSWORD, PASSWORD_HASH, ROOT, make_settings
+
+from command_centre.server import build
 
 
 class ServerSmokeTests(unittest.TestCase):
@@ -131,3 +136,32 @@ class FrontendTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(shutil.which("openssl"), "openssl is required to create a test certificate")
+class TlsHandshakeTests(unittest.TestCase):
+    def test_silent_client_does_not_stall_other_connections(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cert, key = root / "cert.pem", root / "key.pem"
+            subprocess.run(
+                ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", str(key), "-out", str(cert),
+                 "-subj", "/CN=localhost", "-days", "1"],
+                check=True,
+                capture_output=True,
+            )
+            server, _ = build(make_settings(root), "127.0.0.1", 0, tls_cert=cert, tls_key=key)
+            port = server.server_address[1]
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            self.addCleanup(thread.join, 5)
+            self.addCleanup(server.server_close)
+            self.addCleanup(server.shutdown)
+            silent = socket.create_connection(("127.0.0.1", port))  # TCP connect, never starts a TLS handshake
+            self.addCleanup(silent.close)
+            context = ssl.create_default_context()
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
+            conn = http.client.HTTPSConnection("127.0.0.1", port, timeout=5, context=context)
+            conn.request("GET", "/", headers={"Host": f"127.0.0.1:{port}"})
+            self.assertIsInstance(conn.getresponse().status, int)

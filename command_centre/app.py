@@ -323,6 +323,9 @@ class CommandCentreApp:
             return route.handler(Request(environ, method, path, None, None, client))
         token = self._cookie_token(environ)
         session = self.sessions.get(token)
+        if session is not None and session.permission > self.settings.permission_ceiling:
+            # A lowered ceiling must apply to sessions stored before the change.
+            session.permission = self.settings.permission_ceiling
         actor = "owner" if session else "anonymous"
         if method not in ("GET", "HEAD") and not self._same_origin(environ, host):
             self.audit.record("request", "cross_origin_rejected", actor=actor, path=path, client=client)

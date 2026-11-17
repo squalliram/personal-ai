@@ -1,5 +1,6 @@
 import json
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -245,6 +246,17 @@ class PermissionTests(ApiTestCase):
         self.assertEqual(response.json(), {"error": "insufficient_permission"})
         self.assertIn(("request", "permission_denied"), [(e["action"], e["outcome"]) for e in app.audit.recent()])
         self.assertEqual(client.request("GET", "/api/v1/overview").status, 200)
+
+    def test_lowered_ceiling_applies_to_existing_sessions(self):
+        self.add_recommend_route(self.app)
+        self.assertEqual(self.client.login().json()["permission"], "recommend")
+        headers = {"X-CSRF-Token": self.client.csrf}
+        self.assertEqual(self.client.request("POST", "/api/v1/test-draft", headers=headers).status, 200)
+        self.app.settings = replace(self.app.settings, permission_ceiling=Permission.READ)
+        response = self.client.request("POST", "/api/v1/test-draft", headers=headers)
+        self.assertEqual(response.status, 403)
+        self.assertEqual(response.json(), {"error": "insufficient_permission"})
+        self.assertEqual(self.client.request("GET", "/api/v1/session").json()["permission"], "read")
 
     def test_recommend_ceiling_can_use_recommend_routes_with_csrf(self):
         self.add_recommend_route(self.app)
