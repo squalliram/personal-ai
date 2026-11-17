@@ -322,7 +322,9 @@ def _seconds(value, limit: float) -> float | None:
         value = float(value)
     except OverflowError:  # an integer too large for a float
         return None
-    return round(min(max(value, 0.0), limit), 1) if math.isfinite(value) else None
+    if not math.isfinite(value):
+        return None
+    return min(round(max(value, 0.0), 1), math.floor(limit * 10) / 10)  # rounding never passes the clip's end
 
 
 def normalise_reel_draft(raw, seconds: float) -> dict | None:
