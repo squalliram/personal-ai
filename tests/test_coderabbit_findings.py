@@ -84,13 +84,20 @@ class CodeRabbitFindingsTests(unittest.TestCase):
         self.assertEqual(findings.outcome(thread(True, False, "squalliram")), "resolved")
         withdrawn = {
             **thread(True, False, "coderabbitai[bot]"),
-            "comments": {"nodes": [
-                {"author": {"login": "coderabbitai"}, "body": "finding"},
-                {"author": {"login": "devin-ai-integration"}, "body": "daily refresh covers it"},
-                {"author": {"login": "coderabbitai"}, "body": "You're right. I'm withdrawing my request."},
-            ]},
+            "comments": {
+                "nodes": [
+                    {"author": {"login": "coderabbitai"}, "body": "finding"},
+                    {"author": {"login": "devin-ai-integration"}, "body": "daily refresh covers it"},
+                    {"author": {"login": "coderabbitai"}, "body": "You're right. I'm withdrawing my request."},
+                ]
+            },
         }
         self.assertEqual(findings.outcome(withdrawn), "withdrawn by CodeRabbit")
+        deleted_author = {
+            **withdrawn,
+            "comments": {"nodes": [*withdrawn["comments"]["nodes"], {"author": None, "body": "ghost"}]},
+        }
+        self.assertEqual(findings.outcome(deleted_author), "withdrawn by CodeRabbit")
         self.assertEqual(findings.outcome(thread(True, True)), "resolved")
         self.assertEqual(findings.outcome(thread(False, True)), "outdated")
         self.assertEqual(findings.outcome(thread(False, False)), "open")

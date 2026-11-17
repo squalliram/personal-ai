@@ -109,8 +109,16 @@ def outcome(thread: dict | None) -> str:
         if (thread.get("resolvedBy") or {}).get("login") not in ("coderabbitai", "coderabbitai[bot]"):
             return "resolved"
         # CodeRabbit resolves its own thread after it accepts a fix, or after it withdraws the request.
-        replies = [c["body"] for c in thread.get("comments", {}).get("nodes", [])[1:] if c["author"]["login"].startswith("coderabbitai")]
-        return "withdrawn by CodeRabbit" if replies and "withdraw" in replies[-1].lower() else "fixed (confirmed by CodeRabbit)"
+        replies = [
+            c["body"]
+            for c in thread.get("comments", {}).get("nodes", [])[1:]
+            if (c["author"] or {}).get("login", "").startswith("coderabbitai")
+        ]
+        return (
+            "withdrawn by CodeRabbit"
+            if replies and "withdraw" in replies[-1].lower()
+            else "fixed (confirmed by CodeRabbit)"
+        )
     return "outdated" if thread["isOutdated"] else "open"
 
 
