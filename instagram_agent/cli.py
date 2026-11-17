@@ -13,7 +13,19 @@ from pathlib import Path
 from notifications import command_centre_link, notify
 from octopus_energy.cli import load_env
 
-from . import analysis, clips, cloudflare_client, drafts, following, publish, render, storage, uploads
+from . import (
+    analysis,
+    clips,
+    cloudflare_client,
+    drafts,
+    following,
+    learnings,
+    post_report,
+    publish,
+    render,
+    storage,
+    uploads,
+)
 from .analysis import LONDON
 from .cloudflare_client import CloudflareAI
 from .graph import GRAPH_HOST, GRAPH_VERSION, INSTAGRAM_HOST, REEL_METRICS, GraphAPIError, GraphClient
@@ -98,6 +110,7 @@ def report(conn) -> dict:
         "own_posts": analysis.post_performance(conn)[:30],
         "best_hours_london": analysis.best_hours(conn),
         "examples": analysis.learned_examples(conn),
+        "learnings": learnings.summary(conn),
     }
 
 
@@ -301,6 +314,14 @@ def make_drafts(conn, env: dict, media_dir: Path, now: datetime | None = None) -
     return outcome
 
 
+def _post_reports(conn, env: dict) -> str:
+    """24h/72h post reports after publishing; a problem here never fails the tick."""
+    try:
+        return post_report.tick(conn, env, _now())
+    except Exception as exc:  # noqa: BLE001
+        return f"reports failed ({type(exc).__name__})"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--env-file", default=".env")
@@ -337,7 +358,8 @@ def main(argv: list[str] | None = None) -> int:
                 outcome = daily(conn, env, args.media)
                 render.render_due(conn, args.media, _notify_render(env, _now()))
                 published = publish.tick(conn, env, args.media, _now())
-            print(outcome, published, sep="; ")
+                reports = _post_reports(conn, env)
+            print(outcome, published, reports, sep="; ")
             return 0 if outcome in ("ok", "partial", "skipped", "gave_up") else 1
         token, user_id = env.get("INSTAGRAM_ACCESS_TOKEN", ""), env.get("INSTAGRAM_USER_ID", "")
         if not token or not user_id:
