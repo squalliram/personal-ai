@@ -2,6 +2,8 @@ name: Instagram baseline
 
 on:
   workflow_dispatch:
+  repository_dispatch:
+    types: [instagram-baseline]
   pull_request:
     paths:
       - .github/workflows/instagram-baseline.yml
@@ -12,7 +14,9 @@ permissions:
 
 jobs:
   export:
-    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    if: >-
+      github.event_name == 'workflow_dispatch' || github.event_name == 'repository_dispatch' ||
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:

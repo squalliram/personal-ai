@@ -38,6 +38,15 @@ python3 -m instagram_agent report
 
 Data goes to `data/instagram.sqlite3` (ignored by Git).
 
+### Baseline export workflow
+
+After the workflow is merged, trigger a read-only baseline from `main` with
+`gh api repos/squalliram/personal-ai/dispatches -f event_type=instagram-baseline`.
+Find the run with `gh run list --repo squalliram/personal-ai --workflow instagram-baseline.yml --event repository_dispatch`,
+then download its seven-day artifact with
+`gh run download <run-id> --repo squalliram/personal-ai -n instagram-baseline -D ~/baseline/live`.
+Use a fresh destination directory for each download. Manual dispatch and same-repository PR runs are also supported.
+
 ## Daily drafts
 
 ```bash
