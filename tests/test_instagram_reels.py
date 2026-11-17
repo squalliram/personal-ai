@@ -1,7 +1,10 @@
+import fcntl
 import io
 import json
+import os
 import struct
 import tempfile
+import threading
 import unittest
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
@@ -201,6 +204,58 @@ class ClipQueueTests(Case):
         self.assertEqual(clips.finish(self.conn, self.media, clip_id), first)  # drafted before the retry
         with self.assertRaises(clips.ClipError):
             clips.finish(self.conn, self.media, "0" * 16)
+
+    def test_a_failed_write_leaves_nothing_behind(self):
+        data = mp4()
+        clip_id = clips.start(self.conn, self.media, NOTE, len(data), NOW)
+        real_write = os.write
+        calls = []
+
+        def write(fd, b):
+            calls.append(len(b))
+            if len(calls) > 1:
+                raise OSError("disk full")
+            return real_write(fd, b[:5])  # a short write first
+
+        with patch.object(clips.os, "write", write), self.assertRaises(OSError):
+            clips.append(self.conn, self.media, clip_id, 0, io.BytesIO(data[:100]), 100)
+        self.assertEqual((self.media / "clips" / clip_id / clips.PART).stat().st_size, 0)
+
+    def test_finish_reports_a_clip_removed_before_it_was_saved(self):
+        data = mp4()
+        clip_id = clips.start(self.conn, self.media, NOTE, len(data), NOW)
+        clips.append(self.conn, self.media, clip_id, 0, io.BytesIO(data), len(data))
+
+        def check(p):
+            with self.conn:
+                self.conn.execute("DELETE FROM clips")
+            return {"ext": "mp4", "seconds": 10}, []
+
+        with self.assertRaises(clips.ClipError) as gone:
+            clips.finish(self.conn, self.media, clip_id, check=check)
+        self.assertEqual(gone.exception.code, "not_found")
+
+    def test_stale_cleanup_waits_for_a_running_finish(self):
+        data = mp4()
+        clip_id = clips.start(self.conn, self.media, NOTE, len(data), NOW - timedelta(days=2))
+        fd = os.open(self.media / "clips" / clip_id, os.O_RDONLY)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        done = threading.Event()
+
+        def other_upload():
+            db = storage.connect(self.db)
+            try:
+                clips.start(db, self.media, NOTE, 10, NOW)
+            finally:
+                db.close()
+                done.set()
+
+        threading.Thread(target=other_upload, daemon=True).start()
+        self.assertFalse(done.wait(0.3))  # blocked on the clip's lock
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+        self.assertTrue(done.wait(5))
+        self.assertFalse((self.media / "clips" / clip_id).exists())
 
     def test_finish_recovers_a_rename_that_was_not_committed(self):
         data = mp4()

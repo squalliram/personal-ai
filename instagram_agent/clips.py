@@ -6,6 +6,7 @@ dropped with the reasons or left `waiting` for the daily run, which turns the ol
 
 from __future__ import annotations
 
+import contextlib
 import fcntl
 import json
 import os
@@ -76,12 +77,13 @@ def start(conn: sqlite3.Connection, media_dir: Path, note: str, size: int, now: 
             r[0] for r in conn.execute("SELECT clip_id FROM clips WHERE status='uploading' AND created_at<?", (cutoff,))
         ]
     for clip_id in stale:
-        with conn:  # rechecked: a clip finished meanwhile is no longer stale
-            gone = conn.execute(
-                "DELETE FROM clips WHERE clip_id=? AND status='uploading' AND created_at<?", (clip_id, cutoff)
-            ).rowcount
-        if gone:
-            shutil.rmtree(folder(media_dir, clip_id), ignore_errors=True)
+        with _locked(media_dir, clip_id):  # never while a finish of this clip runs
+            with conn:  # rechecked: a clip finished meanwhile is no longer stale
+                gone = conn.execute(
+                    "DELETE FROM clips WHERE clip_id=? AND status='uploading' AND created_at<?", (clip_id, cutoff)
+                ).rowcount
+            if gone:
+                shutil.rmtree(folder(media_dir, clip_id), ignore_errors=True)
     clip_id = secrets.token_hex(8)
     (root / clip_id).mkdir(mode=0o700)
     os.close(_open(root / clip_id / PART, os.O_WRONLY | os.O_CREAT | os.O_EXCL))
@@ -112,7 +114,7 @@ def append(conn: sqlite3.Connection, media_dir: Path, clip_id: str, offset: int,
     if not 0 < length <= CHUNK_BYTES or offset + length > row["size"]:
         raise ClipError("invalid_chunk")
     fd = _open(folder(media_dir, clip_id) / PART, os.O_WRONLY | os.O_APPEND)
-    with os.fdopen(fd, "wb") as out:
+    with os.fdopen(fd, "wb", buffering=0) as out:  # unbuffered: a rollback can't be undone by a later flush
         fcntl.flock(out, fcntl.LOCK_EX)  # one chunk at a time
         have = os.fstat(out.fileno()).st_size
         if offset < have and offset + length <= have:
@@ -125,11 +127,11 @@ def append(conn: sqlite3.Connection, media_dir: Path, clip_id: str, offset: int,
                 data = stream.read(min(left, 1024 * 1024))
                 if not data:
                     raise ClipError("invalid_chunk")
-                out.write(data)
+                view = memoryview(data)
+                while view:
+                    view = view[os.write(out.fileno(), view) :]
                 left -= len(data)
-            out.flush()
         except BaseException:
-            out.flush()
             os.ftruncate(out.fileno(), offset)  # a failed chunk leaves nothing behind, so it can be resent
             raise
         return offset + length
@@ -154,18 +156,26 @@ def finish(conn: sqlite3.Connection, media_dir: Path, clip_id: str, *, check=vid
     Finishing an already finished clip again (its reply was lost) returns the same facts; concurrent
     finishes of one clip run one at a time.
     """
-    try:
-        fd = os.open(folder(media_dir, clip_id), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-    except OSError:
-        return _finished(conn, clip_id)
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
-        if _uploading(conn, clip_id) is None:
+    with _locked(media_dir, clip_id) as here:
+        if not here or _uploading(conn, clip_id) is None:
             return _finished(conn, clip_id)
         try:
             return _finish(conn, media_dir, clip_id, check)
         except FileNotFoundError:  # deleted meanwhile
             return _finished(conn, clip_id)
+
+
+@contextlib.contextmanager
+def _locked(media_dir: Path, clip_id: str):
+    """Hold the clip folder's lock; yields False when the folder is gone."""
+    try:
+        fd = os.open(folder(media_dir, clip_id), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError:
+        yield False
+        return
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield True
     finally:
         os.close(fd)
 
@@ -205,10 +215,12 @@ def _finish(conn: sqlite3.Connection, media_dir: Path, clip_id: str, check) -> d
             raise ClipError("not_found") from exc
         return json.loads(done["facts"])
     with conn:
-        conn.execute(
+        saved = conn.execute(
             "UPDATE clips SET status='waiting', facts=? WHERE clip_id=? AND status='uploading'",
             (json.dumps(facts), clip_id),
-        )
+        ).rowcount
+    if not saved:  # removed meanwhile
+        raise ClipError("not_found")
     return facts
 
 
