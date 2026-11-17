@@ -1855,7 +1855,9 @@
     const result = await api("api/v1/instagram/uploads/delete", { method: "POST", body: { upload_id: upload.upload_id } });
     if (result.status === 401) { showLogin("Your session has ended. Sign in again."); return; }
     if (!result.ok) {
-      status.textContent = result.status === 404 ? "Already used or deleted. Refresh to see the queue." : `Could not delete them (${(result.data && result.data.error) || result.status}).`;
+      const gone = result.status === 404;
+      status.textContent = gone ? "Already used or deleted. Refresh to see the queue." : `Could not delete them (${(result.data && result.data.error) || result.status}). Try again.`;
+      button.disabled = gone;
       clearCache();
       return;
     }
@@ -1970,7 +1972,10 @@
     if (current !== renderCount) return;
     if (background && section[0] === "energy" && energyRefreshOwner !== null) return; // a refresh began while this render loaded
     const editing = document.activeElement && $("view").contains(document.activeElement) && document.activeElement.matches("input, textarea, select");
-    if (background && editing) return;
+    // Photos picked or a note typed in the upload form would be lost if the form were rebuilt.
+    const unsent = [...$("view").querySelectorAll("form.ig-upload input[type=file], form.ig-upload textarea")]
+      .some((field) => (field.files ? field.files.length > 0 : field.value.trim() !== ""));
+    if (background && (editing || unsent)) return;
     const fresh = [...view.childNodes];
     const title = $("view-title").textContent;
     const previous = sectionViews.get(section[0]);
