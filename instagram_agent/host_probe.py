@@ -13,12 +13,11 @@ import sys
 from pathlib import Path
 
 TOOL_DIRS = ("/usr/bin", "/usr/local/bin", "/opt/ffmpeg/bin", str(Path.home() / "bin"))
-CGROUP_FILES = {
-    "cpu.max": "cgroup cpu.max",
-    "memory.max": "cgroup memory.max",
-    "pids.max": "cgroup pids.max",
-    "cpu/cpu.cfs_quota_us": "cgroup v1 cpu quota (us)",
-    "memory/memory.limit_in_bytes": "cgroup v1 memory limit",
+CGROUP_ROOT = Path("/sys/fs/cgroup")
+CGROUP_V2_FILES = {"cpu.max": "cgroup cpu.max", "memory.max": "cgroup memory.max", "pids.max": "cgroup pids.max"}
+CGROUP_V1_FILES = {
+    "cpu": ("cpu.cfs_quota_us", "cgroup v1 cpu quota (us)"),
+    "memory": ("memory.limit_in_bytes", "cgroup v1 memory limit"),
 }
 RLIMITS = {"RLIMIT_AS": "address space", "RLIMIT_DATA": "data", "RLIMIT_NPROC": "processes", "RLIMIT_CPU": "CPU s"}
 
@@ -44,6 +43,23 @@ def tool_version(path: str) -> str:
     return first[0][:120] if result.returncode == 0 and first else f"unusable (exit {result.returncode})"
 
 
+def cgroup_files(membership: str, root: Path = CGROUP_ROOT) -> list[tuple[Path, str]]:
+    """This process's own cgroup limit files (from /proc/self/cgroup), not the root's."""
+    found = []
+    for line in membership.splitlines():
+        parts = line.split(":", 2)
+        if len(parts) != 3 or not parts[2].startswith("/"):
+            continue
+        _, controllers, where = parts
+        if controllers == "":
+            found += [(root / where.lstrip("/") / name, label) for name, label in CGROUP_V2_FILES.items()]
+        for controller in controllers.split(","):
+            if controller in CGROUP_V1_FILES:
+                name, label = CGROUP_V1_FILES[controller]
+                found.append((root / controller / where.lstrip("/") / name, label))
+    return found
+
+
 def _limit(value: int) -> str:
     return "unlimited" if value == resource.RLIM_INFINITY else str(value)
 
@@ -57,8 +73,11 @@ def lines(app: Path) -> list[str]:
     for key, label in RLIMITS.items():
         soft, _hard = resource.getrlimit(getattr(resource, key))
         out.append(f"rlimit {label}: {_limit(soft)}")
-    for name, label in CGROUP_FILES.items():
-        path = Path("/sys/fs/cgroup") / name
+    try:
+        membership = Path("/proc/self/cgroup").read_text()
+    except OSError:
+        membership = ""
+    for path, label in cgroup_files(membership):
         try:
             out.append(f"{label}: {path.read_text().strip()[:60]}")
         except OSError:
