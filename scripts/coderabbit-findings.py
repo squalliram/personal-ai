@@ -32,7 +32,7 @@ SECTION = re.compile(r"<summary>\s*([A-Z][A-Za-z ]+?comments?)(?::\s*\d+)?\s*</s
 FILE_GROUP = re.compile(r"<summary>([^<:]+?\.[A-Za-z0-9]+)(?:-[\d-]+)?: \d+</summary>")
 NESTED = re.compile(r"^`(\d+(?:-\d+)?)`: (\*\*.*)$", re.M)
 CONFIRMED = re.compile(r"\baddresses (?:this|the) finding|Review thread resolved")
-PARTIAL = re.compile(r"\b(?:partially|not yet|does not|doesn't|only some)\b", re.I)
+HEDGED = re.compile(r"\b(?:partially|partly|not|n't|only)\W+(?:\w+\W+)?$", re.I)
 QUERY = """query($o:String!,$r:String!,$n:Int!,$c:String){repository(owner:$o,name:$r){pullRequest(number:$n){
 reviewThreads(first:100,after:$c){pageInfo{hasNextPage endCursor}
 nodes{isResolved isOutdated comments(first:50){nodes{databaseId author{login} body}}}}}}}"""
@@ -104,11 +104,16 @@ def nested(body: str) -> list[dict]:
     return found
 
 
+def confirmed(body: str) -> bool:
+    """CodeRabbit says the fix addresses the finding, not that it only partly does."""
+    return any(not HEDGED.search(body[max(0, m.start() - 40) : m.start()]) for m in CONFIRMED.finditer(body))
+
+
 def outcome(thread: dict | None) -> str:
     if thread is None:
         return "open"
     replies = [c for c in thread["comments"]["nodes"][1:] if (c["author"] or {}).get("login") == "coderabbitai"]
-    if any(CONFIRMED.search(c["body"]) and not PARTIAL.search(c["body"]) for c in replies):
+    if any(confirmed(c["body"]) for c in replies):
         return "fixed (confirmed by CodeRabbit)"
     if thread["isResolved"]:
         return "resolved"
