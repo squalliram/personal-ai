@@ -6,7 +6,7 @@ A daily pipeline on the hosting server that drafts food, coffee and restaurant c
 | --- | --- | --- |
 | 1 | **Analytics**: own posts, daily insights, follower online hours | Done (read-only) |
 | 2 | **Benchmarks**: accounts I follow, ranked by followers and engagement; their best recent posts and hashtags | Done (read-only) |
-| 3 | **Create**: 3 carousels a day by 12:00, in my voice, using the `/ig-*` skill rules. Text and images from Cloudflare Workers AI (free) or OpenAI | Done |
+| 3 | **Create**: 1 carousel a day by 12:00, in my voice, using the `/ig-*` skill rules. Text and images from Cloudflare Workers AI (free) or OpenAI | Done |
 | 4 | **Tags**: up to 20 per post, mostly from `trending_hashtags` | Done |
 | 5 | **Review**: scores each draft against `top_benchmark_posts`; under 70 goes back to Create with notes, up to 3 rounds | Done |
 | 6 | **Queue**: Instagram page in the Command Centre with **Approve** and **Reject**; decisions feed the memory | Done |
@@ -52,11 +52,11 @@ From 09:00 London time, the first tick of the day:
 1. Syncs analytics and benchmarks (when the Meta token is set). If Instagram is down, it drafts from the data it already has.
 2. **Create** writes carousels in the voice from `INSTAGRAM_VOICE_FILE` (default `agents/instagram-voice.md`), following the `ig-carousel`, `ig-caption` and `ig-human` rules from `INSTAGRAM_SKILLS_DIR` when the skill pack is installed. Topics are limited to food, coffee and restaurants. Approved examples that performed well count for more; rejected topics and the last 14 days' topics are avoided.
 3. **Tags** adds up to 20 hashtags per draft.
-4. **Review** scores each draft 0-100. Drafts under 70 go back to Create with the reviewer's notes, up to 3 rounds. If fewer than 3 pass, the best of the rest still go in the queue, labelled with their score.
+4. **Review** scores each draft 0-100. Drafts under 70 go back to Create with the reviewer's notes, up to 3 rounds. If none passes, the best of the rest still goes in the queue, labelled with its score.
 5. The image model draws every slide at 1024×1280 (4:5 portrait). OpenAI's image model also draws the slide's short text onto it. Cloudflare's FLUX.2 klein garbles lettering, so with Cloudflare the slides are clean photos and the caption carries the words. A slide image that fails gets one more try; if it still fails, that draft is dropped and the reason is recorded. Cloudflare returns JPEGs and OpenAI returns PNGs; each is saved in the format it arrives in.
-6. Each draft gets a suggested publish slot: the best hours from `best_hours`, from 12:00 onwards (18:00, 12:00 and 20:00 until there's data).
+6. The draft gets a publish slot: the best audience hour from `best_hours`, from 12:00 onwards (18:00 until there's data). If that hour has passed today, the slot is the same hour tomorrow.
 
-If a run makes fewer than 3 drafts, later ticks before 12:00 top the day up to 3, avoiding the slots already suggested; after 12:00 a day with drafts is left as it is. A day gives up after 3 failed or partial attempts, so a broken key can't run up costs. Runs are recorded in `daily_runs` and shown on the Instagram page.
+If a run makes no draft, later ticks before 12:00 try again; after 12:00 a day with a draft is left as it is. A day gives up after 3 failed attempts, so a broken key can't run up costs. Runs are recorded in `daily_runs` and shown on the Instagram page.
 
 Benchmark captions and hashtags are other people's text. The prompts tell the agents to treat them as data and never follow instructions in them. The output is validated before it is stored: category, slide count and length, caption length and real hashtags only.
 
@@ -65,7 +65,7 @@ Benchmark captions and hashtags are other people's text. The prompts tell the ag
 `model_client()` uses Cloudflare Workers AI when `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` are set, and OpenAI otherwise. `INSTAGRAM_AI_PROVIDER` overrides the choice.
 
 - **Cloudflare (default, free):** `@cf/meta/llama-4-scout-17b-16e-instruct` writes and `@cf/black-forest-labs/flux-2-klein-4b` draws. The free plan allows 10,000 neurons a day, reset at 00:00 UTC. From Cloudflare's price list, a day of drafts should use a few thousand. In a side-by-side test of Create, Llama 4 Scout wrote more specific slides and captions than Llama 3.3 70B. `gpt-oss-120b` doesn't answer this API call format.
-- **OpenAI (paid):** `gpt-5-mini` writes and `gpt-image-2.5-flare` draws. A day costs 3-9 text calls and about 15 images.
+- **OpenAI (paid):** `gpt-5-mini` writes and `gpt-image-2.5-flare` draws. A day costs 3-9 text calls and 5-8 images.
 
 Models can be changed with `CLOUDFLARE_TEXT_MODEL` / `CLOUDFLARE_IMAGE_MODEL` or `OPENAI_TEXT_MODEL` / `OPENAI_IMAGE_MODEL`.
 
@@ -90,7 +90,7 @@ Both need a RECOMMEND session, CSRF and same-origin, and both are written to the
 
 ## Notifications
 
-`daily` and `publish.tick` report through the shared `notifications` package: "3 Instagram drafts ready to review, first posts at HH:MM" once a day, "Instagram post is live: <topic>" with the post's permalink, and a failure for every failed post attempt and every failed, partial, not-configured or given-up drafting run (none for `skipped`). Each one is stored in `data/notifications.sqlite3` and listed newest first on the Command Centre **Inbox** page. With the `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` secrets set, the deploy writes them to the server's `.env` and each notification is also sent to that chat; a failed send is retried on later notifications, up to 3 times. Links point at `COMMAND_CENTRE_URL` (repository variable, default `https://iramkhan.com/command-centre/`). A notification problem never stops drafting or posting.
+`daily` and `publish.tick` report through the shared `notifications` package: "1 Instagram draft ready to review, posts at HH:MM" once a day, "Instagram post is live: <topic>" with the post's permalink, and a failure for every failed post attempt and every failed, partial, not-configured or given-up drafting run (none for `skipped`). Each one is stored in `data/notifications.sqlite3` and listed newest first on the Command Centre **Inbox** page. With the `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` secrets set, the deploy writes them to the server's `.env` and each notification is also sent to that chat; a failed send is retried on later notifications, up to 3 times. Links point at `COMMAND_CENTRE_URL` (repository variable, default `https://iramkhan.com/command-centre/`). A notification problem never stops drafting or posting.
 
 ## How the numbers are worked out
 

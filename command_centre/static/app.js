@@ -1779,8 +1779,8 @@
     const last = data.runs[0];
     view.append(card("Daily drafts",
       muted(data.auto_publish
-        ? "Three carousel drafts for @instafoodielove are ready by 12:00 London time. Drafts that pass review post automatically at their publish time, at least an hour after they're made. Reject one before then to stop it; approve a weaker one to post it."
-        : "Three carousel drafts for @instafoodielove are ready by 12:00 London time. Automatic posting is off, so nothing is posted from here: approve the ones you like, then post them yourself."),
+        ? "One carousel draft for @instafoodielove is ready by 12:00 London time. If it passes review it posts automatically at its publish time, at least an hour after it's made. Reject it before then to stop it; approve a weaker one to post it."
+        : "One carousel draft for @instafoodielove is ready by 12:00 London time. Automatic posting is off, so nothing is posted from here: approve it if you like it, then post it yourself."),
       last ? keyValues([["Last run", when(last.started_at)], ["Result", last.outcome], ["Drafts made", last.drafts],
         ...(last.error ? [["Error", last.error]] : [])])
         : muted(data.state === "not_configured" ? "Not connected: there is no Instagram database on this server yet." : "No daily run recorded yet.")));

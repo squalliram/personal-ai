@@ -22,7 +22,7 @@ from .openai_client import IMAGE_MODEL, IMAGE_SIZE, TEXT_MODEL, AIError, OpenAIC
 DEFAULT_MEDIA = Path("data/instagram/drafts")
 DAILY_FROM_HOUR = 9
 DAILY_ATTEMPTS = 3
-DAILY_DRAFTS = 3
+DAILY_DRAFTS = 1
 
 INSIGHT_WINDOW = timedelta(days=30)
 
@@ -154,10 +154,12 @@ def _notify_daily(conn, env: dict, outcome: str, now: datetime) -> None:
         if not publish.configured(env):
             first = "posting is manual"
         elif times:
-            first = "first posts at " + min(times).astimezone(LONDON).strftime("%H:%M")
+            first = ("posts at " if len(rows) == 1 else "first posts at ") + min(times).astimezone(LONDON).strftime(
+                "%H:%M"
+            )
         else:
-            first = "none will post unless you approve one"
-        title = f"{len(rows)} Instagram drafts ready to review, {first}"
+            first = "it won't post unless you approve it" if len(rows) == 1 else "none will post unless you approve one"
+        title = f"{len(rows)} Instagram draft{'' if len(rows) == 1 else 's'} ready to review, {first}"
         notify("instagram", "ok", title, page, key=f"instagram-drafts-ready:{today}", env=env, now=now)
         return
     if outcome == "gave_up":
@@ -174,7 +176,7 @@ def _notify_daily(conn, env: dict, outcome: str, now: datetime) -> None:
 
 
 def make_drafts(conn, env: dict, media_dir: Path, now: datetime | None = None) -> str:
-    """One cron tick: from 09:00 London make today's drafts, topping up to DAILY_DRAFTS until 12:00.
+    """One cron tick: from 09:00 London make today's draft(s), topping up to DAILY_DRAFTS until 12:00.
 
     A day stops after DAILY_ATTEMPTS failed or partial tries.
     """
