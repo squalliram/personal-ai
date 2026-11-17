@@ -80,24 +80,24 @@ class CodeRabbitFindingsTests(unittest.TestCase):
         def thread(resolved, outdated, resolver=None):
             return {"isResolved": resolved, "isOutdated": outdated, "resolvedBy": resolver and {"login": resolver}}
 
-        self.assertEqual(findings.outcome(thread(True, False, "coderabbitai[bot]")), "fixed (confirmed by CodeRabbit)")
+        def with_comments(*nodes):
+            return {**thread(True, False, "coderabbitai[bot]"), "comments": {"nodes": list(nodes)}}
+
+        finding = {"author": {"login": "coderabbitai"}, "body": "finding"}
+        addressed = {"author": {"login": "coderabbitai"}, "body": "finding\n\n✅ Addressed in commit a837eeb"}
+        self.assertEqual(findings.outcome(with_comments(addressed)), "fixed (confirmed by CodeRabbit)")
         self.assertEqual(findings.outcome(thread(True, False, "squalliram")), "resolved")
-        withdrawn = {
-            **thread(True, False, "coderabbitai[bot]"),
-            "comments": {
-                "nodes": [
-                    {"author": {"login": "coderabbitai"}, "body": "finding"},
-                    {"author": {"login": "devin-ai-integration"}, "body": "daily refresh covers it"},
-                    {"author": {"login": "coderabbitai"}, "body": "You're right. I'm withdrawing my request."},
-                ]
-            },
-        }
-        self.assertEqual(findings.outcome(withdrawn), "withdrawn by CodeRabbit")
-        deleted_author = {
-            **withdrawn,
-            "comments": {"nodes": [*withdrawn["comments"]["nodes"], {"author": None, "body": "ghost"}]},
-        }
-        self.assertEqual(findings.outcome(deleted_author), "withdrawn by CodeRabbit")
+        for reply in (
+            "You're right. I'm withdrawing my request.",
+            "One case remains: a withdrawal would count as a fix.",
+            "This no longer addresses the finding.",
+        ):
+            with self.subTest(reply=reply):
+                outcome = findings.outcome(with_comments(finding, {"author": {"login": "coderabbitai"}, "body": reply}))
+                self.assertEqual(outcome, "resolved by CodeRabbit")
+        self.assertEqual(findings.outcome(thread(True, False, "coderabbitai[bot]")), "resolved by CodeRabbit")
+        ghost = with_comments(addressed, {"author": None, "body": "✅ Addressed in commit 1234567"})
+        self.assertEqual(findings.outcome(ghost), "fixed (confirmed by CodeRabbit)")
         self.assertEqual(findings.outcome(thread(True, True)), "resolved")
         self.assertEqual(findings.outcome(thread(False, True)), "outdated")
         self.assertEqual(findings.outcome(thread(False, False)), "open")
