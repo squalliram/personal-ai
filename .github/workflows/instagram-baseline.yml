@@ -1,0 +1,34 @@
+name: Instagram baseline
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/instagram-baseline.yml
+      - scripts/instagram-baseline.py
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Export read-only Instagram baseline
+        env:
+          INSTAGRAM_ACCESS_TOKEN: ${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
+          INSTAGRAM_USER_ID: ${{ secrets.INSTAGRAM_USER_ID }}
+        run: python scripts/instagram-baseline.py --output baseline-output
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: instagram-baseline
+          path: baseline-output/
+          retention-days: 7
+          if-no-files-found: warn
