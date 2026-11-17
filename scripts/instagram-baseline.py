@@ -12,7 +12,7 @@ import sys
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from urllib.parse import quote, quote_plus
+from urllib.parse import quote, quote_plus, urlsplit
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -60,7 +60,21 @@ def redact(value, token):
     if token:
         for secret in {token, quote(token, safe=""), quote_plus(token)}:
             value = value.replace(secret, "[REDACTED]")
-    value = re.sub(r"https?://[^\s<>\"']+", "[REDACTED_URL]", value)
+
+    def safe_url(match):
+        url = match.group()
+        parts = urlsplit(url)
+        if (
+            parts.scheme == "https"
+            and parts.netloc in ("www.instagram.com", "instagram.com")
+            and re.fullmatch(r"/(?:p|reel|tv)/[A-Za-z0-9_-]+/?", parts.path)
+            and not parts.query
+            and not parts.fragment
+        ):
+            return url
+        return "[REDACTED_URL]"
+
+    value = re.sub(r"https?://[^\s<>\"']+", safe_url, value)
     return re.sub(r"(?i)(access_token|authorization|bearer)\s*[:= ]\s*[^\s&,]+", r"\1=[REDACTED]", value)
 
 
@@ -173,7 +187,7 @@ def summarize(media, insights, profile):
             "Ratios are fractions. Missing/zero denominators yield null, not zero engagement.",
             "API metric support and permissions vary; see raw/errors.json for unavailable metrics.",
             "No causal hook/topic/length conclusions or revenue estimates are inferred from these rankings.",
-            "URLs are redacted throughout artifacts, including permalinks and API pagination URLs.",
+            "Public Instagram permalinks are preserved; other URLs and credentials are redacted.",
         ],
     }
     return posts, summary

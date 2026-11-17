@@ -67,6 +67,12 @@ class SummaryTests(unittest.TestCase):
 
 
 class RedactionTests(unittest.TestCase):
+    def test_preserves_public_permalink_but_not_token_bearing_urls(self):
+        permalink = "https://www.instagram.com/reel/Abc_123/"
+        self.assertEqual(BASELINE.redact({"permalink": permalink}, "private"), {"permalink": permalink})
+        for url in (permalink + "?access_token=private", "https://graph.instagram.com/media?access_token=private"):
+            self.assertNotIn("https://", BASELINE.redact(url, "private"))
+
     def test_nested_tokens_encoded_tokens_and_urls(self):
         token = "sentinel+private/token"
         payload = {
@@ -95,11 +101,11 @@ class ExportTests(unittest.TestCase):
                     return {"username": "instafoodielove", "followers_count": 50}
                 if path == "123/media":
                     return {
-                        "data": [media(str(i)) for i in range(101)],
+                        "data": [media(str(i), permalink="https://www.instagram.com/p/Abc_123/") for i in range(101)],
                         "paging": {"next": "https://graph.example/next?access_token=private"},
                     }
                 if path.startswith("https://"):
-                    return {"data": [media("102")]}
+                    return {"data": [media("102", permalink="https://www.instagram.com/p/Abc_123/")]}
                 if path == "123/insights":
                     return {"data": []}
                 if params["metric"] == "saved":
@@ -118,7 +124,9 @@ class ExportTests(unittest.TestCase):
             for path in output.rglob("*"):
                 if path.is_file():
                     self.assertNotIn("private", path.read_text())
-                    self.assertNotIn("https://", path.read_text())
+                    self.assertNotIn("https://graph.", path.read_text())
+            self.assertIn("https://www.instagram.com/p/Abc_123/", (output / "posts.csv").read_text())
+            self.assertIn("https://www.instagram.com/p/Abc_123/", (output / "summary.json").read_text())
             errors = json.loads((output / "raw/errors.json").read_text())
             self.assertEqual(sum(e["request"].endswith(":saved") for e in errors), 102)
 
