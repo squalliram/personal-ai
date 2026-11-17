@@ -253,12 +253,12 @@ def make_drafts(conn, env: dict, media_dir: Path, now: datetime | None = None) -
         while clip is not None and not clips.clip_file(media_dir, clip).is_file():
             clips.delete(conn, media_dir, clip["clip_id"])  # its file was lost; don't let it block every day
             clip = clips.oldest(conn)
-        upload = uploads.oldest(conn) if clip is None else None
         if clip is not None:
             draft = drafts.generate_from_clip(conn, ai, now, clip, rules=rules, voice=voice)
             if draft is None:
                 raise AIError("the agents wrote no usable reel from your clip")
             stored += drafts.store_clip_draft(conn, draft, clip, media_dir, now) is not None
+        upload = uploads.oldest(conn) if stored < wanted else None  # also when the clip was deleted meanwhile
         if upload is not None:
             draft = drafts.generate_from_upload(conn, ai, now, upload, media_dir, rules=rules, voice=voice)
             if draft is None:

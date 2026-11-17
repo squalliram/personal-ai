@@ -1,7 +1,9 @@
+import io
 import json
 import struct
 import tempfile
 import unittest
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -9,9 +11,10 @@ from unittest.mock import patch
 from command_centre_fixtures import Client, Clock, make_app, make_settings
 from test_instagram_publish import DUE, ENV, MADE, SLOT, FakeGraph
 
+import notifications
 from command_centre import sources
 from command_centre.security import Permission
-from instagram_agent import cli, clips, drafts, publish, storage, video
+from instagram_agent import cli, clips, drafts, publish, storage, uploads, video
 from instagram_agent.graph import GraphAPIError
 
 NOW = datetime(2026, 11, 12, 10, 0, tzinfo=timezone.utc)
@@ -68,7 +71,6 @@ class Case(unittest.TestCase):
     def waiting_clip(self, data=None, when=NOW - timedelta(hours=1)) -> str:
         data = data or mp4()
         clip_id = clips.start(self.conn, self.media, NOTE, len(data), when)
-        import io
 
         clips.append(self.conn, self.media, clip_id, 0, io.BytesIO(data), len(data))
         clips.finish(self.conn, self.media, clip_id, check=lambda p: video.check(p, ffprobe="/nonexistent/ffprobe"))
@@ -140,7 +142,6 @@ class VideoCheckTests(Case):
 
 class ClipQueueTests(Case):
     def test_chunks_must_arrive_in_order_and_finish_checks_the_whole_clip(self):
-        import io
 
         data = mp4()
         clip_id = clips.start(self.conn, self.media, NOTE, len(data), NOW)
@@ -160,8 +161,26 @@ class ClipQueueTests(Case):
         self.assertEqual(clips.oldest(self.conn)["clip_id"], clip_id)
         self.assertTrue((self.media / "clips" / clip_id / "clip.mp4").is_file())
 
+    def test_a_replayed_chunk_is_accepted_only_if_identical(self):
+        data = mp4()
+        clip_id = clips.start(self.conn, self.media, NOTE, len(data), NOW)
+        clips.append(self.conn, self.media, clip_id, 0, io.BytesIO(data[:100]), 100)
+        self.assertEqual(clips.append(self.conn, self.media, clip_id, 0, io.BytesIO(data[:100]), 100), 100)
+        with self.assertRaises(clips.ClipError) as changed:
+            clips.append(self.conn, self.media, clip_id, 0, io.BytesIO(b"x" * 100), 100)
+        self.assertEqual(changed.exception.code, "wrong_offset")
+
+    def test_finish_recovers_a_rename_that_was_not_committed(self):
+        data = mp4()
+        clip_id = clips.start(self.conn, self.media, NOTE, len(data), NOW)
+        clips.append(self.conn, self.media, clip_id, 0, io.BytesIO(data), len(data))
+        where = self.media / "clips" / clip_id
+        (where / clips.PART).rename(where / "clip.mp4")
+        with patch.object(video, "find_tool", return_value=None):
+            self.assertEqual(clips.finish(self.conn, self.media, clip_id)["seconds"], 10)
+        self.assertEqual(clips.oldest(self.conn)["clip_id"], clip_id)
+
     def test_a_failing_clip_is_dropped_with_its_problems(self):
-        import io
 
         data = mp4(seconds=120)
         clip_id = clips.start(self.conn, self.media, NOTE, len(data), NOW)
@@ -228,6 +247,13 @@ class ReelDraftTests(Case):
         self.assertEqual(draft["slides"][0]["text"], REEL["hook"])
         self.assertIsNone(drafts.normalise_reel_draft({**REEL, "hook": ""}, 10.0))
         self.assertIsNone(drafts.normalise_reel_draft({**REEL, "caption": "Hi #tag"}, 10.0))
+        self.assertIsNone(drafts.normalise_reel_draft({**REEL, "on_screen": REEL["on_screen"][:1]}, 10.0))
+        huge = {
+            **REEL,
+            "cover_seconds": 10**400,
+            "on_screen": REEL["on_screen"][:2] + [{"start": -(10**400), "end": 2, "text": "x"}],
+        }
+        self.assertEqual(drafts.normalise_reel_draft(huge, 10.0)["reel"]["cover_ms"], 0)
 
     def test_daily_run_turns_the_oldest_clip_into_the_days_reel_instead_of_a_carousel(self):
         clip_id = self.waiting_clip()
@@ -245,10 +271,11 @@ class ReelDraftTests(Case):
         self.assertEqual(reel["file"], "reel.mp4")
         self.assertTrue((self.media / row["draft_id"] / "reel.mp4").is_file())
         self.assertFalse((self.media / "clips" / clip_id).exists())
-        self.assertIn("CREATE_FROM_CLIP" and "filmed", ai.calls[0])
+        self.assertIn(drafts.CREATE_FROM_CLIP.format(seconds=10), ai.calls[0])
         self.assertEqual(self.conn.execute("SELECT status FROM clips").fetchone()[0], "used")
-        title = self.conn.execute("SELECT 1").fetchone()
-        self.assertIsNotNone(title)
+        with closing(notifications.connect(self.root / "n.sqlite3")) as notes:
+            titles = [e["title"] for e in notifications.recent(notes)[0]]
+        self.assertTrue(any("reel" in t.lower() for t in titles), titles)
 
     def test_a_waiting_clip_whose_file_was_lost_is_dropped_and_the_day_falls_back(self):
         clip_id = self.waiting_clip()
@@ -265,6 +292,26 @@ class ReelDraftTests(Case):
             cli.daily(self.conn, env, self.media, now=NOW)
         fallback.assert_called_once()
         self.assertIsNone(clips.oldest(self.conn))
+
+    def test_photos_are_used_when_the_clip_was_deleted_during_drafting(self):
+        self.waiting_clip()
+        env = {"OPENAI_API_KEY": "sk-test", "COMMAND_CENTRE_NOTIFICATIONS_DB": str(self.root / "n.sqlite3")}
+        uploads.save(self.conn, self.media, NOTE, [(b"\xff\xd8\xffslide", b"\xff\xd8\xffthumb")], NOW)
+        with (
+            patch.object(cli, "model_client", return_value=ReelAI(REEL)),
+            patch.object(drafts, "store_clip_draft", return_value=None),
+            patch.object(drafts, "generate_from_upload", return_value={"topic": "t"}) as from_photos,
+            patch.object(drafts, "store_upload_draft", return_value="d" * 16),
+        ):
+            cli.daily(self.conn, env, self.media, now=NOW)
+        from_photos.assert_called_once()
+
+    def test_an_upload_whose_photos_were_lost_is_dropped(self):
+        upload_id = uploads.save(self.conn, self.media, NOTE, [(b"\xff\xd8\xffslide", b"\xff\xd8\xffthumb")], NOW)
+        (self.media / "uploads" / upload_id / "photo-1.jpg").unlink()
+        draft = {**drafts.normalise_reel_draft(REEL, 10.0), "kind": "carousel", "reel": None}
+        self.assertIsNone(drafts.store_upload_draft(self.conn, draft, uploads.oldest(self.conn), self.media, NOW))
+        self.assertIsNone(uploads.oldest(self.conn))
 
     def test_a_clip_deleted_mid_run_makes_no_draft(self):
         clip_id = self.waiting_clip()

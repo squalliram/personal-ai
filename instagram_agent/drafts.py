@@ -316,9 +316,13 @@ def generate_from_upload(
 
 
 def _seconds(value, limit: float) -> float | None:
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    return round(min(max(float(value), 0.0), limit), 1)
+    try:
+        value = float(value)
+    except OverflowError:  # an integer too large for a float
+        return None
+    return round(min(max(value, 0.0), limit), 1) if math.isfinite(value) else None
 
 
 def normalise_reel_draft(raw, seconds: float) -> dict | None:
@@ -340,6 +344,8 @@ def normalise_reel_draft(raw, seconds: float) -> dict | None:
         if start is not None and end is not None and start < end:
             beats.append({"start": start, "end": end, "text": _text(beat["text"], 80)})
     beats = sorted(beats, key=lambda b: b["start"])[:5]
+    if len(beats) < 2:
+        return None
     cover = _seconds(raw.get("cover_seconds"), seconds) or 0.0
     return {
         "kind": "reel",
@@ -394,7 +400,12 @@ def store_clip_draft(conn, draft: dict, clip, media_dir: Path, now: datetime) ->
         try:
             if source.is_symlink():
                 raise OSError("clip file is a symlink")
-            source.rename(folder / name)
+            try:  # the queued clip stays until the draft commits
+                os.link(source, folder / name)
+            except FileNotFoundError:
+                raise
+            except OSError:
+                shutil.copyfile(source, folder / name, follow_symlinks=False)
         except FileNotFoundError:
             # Deleted meanwhile, or lost by an interrupted move: drop it so it can't block later days.
             clips.delete(conn, media_dir, clip["clip_id"])
@@ -417,8 +428,6 @@ def store_clip_draft(conn, draft: dict, clip, media_dir: Path, now: datetime) ->
                 now.isoformat(timespec="seconds"),
             )
     except BaseException:
-        if (folder / name).exists() and source.parent.is_dir() and not source.exists():
-            (folder / name).rename(source)  # the clip stays waiting for the next try
         shutil.rmtree(folder, ignore_errors=True)
         raise
     shutil.rmtree(clips.folder(media_dir, clip["clip_id"]), ignore_errors=True)
@@ -446,8 +455,8 @@ def store_upload_draft(conn, draft: dict, upload, media_dir: Path, now: datetime
             try:
                 data = uploads.read_photo(media_dir, upload["upload_id"], f"photo-{number}.jpg")
             except FileNotFoundError:
-                if uploads.is_waiting(conn, upload["upload_id"]):
-                    raise
+                # Deleted meanwhile, or its photos were lost: drop it so it can't block later days.
+                uploads.delete(conn, media_dir, upload["upload_id"])
                 shutil.rmtree(folder, ignore_errors=True)
                 return None
             flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
