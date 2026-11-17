@@ -104,7 +104,7 @@ def _instagram_daily(health: dict | None, instagram: dict | None) -> dict:
         "alerts": [],
         "last_execution": instagram.get("latest_attempt") if instagram else None,
         "next_execution": None,
-        "next_execution_note": "Each tick tops the day up to 3 drafts until 12:00; other ticks skip.",
+        "next_execution_note": "Each tick makes the day's draft by 12:00, retrying a failed run; other ticks skip.",
         "local_cron": None,
         "stop_control": None,
         "execution_history": [

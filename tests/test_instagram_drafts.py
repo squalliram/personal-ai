@@ -157,8 +157,22 @@ class DailyTickTests(unittest.TestCase):
     def test_runs_once_a_day_from_nine(self):
         self.assertEqual(self.tick(datetime(2026, 11, 12, 8, 45, tzinfo=timezone.utc)), "skipped")
         self.assertEqual(self.tick(MORNING), "ok")
-        self.assertEqual(storage.drafts_on(self.conn, "2026-11-12"), 3)
+        self.assertEqual(storage.drafts_on(self.conn, "2026-11-12"), 1)
         self.assertEqual(self.tick(MORNING), "skipped")
+
+    def test_one_draft_a_day_at_the_best_audience_hour(self):
+        storage.replace_audience_hours(self.conn, {19: 500, 8: 400, 13: 300}, "now")
+        ai = FakeAI([[raw_draft("a"), raw_draft("b"), raw_draft("c")]], [[90, 80, 70]])
+        self.assertEqual(self.tick(MORNING, ai), "ok")
+        create = next(system for system, _ in ai.calls if system.startswith("You are the Create"))
+        self.assertIn("Write 1 carousel", create)
+        [row] = self.conn.execute("SELECT topic, scheduled_for FROM drafts").fetchall()
+        self.assertEqual(tuple(row), ("a", "2026-11-12T19:00+00:00"))
+
+    def test_a_failed_run_is_retried_before_noon(self):
+        self.assertEqual(self.tick(MORNING, FakeAI([[], [], []], [])), "failed")
+        self.assertEqual(self.tick(MORNING), "ok")
+        self.assertEqual(storage.drafts_on(self.conn, "2026-11-12"), 1)
 
     def test_british_summer_time_is_respected(self):
         self.assertEqual(self.tick(datetime(2026, 6, 1, 8, 30, tzinfo=timezone.utc)), "ok")  # 09:30 BST
@@ -189,6 +203,7 @@ class DailyTickTests(unittest.TestCase):
                 storage.record_run(self.conn, "2026-11-12", MORNING.isoformat(), "not_configured")
         self.assertEqual(storage.runs_on(self.conn, "2026-11-12"), 0)
 
+    @patch.object(cli, "DAILY_DRAFTS", 3)
     def test_a_dropped_draft_is_recorded_and_topped_up_before_noon(self):
         first = FakeAI([[raw_draft("a"), raw_draft("b"), raw_draft("c")]], [[90, 80, 70]], fail_images_after=9)
         self.assertEqual(self.tick(MORNING, first), "partial")
@@ -205,6 +220,7 @@ class DailyTickTests(unittest.TestCase):
         self.assertEqual(len({r["scheduled_for"] for r in rows}), 3)
         self.assertEqual(self.tick(MORNING), "skipped")
 
+    @patch.object(cli, "DAILY_DRAFTS", 3)
     def test_a_short_day_is_left_alone_after_noon(self):
         self.tick(MORNING, FakeAI([[raw_draft("a"), raw_draft("b")], [], []], [[90, 80]]))
         self.assertEqual(storage.drafts_on(self.conn, "2026-11-12"), 2)
@@ -429,7 +445,7 @@ class DailyNotificationTests(unittest.TestCase):
         self.assertEqual(self.tick(), "ok")
         [(outcome, title, link)] = self.notes()
         self.assertEqual((outcome, link), ("ok", "https://iramkhan.com/command-centre/#instagram"))
-        self.assertRegex(title, r"^3 Instagram drafts ready to review, first posts at [0-2][0-9]:[0-5][0-9]$")
+        self.assertRegex(title, r"^1 Instagram draft ready to review, posts at [0-2][0-9]:[0-5][0-9]$")
         self.assertEqual(self.tick(), "skipped")
         self.assertEqual(len(self.notes()), 1)
 
@@ -441,7 +457,7 @@ class DailyNotificationTests(unittest.TestCase):
                 self.conn.commit()
                 self.db.unlink(missing_ok=True)
                 self.tick(env={k: v for k, v in self.env.items() if k != key})
-                self.assertEqual(self.notes()[0][1], "3 Instagram drafts ready to review, posting is manual")
+                self.assertEqual(self.notes()[0][1], "1 Instagram draft ready to review, posting is manual")
 
     def test_first_post_time_is_london_time(self):
         self.tick()
@@ -462,6 +478,7 @@ class DailyNotificationTests(unittest.TestCase):
         self.assertTrue(notes[0][1].startswith("Instagram drafts failed: "))
         self.assertEqual(notes[3][1], "Instagram drafts gave up for today after repeated failures")
 
+    @patch.object(cli, "DAILY_DRAFTS", 3)
     def test_a_partial_run_is_reported(self):
         self.assertEqual(
             self.tick(FakeAI([[raw_draft("a"), raw_draft("b"), raw_draft("c")]], [[90, 80, 70]], fail_images_after=9)),
