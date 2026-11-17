@@ -46,6 +46,13 @@ def _iso_utc(instant: datetime) -> str:
     return instant.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def _earlier(first: str, second: str) -> str:
+    def instant(value: str) -> datetime:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+    return first if instant(first) <= instant(second) else second
+
+
 def _consumption_resume_from(watermark: str | None, default_from: str) -> str:
     """Re-read a short window before the watermark so late backfilled intervals are picked up.
 
@@ -70,7 +77,7 @@ def sync(database: Path, account_number: str, api_key: str, days: int = 400, *, 
     sync_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
     conn.commit()
     counts = {"electricity": 0, "gas": 0}
-    empty_meters = 0
+    point_readings: dict[tuple[str, str], int] = {}
     try:
         client = OctopusClient(api_key)
         account = client.account(account_number)
@@ -97,8 +104,9 @@ def sync(database: Path, account_number: str, api_key: str, days: int = 400, *, 
             consumption_from = _consumption_resume_from(watermark, default_from)
             meter_records = upsert_consumption(conn, meter_id, client.consumption(meter, period_from=consumption_from))
             counts[meter.fuel] += meter_records
+            key = (meter.fuel, meter.point_id)
+            point_readings[key] = point_readings.get(key, 0) + meter_records
             if not meter_records:
-                empty_meters += 1
                 continue
             for kind in ("standard-unit-rates", "standing-charges"):
                 rates_from = _watermark(
@@ -110,6 +118,8 @@ def sync(database: Path, account_number: str, api_key: str, days: int = 400, *, 
                 if meter.agreements:
                     # Account history repairs tariff changes missed by older syncs.
                     rates_from = default_from
+                # Rates must cover every consumption interval re-read in a catch-up run.
+                rates_from = _earlier(rates_from, consumption_from)
                 conn.execute(
                     "DELETE FROM tariff_rates WHERE meter_id=? AND kind=? "
                     "AND julianday(valid_from)<julianday(?) "
@@ -122,6 +132,8 @@ def sync(database: Path, account_number: str, api_key: str, days: int = 400, *, 
                     kind,
                     client.tariff_rates(meter, kind, period_from=rates_from, period_to=period_to),
                 )
+        # A retired meter has no readings by design; only a supply point with none at all is incomplete.
+        empty_meters = sum(1 for readings in point_readings.values() if not readings)
         if empty_meters:
             status = "partial" if sum(counts.values()) else "no_data"
             conn.rollback()
