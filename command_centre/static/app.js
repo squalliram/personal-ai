@@ -1715,7 +1715,9 @@
 
   // A hold change the server never confirmed: resent on every render until it is, so a delayed copy is fenced.
   const unconfirmedHold = (id) => { try { return JSON.parse(sessionStorage.getItem(`ig-hold:${id}`)); } catch { return null; } };
-  const rememberHold = (id, body) => { try { if (body) sessionStorage.setItem(`ig-hold:${id}`, JSON.stringify(body)); else sessionStorage.removeItem(`ig-hold:${id}`); } catch { /* best effort */ } };
+  const rememberHold = (id, body) => {
+    try { if (body) sessionStorage.setItem(`ig-hold:${id}`, JSON.stringify(body)); else sessionStorage.removeItem(`ig-hold:${id}`); return true; } catch { return false; }
+  };
 
   function holdToggle(draft, status) {
     const box = el("input", { type: "checkbox", id: `ig-hold-${draft.draft_id}`, "data-hold": String(draft.reel.hold) });
@@ -1723,6 +1725,8 @@
     const definite = (r) => r.ok || [400, 401, 404, 409].includes(r.status);
     async function send(body) {
       box.disabled = true;
+      // Saved before sending, so a reload while this is in flight resends it rather than trusting the old state.
+      const saved = rememberHold(draft.draft_id, body);
       const signIn = signInCount;
       let result = await api("api/v1/instagram/hold", { method: "POST", body });
       // Resending the same versioned hold is harmless, so resend until the server gives a definite answer.
@@ -1735,9 +1739,10 @@
       if (signIn !== signInCount) { if (result.ok) clearCache(); return; } // an older sign-in's reply
       if (result.status === 401) { showLogin("Your session has ended. Sign in again."); return; }
       if (!definite(result)) {
-        rememberHold(draft.draft_id, body);
         box.indeterminate = true;
-        status.textContent = "The hold state is unknown: the server didn't answer. It will be resent when this page reloads.";
+        status.textContent = saved
+          ? "The hold state is unknown: the server didn't answer. It will be resent when this page reloads."
+          : "The hold state is unknown: the server didn't answer and this browser can't remember the change. Set it again before relying on it.";
         return;
       }
       rememberHold(draft.draft_id, null);
