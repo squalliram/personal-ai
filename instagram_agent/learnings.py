@@ -64,20 +64,19 @@ def measured(conn: sqlite3.Connection, now: datetime | None = None) -> list[dict
         }
     except sqlite3.Error:  # an older database, read-only, without the reports table yet
         return []
-    latest: dict[str, dict] = {}
+    reports = []
     for row in rows:
-        row = dict(row)
         posted = parse_time(row["posted_at"])
-        if posted is None or posted < since:
-            continue
-        if row["media_id"] not in latest or row["checkpoint"] > latest[row["media_id"]]["checkpoint"]:
-            latest[row["media_id"]] = {**row, "posted": posted, "owner": row["draft_id"] in owner}
-    posts = list(latest.values())
-    for post in posts:
-        same_time = [p for p in posts if p["checkpoint"] == post["checkpoint"]]
-        post["overall_lift"] = _lift(post, same_time)
-        post["lift"] = _lift(post, [p for p in same_time if p["format"] == post["format"]])
-    return posts
+        if posted is not None and posted >= since:
+            reports.append({**dict(row), "posted": posted, "owner": row["draft_id"] in owner})
+    latest: dict[str, dict] = {}
+    for report in reports:  # every report is compared with all reports at its checkpoint, older posts' too
+        same_time = [r for r in reports if r["checkpoint"] == report["checkpoint"]]
+        report["overall_lift"] = _lift(report, same_time)
+        report["lift"] = _lift(report, [r for r in same_time if r["format"] == report["format"]])
+        if report["media_id"] not in latest or report["checkpoint"] > latest[report["media_id"]]["checkpoint"]:
+            latest[report["media_id"]] = report
+    return list(latest.values())
 
 
 def _words(text) -> int:
@@ -92,6 +91,10 @@ def _band(value: int, bands: tuple) -> str:
 
 
 def _hook(post: dict) -> str | None:
+    """The first words readers see: slide 1 or the reel's hook, or for owner photos (whose slide text is
+    alt text) the caption's first line."""
+    if post.get("owner") and post.get("kind") != "reel":
+        return str(post.get("caption") or "").strip().split("\n")[0].strip() or None
     try:
         slides = json.loads(post.get("slides") or "[]")
         return str(slides[0].get("text") or "") or None

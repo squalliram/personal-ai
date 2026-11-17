@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest import mock
 
 from command_centre_fixtures import Client, Clock, make_app, make_settings
 
@@ -112,6 +113,16 @@ class PostReportTests(Case):
         self.assertEqual(tuple(stored), (500, 12, "carousel"))
         self.assertEqual(self.conn.execute("SELECT permalink FROM posts").fetchone()[0], rows[0][2])
         self.assertTrue(all(not path.endswith("media_publish") for path, _ in graph.calls))
+
+    def test_an_alert_that_was_not_stored_is_retried(self):
+        self.publish()
+        graph = InsightsGraph({"reach": 500})
+        at24 = PUBLISHED + timedelta(hours=24, minutes=5)
+        with mock.patch.object(post_report, "notify", return_value=None):
+            self.assertEqual(post_report.tick(self.conn, self.env, at24, client=graph), "reports 0, report errors 1")
+        self.assertIsNone(self.conn.execute("SELECT notified_at FROM post_reports").fetchone()[0])
+        self.assertEqual(post_report.tick(self.conn, self.env, at24 + timedelta(hours=1), client=graph), "reports 1")
+        self.assertEqual([r[3] for r in self.inbox()], ["instagram-post-report:9001:24h"])
 
     def test_times_are_london_time(self):
         summer = datetime(2026, 7, 1, 17, 0, tzinfo=timezone.utc)
@@ -232,6 +243,27 @@ class LearningsTests(Case):
         found = learnings.summary(self.conn, PUBLISHED + timedelta(days=4))
         self.assertIn(("format", "reel"), {(f["feature"], f["value"]) for f in found["working"]})
         self.assertIn(("format", "carousel"), {(f["feature"], f["value"]) for f in found["not_working"]})
+
+    def test_a_new_post_is_compared_with_older_posts_at_the_same_checkpoint(self):
+        for n, media_id in enumerate(("9001", "9002", "9003")):
+            at = PUBLISHED - timedelta(days=10 - n)
+            self.publish(media_id, at=at)
+            graph = InsightsGraph({"reach": 100, "likes": 10, "saved": 5}, at=at)
+            post_report.tick(self.conn, self.env, at + timedelta(hours=25), client=graph)
+            post_report.tick(self.conn, self.env, at + timedelta(hours=73), client=graph)
+        self.publish("9004")
+        graph = InsightsGraph({"reach": 1000, "likes": 100, "saved": 50})
+        post_report.tick(self.conn, self.env, PUBLISHED + timedelta(hours=25), client=graph)
+        posts = {p["media_id"]: p for p in learnings.measured(self.conn, PUBLISHED + timedelta(hours=26))}
+        self.assertEqual(posts["9004"]["checkpoint"], "24h")
+        self.assertGreater(posts["9004"]["lift"], 2)
+        self.assertEqual(posts["9001"]["checkpoint"], "72h")
+
+    def test_owner_photo_hooks_come_from_the_caption_not_alt_text(self):
+        post = {"owner": True, "kind": "carousel", "caption": "Pistachio croissant run\nMore below", "slides": '[{"text": "A croissant on a plate"}]'}  # fmt: skip
+        self.assertEqual(learnings._hook(post), "Pistachio croissant run")
+        self.assertEqual(learnings._hook({**post, "owner": False}), "A croissant on a plate")
+        self.assertEqual(learnings._hook({**post, "kind": "reel"}), "A croissant on a plate")
 
     def test_old_posts_leave_the_window(self):
         self.measure("9001", 1000, days=200)
