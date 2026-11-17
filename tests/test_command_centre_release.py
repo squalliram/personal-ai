@@ -48,6 +48,13 @@ def registry(app=None):
     }
 
 
+def start_patch(case, patcher):
+    """TestCase.enterContext needs Python 3.11; the project supports 3.10."""
+    mock = patcher.start()
+    case.addCleanup(patcher.stop)
+    return mock
+
+
 class ReleaseTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -73,10 +80,10 @@ class ReleaseTests(unittest.TestCase):
         self.commands = []
         self.original_umask = os.umask(0o077)
         self.addCleanup(os.umask, self.original_umask)
-        self.run = self.enterContext(patch.object(HOST, "run", side_effect=self.command))
-        self.selector = self.enterContext(patch.object(HOST, "selector", side_effect=self.selection))
-        self.verify = self.enterContext(patch.object(HOST, "verify", side_effect=self.verification))
-        self.vendor = self.enterContext(patch.object(HOST, "vendor", return_value=True))
+        self.run = start_patch(self, patch.object(HOST, "run", side_effect=self.command))
+        self.selector = start_patch(self, patch.object(HOST, "selector", side_effect=self.selection))
+        self.verify = start_patch(self, patch.object(HOST, "verify", side_effect=self.verification))
+        self.vendor = start_patch(self, patch.object(HOST, "vendor", return_value=True))
         self.registered = False
 
     def locked(self):
@@ -570,7 +577,7 @@ class VendorTests(unittest.TestCase):
         hashes = " ".join(f"--hash=sha256:{hashlib.sha256(w).hexdigest()}" for w in (self.good, self.evil))
         (self.release / "deploy/command-centre/requirements.txt").write_text(f"fakepkg==1 {hashes}\n")
         self.encode = lambda data: base64.b64encode(data).decode()
-        self.pip = self.enterContext(patch.object(HOST.subprocess, "run", side_effect=OSError("no pip")))
+        self.pip = start_patch(self, patch.object(HOST.subprocess, "run", side_effect=OSError("no pip")))
 
     def test_pinned_wheels_are_unpacked_without_pip(self):
         self.assertTrue(HOST.vendor(self.release, {"fakepkg-1-py3-none-any.whl": self.encode(self.good)}))

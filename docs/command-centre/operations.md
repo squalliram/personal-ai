@@ -72,7 +72,7 @@ Reports and databases under `reports/` and `data/` are deliberately not in Git, 
 ```sh
 mkdir -p ~/personal-ai-backups
 for db in command_centre daily_briefing octopus_energy octopus_energy_live; do
-  [ -f "data/$db.sqlite3" ] && sqlite3 "data/$db.sqlite3" ".backup '~/personal-ai-backups/$db.sqlite3'"
+  [ -f "data/$db.sqlite3" ] && sqlite3 "data/$db.sqlite3" ".backup '$HOME/personal-ai-backups/$db.sqlite3'"
 done
 ```
 
