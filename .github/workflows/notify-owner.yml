@@ -27,10 +27,6 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: notify-owner
-  cancel-in-progress: false
-
 jobs:
   notify:
     runs-on: ubuntu-latest
