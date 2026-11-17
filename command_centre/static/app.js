@@ -1871,8 +1871,24 @@
     storage_error: "The server couldn't save the clip (it may be out of space). Try again later.",
   };
 
+  let unfinishedClip = null; // {file, clipId} whose finish reply was lost twice: the next try only finishes it
+
+  async function finishClip(file, clipId, signIn) {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      if (signIn !== signInCount) return { ok: false, status: -1, data: null };
+      const done = await api("api/v1/instagram/clips/finish", { method: "POST", body: { clip_id: clipId } });
+      if (done.status !== 0) { unfinishedClip = null; return done; }
+    }
+    unfinishedClip = { file, clipId }; // finishing again is safe; uploading again would queue it twice
+    return { ok: false, status: 0, data: null };
+  }
+
   async function sendClip(file, note, status) {
     const signIn = signInCount;
+    if (unfinishedClip && unfinishedClip.file === file) {
+      status.textContent = "Checking the clip against Instagram's video rules…";
+      return finishClip(file, unfinishedClip.clipId, signIn);
+    }
     const start = await api("api/v1/instagram/clips", { method: "POST", body: { note, size: file.size } });
     if (!start.ok) return start;
     const { clip_id: clipId, chunk_bytes: chunk } = start.data;
@@ -1881,13 +1897,11 @@
       status.textContent = `Uploading… ${Math.floor((offset / file.size) * 100)}%`;
       const part = file.slice(offset, Math.min(offset + chunk, file.size));
       let sent = await api(`api/v1/instagram/clips/chunk?clip=${clipId}&offset=${offset}`, { method: "POST", body: part });
-      if (sent.status === 0) sent = await api(`api/v1/instagram/clips/chunk?clip=${clipId}&offset=${offset}`, { method: "POST", body: part });
+      if (sent.status === 0 && signIn === signInCount) sent = await api(`api/v1/instagram/clips/chunk?clip=${clipId}&offset=${offset}`, { method: "POST", body: part });
       if (!sent.ok) return sent;
     }
     status.textContent = "Checking the clip against Instagram's video rules…";
-    const done = await api("api/v1/instagram/clips/finish", { method: "POST", body: { clip_id: clipId } });
-    if (done.status !== 0 || signIn !== signInCount) return done;
-    return api("api/v1/instagram/clips/finish", { method: "POST", body: { clip_id: clipId } });  // the reply was lost: finishing again is safe
+    return finishClip(file, clipId, signIn);
   }
 
   function clipCard(data, canDecide) {
