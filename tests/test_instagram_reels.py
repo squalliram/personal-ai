@@ -492,6 +492,11 @@ class ReelPublishTests(Case):
         self.assertEqual(self.tick(graph), "published 0, failed 0")
         self.assertEqual(graph.posts, [])
         self.assertEqual(storage.hold_reel(self.conn, "f" * 16, True), "not_found")
+        # A delayed release sent from a page that saw it unheld, after a later hold-then-release-then-hold:
+        self.assertEqual(storage.hold_reel(self.conn, "b" * 16, False, seen=True), "ok")
+        self.assertEqual(storage.hold_reel(self.conn, "b" * 16, True, seen=False), "ok")
+        self.assertEqual(storage.hold_reel(self.conn, "b" * 16, False, seen=False), "hold_changed")
+        self.assertEqual(storage.hold_reel(self.conn, "b" * 16, True, seen=False), "ok")  # resend: same value
         storage.decide_draft(self.conn, "b" * 16, "approved", MADE.isoformat())
         self.assertEqual(storage.hold_reel(self.conn, "b" * 16, False), "not_pending")
         self.assertEqual(self.tick(ReelGraph(statuses=("FINISHED",))), "published 1, failed 0")

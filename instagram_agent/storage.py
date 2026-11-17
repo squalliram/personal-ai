@@ -222,8 +222,10 @@ def publishing_started(conn: sqlite3.Connection, draft_id: str) -> bool:
     return conn.execute(_LATEST_RUN_STARTED, (draft_id,)).fetchone() is not None
 
 
-def hold_reel(conn: sqlite3.Connection, draft_id: str, hold: bool) -> str:
-    """Hold a pending reel for the owner's approval, or let it auto-post again: ok, not_found or not_pending."""
+def hold_reel(conn: sqlite3.Connection, draft_id: str, hold: bool, seen: bool | None = None) -> str:
+    """Hold a pending reel for approval, or release it: ok, not_found, not_pending or hold_changed.
+
+    `seen` is the hold the page showed; a delayed request whose page is out of date is refused."""
     with conn:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute("SELECT kind, status, reel FROM drafts WHERE draft_id=?", (draft_id,)).fetchone()
@@ -236,6 +238,9 @@ def hold_reel(conn: sqlite3.Connection, draft_id: str, hold: bool) -> str:
         except ValueError:
             reel = {}
         reel = reel if isinstance(reel, dict) else {}
+        current = reel.get("hold") is True
+        if seen is not None and current != seen and current != hold:
+            return "hold_changed"
         reel["hold"] = bool(hold)
         conn.execute("UPDATE drafts SET reel=? WHERE draft_id=?", (json.dumps(reel), draft_id))
     return "ok"

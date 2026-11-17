@@ -1694,6 +1694,7 @@
 
   const DECISION_ERRORS = {
     publishing: "It's being posted to Instagram now, so it can no longer be approved or rejected.",
+    hold_changed: "The hold was changed elsewhere. Refresh to see it.",
     already_decided: "It was already approved or rejected. Refresh to see its status.",
   };
 
@@ -1717,7 +1718,7 @@
     box.checked = draft.reel.hold;
     box.addEventListener("change", async () => {
       box.disabled = true;
-      const body = { draft_id: draft.draft_id, hold: box.checked };
+      const body = { draft_id: draft.draft_id, hold: box.checked, seen: draft.reel.hold };
       const definite = (r) => r.ok || [400, 401, 404, 409].includes(r.status);
       let result = await api("api/v1/instagram/hold", { method: "POST", body });
       // Setting the same hold again is harmless, so resend until the server gives a definite answer:

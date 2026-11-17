@@ -1427,7 +1427,8 @@ class CommandCentreApp:
             return error
         if (
             not isinstance(body, dict)
-            or set(body) != {"draft_id", "hold"}
+            or not {"draft_id", "hold"} <= set(body) <= {"draft_id", "hold", "seen"}
+            or not isinstance(body.get("seen", False), bool)
             or not isinstance(body["draft_id"], str)
             or not sources.DRAFT_ID.fullmatch(body["draft_id"])
             or not isinstance(body["hold"], bool)
@@ -1439,11 +1440,13 @@ class CommandCentreApp:
         draft_id = body["draft_id"]
         conn = sqlite3.connect(path, timeout=5)
         try:
-            outcome = instagram_storage.hold_reel(conn, draft_id, body["hold"])
+            outcome = instagram_storage.hold_reel(conn, draft_id, body["hold"], body.get("seen"))
         finally:
             conn.close()
         if outcome == "not_found":
             return _error(404, "not_found")
+        if outcome == "hold_changed":
+            return _error(409, "hold_changed")
         if outcome == "not_pending":
             self.audit.record("instagram_hold", "not_pending", actor="owner", draft=draft_id)
             return _error(409, "already_decided")
