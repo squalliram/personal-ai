@@ -56,7 +56,7 @@ jobs:
         if: steps.tested.outputs.ready == 'true'
         run: >-
           python -m pip download --no-deps --only-binary=":all:" --require-hashes
-          --platform manylinux2014_x86_64 --python-version 3.12 --implementation cp
+          --platform manylinux2014_x86_64 --platform manylinux_2_28_x86_64 --python-version 3.12 --implementation cp
           -d "$RUNNER_TEMP/wheels" -r deploy/command-centre/requirements.txt
       - name: Install and verify the isolated Passenger release
         if: steps.tested.outputs.ready == 'true'
