@@ -189,6 +189,15 @@ class ClipQueueTests(Case):
         self.assertEqual(drafts._seconds(3.06, 3.06), 3.0)
         self.assertEqual(drafts._seconds(1.26, 3.06), 1.3)
 
+    def test_finishing_twice_returns_the_same_facts_and_one_clip(self):
+        data = mp4()
+        clip_id = clips.start(self.conn, self.media, NOTE, len(data), NOW)
+        clips.append(self.conn, self.media, clip_id, 0, io.BytesIO(data), len(data))
+        with patch.object(video, "find_tool", return_value=None):
+            first = clips.finish(self.conn, self.media, clip_id)
+            self.assertEqual(clips.finish(self.conn, self.media, clip_id), first)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM clips").fetchone()[0], 1)
+
     def test_finish_recovers_a_rename_that_was_not_committed(self):
         data = mp4()
         clip_id = clips.start(self.conn, self.media, NOTE, len(data), NOW)

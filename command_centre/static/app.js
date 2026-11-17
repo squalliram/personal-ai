@@ -1885,7 +1885,9 @@
       if (!sent.ok) return sent;
     }
     status.textContent = "Checking the clip against Instagram's video rules…";
-    return api("api/v1/instagram/clips/finish", { method: "POST", body: { clip_id: clipId } });
+    const done = await api("api/v1/instagram/clips/finish", { method: "POST", body: { clip_id: clipId } });
+    if (done.status !== 0 || signIn !== signInCount) return done;
+    return api("api/v1/instagram/clips/finish", { method: "POST", body: { clip_id: clipId } });  // the reply was lost: finishing again is safe
   }
 
   function clipCard(data, canDecide) {

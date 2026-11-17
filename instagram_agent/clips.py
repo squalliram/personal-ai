@@ -149,9 +149,18 @@ def _replay(part: Path, offset: int, stream, length: int, have: int) -> int:
 
 
 def finish(conn: sqlite3.Connection, media_dir: Path, clip_id: str, *, check=video.check) -> dict:
-    """Check the whole clip; keep it `waiting` and return its facts, or drop it and raise the problems."""
+    """Check the whole clip; keep it `waiting` and return its facts, or drop it and raise the problems.
+
+    Finishing an already finished clip again (its reply was lost) returns the same facts.
+    """
     row = _uploading(conn, clip_id)
     if row is None:
+        try:
+            done = conn.execute("SELECT facts FROM clips WHERE clip_id=? AND status='waiting'", (clip_id,)).fetchone()
+        except sqlite3.OperationalError:
+            done = None  # no clips table yet
+        if done is not None and done["facts"]:
+            return json.loads(done["facts"])
         raise ClipError("not_found")
     part = folder(media_dir, clip_id) / PART
     for done in (folder(media_dir, clip_id) / f"clip.{ext}" for ext in ("mp4", "mov")):
