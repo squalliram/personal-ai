@@ -1734,10 +1734,10 @@
   function publishNote(draft, auto) {
     if (draft.publishing) return muted("Posting to Instagram now. It can no longer be approved or rejected.");
     if (draft.publish_error) return muted(`Last publish attempt failed: ${draft.publish_error}`);
-    if (!auto) return null;
-    if (draft.will_post && draft.posts_at) return muted(`Posts to Instagram automatically at ${when(draft.posts_at)} unless you reject it before then.`);
     if (draft.kind === "reel" && draft.reel && draft.reel.render === "pending") return muted("The reel is being made on the next daily run; it can't post until then.");
     if (draft.kind === "reel" && draft.reel && draft.reel.render === "failed") return muted(`The reel couldn't be made (${draft.reel.render_error || "unknown error"}), so it won't post. Delete it or send the media again.`);
+    if (!auto) return null;
+    if (draft.will_post && draft.posts_at) return muted(`Posts to Instagram automatically at ${when(draft.posts_at)} unless you reject it before then.`);
     if (draft.kind === "reel" && draft.status === "pending") return muted("A reel from your own media only posts once you approve it.");
     if (draft.status === "pending") return muted("Scored under 70, so it only posts if you approve it.");
     return null;
@@ -1769,7 +1769,7 @@
       el("figcaption", {}, `${i + 1}. ${slide.text}`))));
     const children = [
       slides,
-      draft.note ? el("p", { class: "muted" }, `From your ${draft.kind === "reel" ? "clip" : "photos"}. Your note: ${draft.note}`) : null,
+      draft.note ? el("p", { class: "muted" }, `From your ${draft.kind === "reel" && !(draft.reel && draft.reel.source === "photos") ? "clip" : "photos"}. Your note: ${draft.note}`) : null,
       el("p", { class: "ig-caption" }, draft.caption),
       el("p", { class: "muted" }, draft.hashtags.length ? `${draft.hashtags.length} hashtags: ${draft.hashtags.join(" ")}` : "No hashtags"),
       keyValues([
@@ -1794,7 +1794,9 @@
     } else if (draft.status === "pending") {
       children.push(muted("Approving or rejecting needs RECOMMEND permission."));
     } else if (draft.status === "approved" && !auto) {
-      children.push(muted(draft.kind === "reel"
+      children.push(muted(draft.kind === "reel" && draft.reel && draft.reel.source === "photos"
+        ? "Approved, but automatic posting is off and the made reel only goes to Instagram. Switch automatic posting on to post it."
+        : draft.kind === "reel"
         ? "Approved. Post it yourself: share your original clip as a reel, add the on-screen text above in Instagram's editor and copy the caption."
         : "Approved and saved as an example. Post it yourself: download the slides in order and copy the caption."));
       children.push(postKit(draft));
@@ -2009,7 +2011,7 @@
       const remove = el("button", { type: "button" }, "Delete");
       const status = el("span", { class: "muted", role: "status" });
       remove.addEventListener("click", async () => {
-        if (!window.confirm(`Delete "${track.title}"? Reels not yet made with it won't get music.`)) return;
+        if (!window.confirm(`Delete "${track.title}"? Waiting uploads that chose it get no music. Reels already drafted with it but not yet made will fail and won't post.`)) return;
         remove.disabled = true;
         const signIn = signInCount;
         const result = await api("api/v1/instagram/music/delete", { method: "POST", body: { track_id: track.track_id } });
