@@ -1,0 +1,48 @@
+name: Notify owner
+
+# Sends one update to the owner's Command Centre Inbox and Telegram (@IramsJarvisBot) through
+# POST /api/v1/notifications, using the NOTIFY_INGEST_TOKEN Actions secret, so the caller
+# (the Jarvis Builder Bot) never holds the token. Trigger with:
+#   gh workflow run notify-owner.yml -R squalliram/personal-ai -f title="..." [-f outcome=failed] [-f link=https://...]
+
+on:
+  workflow_dispatch:
+    inputs:
+      title:
+        description: Message text (trimmed to 200 characters)
+        required: true
+        type: string
+      outcome:
+        description: ok or failed
+        required: false
+        default: ok
+        type: choice
+        options: [ok, failed]
+      link:
+        description: Optional https link shown with the message
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: notify-owner
+  cancel-in-progress: false
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Send to Inbox and Telegram
+        env:
+          NOTIFY_INGEST_TOKEN: ${{ secrets.NOTIFY_INGEST_TOKEN }}
+          NOTIFY_TITLE: ${{ inputs.title }}
+          NOTIFY_OUTCOME: ${{ inputs.outcome }}
+          NOTIFY_LINK: ${{ inputs.link }}
+        run: python3 scripts/notify-owner.py
