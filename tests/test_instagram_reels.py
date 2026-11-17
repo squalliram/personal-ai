@@ -212,6 +212,37 @@ class ClipQueueTests(Case):
             self.assertEqual(clips.finish(self.conn, self.media, clip_id)["seconds"], 10)
         self.assertEqual(clips.oldest(self.conn)["clip_id"], clip_id)
 
+    def test_rename_failure_returns_stored_facts_only_for_a_waiting_clip(self):
+        for status in ("waiting", "uploading", "used", "deleted"):
+            for error in (FileNotFoundError, PermissionError):
+                with self.subTest(status=status, error=error):
+                    data = mp4()
+                    clip_id = clips.start(self.conn, self.media, NOTE, len(data), NOW)
+                    clips.append(self.conn, self.media, clip_id, 0, io.BytesIO(data), len(data))
+                    stored = {"ext": "mp4", "seconds": 12}
+
+                    def fail_rename(source, target):
+                        if status == "deleted":
+                            clips.delete(self.conn, self.media, clip_id)
+                        else:
+                            with self.conn:
+                                self.conn.execute(
+                                    "UPDATE clips SET status=?, facts=? WHERE clip_id=?",
+                                    (status, json.dumps(stored), clip_id),
+                                )
+                        raise error("rename failed")
+
+                    with patch.object(Path, "rename", fail_rename):
+                        def check(p):
+                            return {"ext": "mp4", "seconds": 10}, []
+                        if status == "waiting":
+                            self.assertEqual(clips.finish(self.conn, self.media, clip_id, check=check), stored)
+                        else:
+                            with self.assertRaises(clips.ClipError) as caught:
+                                clips.finish(self.conn, self.media, clip_id, check=check)
+                            self.assertEqual(caught.exception.code, "not_found")
+                            self.assertIsInstance(caught.exception.__cause__, error)
+
     def test_a_failing_clip_is_dropped_with_its_problems(self):
 
         data = mp4(seconds=120)
