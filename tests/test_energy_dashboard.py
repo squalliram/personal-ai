@@ -7,11 +7,12 @@ import textwrap
 import unittest
 from html.parser import HTMLParser
 from pathlib import Path
+from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
 from octopus_energy.analytics import recompute_daily_costs
 from octopus_energy.dashboard import dashboard_data, write_dashboard
-from octopus_energy.storage import connect, upsert_consumption, upsert_meter, upsert_rate
+from octopus_energy.storage import connect, get_gas_units, upsert_consumption, upsert_meter, upsert_rate
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -165,6 +166,37 @@ class DashboardTests(unittest.TestCase):
         self.assertIsNone(row["cost"])
         self.assertEqual(row["cost_status"], "incomplete")
         self.assertIn("missing_unit_rate", row["cost_reason"])
+
+    def test_export_reads_one_snapshot_when_gas_confirmation_changes_midway(self):
+        gas = upsert_meter(
+            self.conn,
+            fuel="gas",
+            point_id="synthetic-gas",
+            serial="synthetic-gas",
+            tariff_code=None,
+            valid_from=None,
+            valid_to=None,
+            synced_at="2026-11-01T00:00:00Z",
+        )
+        upsert_consumption(
+            self.conn,
+            gas,
+            {"interval_start": "2026-11-01T12:00:00Z", "interval_end": "2026-11-01T12:30:00Z", "consumption": 2},
+        )
+        recompute_daily_costs(self.conn, gas_units="kwh")
+        self.conn.commit()
+        original = get_gas_units
+
+        def read_then_revert(conn):
+            units = original(conn)
+            recompute_daily_costs(self.conn, gas_units="unknown")  # another connection commits after the read
+            self.conn.commit()
+            return units
+
+        with patch("octopus_energy.dashboard.get_gas_units", side_effect=read_then_revert):
+            data = dashboard_data(self.database)
+        self.assertEqual(data["daily"][0]["kwh"], 2)
+        self.assertEqual(data["hourly"], [{"fuel": "gas", "hour": 12, "kwh": 4}])
 
     def test_confirmed_gas_hourly_usage_and_costs_follow_persisted_mode(self):
         gas = upsert_meter(

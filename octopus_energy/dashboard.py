@@ -88,6 +88,8 @@ def _latest_days(conn, raw, gas_units):
 def dashboard_data(database: Path) -> dict:
     conn = connect(database)
     try:
+        # One read transaction: gas confirmation, daily rows and readings must describe the same moment.
+        conn.execute("BEGIN")
         gas_units = get_gas_units(conn)
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(daily_costs)")}
         quality = ",cost_status,cost_reason" if {"cost_status", "cost_reason"} <= columns else ""

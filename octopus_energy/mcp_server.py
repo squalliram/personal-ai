@@ -69,6 +69,8 @@ def dispatch(name: str, arguments: dict, database: Path) -> list[dict]:
     conn = sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     try:
+        # One read transaction, so gas confirmation and result rows come from the same snapshot.
+        conn.execute("BEGIN")
         if any(
             row["notnull"]
             for row in conn.execute("PRAGMA table_info(daily_costs)")
