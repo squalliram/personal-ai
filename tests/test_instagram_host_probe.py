@@ -39,6 +39,17 @@ class HostProbeTests(unittest.TestCase):
         self.assertEqual(found[Path("/mnt/mem/1001/memory.limit_in_bytes")], "cgroup v1 memory limit")
         self.assertEqual(found[Path("/sys/fs/cgroup/unified/a/memory.max")], "cgroup memory.max")
 
+    def test_unrelated_bind_mounts_are_ignored_and_the_mount_root_is_included(self):
+        mountinfo = (
+            "32 25 0:28 /lve /sys/fs/cgroup rw - cgroup2 cgroup2 rw\n"
+            "40 25 0:28 /other/thing /mnt/elsewhere rw - cgroup2 cgroup2 rw\n"
+        )
+        found = dict(host_probe.cgroup_files("0::/lve/1001\n", mountinfo))
+        self.assertEqual(found[Path("/sys/fs/cgroup/1001/memory.max")], "cgroup memory.max")
+        self.assertEqual(found[Path("/sys/fs/cgroup/memory.max")], "cgroup memory.max (parent cgroup)")
+        self.assertFalse(any("elsewhere" in str(path) for path in found))
+        self.assertEqual(host_probe.cgroup_files("0::/x\n", "40 25 0:28 /other /mnt rw - cgroup2 cgroup2 rw\n"), [])
+
     def test_unlimited_parents_are_left_out(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
