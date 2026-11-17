@@ -63,7 +63,10 @@ def redact(value, token):
 
     def safe_url(match):
         url = match.group()
-        parts = urlsplit(url)
+        try:
+            parts = urlsplit(url)
+        except ValueError:
+            return "[REDACTED_URL]"
         if (
             parts.scheme == "https"
             and parts.netloc in ("www.instagram.com", "instagram.com")

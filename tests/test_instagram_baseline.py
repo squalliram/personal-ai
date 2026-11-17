@@ -67,6 +67,12 @@ class SummaryTests(unittest.TestCase):
 
 
 class RedactionTests(unittest.TestCase):
+    def test_malformed_caption_url_is_redacted(self):
+        self.assertEqual(
+            BASELINE.redact({"caption": "Try https://[example.com today"}, "private"),
+            {"caption": "Try [REDACTED_URL] today"},
+        )
+
     def test_preserves_public_permalink_but_not_token_bearing_urls(self):
         permalink = "https://www.instagram.com/reel/Abc_123/"
         self.assertEqual(BASELINE.redact({"permalink": permalink}, "private"), {"permalink": permalink})
