@@ -168,6 +168,37 @@ class AssistantTests(unittest.TestCase):
         self.assertEqual((response.status, response.json()), (502, {"error": "assistant_unavailable"}))
         self.assertNotIn(b"cf-test", response.body)
 
+    def capture_notifications(self):
+        sent = []
+        self.app.notify = lambda *args, **kwargs: sent.append((args, kwargs)) or len(sent)
+        return sent
+
+    def test_failures_notify_the_owner_once_an_hour_per_reason(self):
+        client = self.client()
+        sent = self.capture_notifications()
+        with self.fake_openai():
+            self.assertEqual(self.ask(client, {"question": "All good?"}).status, 200)
+        self.assertEqual(sent, [])
+        with patch.object(openai_client, "urlopen", side_effect=OSError("boom sk-secret")):
+            for _ in range(2):
+                self.assertEqual(self.ask(client, {"question": "What needs attention?"}).status, 502)
+        self.assertEqual(len(sent), 2)
+        (args, kwargs), (_, again) = sent
+        self.assertEqual(args[:2], ("jarvis", "failed"))
+        self.assertIn("couldn't answer", args[2])
+        self.assertEqual(args[3], "https://iramkhan.com/command-centre/#settings")
+        self.assertNotIn("sk-secret", repr(sent))
+        self.assertTrue(kwargs["key"].startswith("assistant:unavailable:"))
+        self.assertEqual(kwargs["key"], again["key"])
+
+    def test_rate_limit_notifies_the_owner(self):
+        client = self.client()
+        sent = self.capture_notifications()
+        with self.fake_openai():
+            for n in range(31):
+                self.ask(client, {"question": f"Question {n}"})
+        self.assertEqual([k["key"].split(":")[1] for _, k in sent], ["rate_limited"])
+
     def test_malformed_workers_ai_account_is_ignored(self):
         settings = make_settings(self.root, cloudflare_account_id="not-an-account", cloudflare_api_token=CF_TOKEN)
         seed_energy(settings.energy_db)
