@@ -174,6 +174,19 @@ class PostReportTests(Case):
         self.assertIn("24h report not made", rows[0][1])
         self.assertEqual(len(graph.calls), post_report.MAX_ATTEMPTS)
 
+    def test_a_failure_alert_that_was_not_stored_is_retried_without_refetching(self):
+        self.publish()
+        graph = InsightsGraph({}, fail=True)
+        start = PUBLISHED + timedelta(hours=24)
+        with mock.patch.object(post_report, "notify", return_value=None):
+            for tick in range(post_report.MAX_ATTEMPTS + 1):
+                post_report.tick(self.conn, self.env, start + timedelta(minutes=15 * tick), client=graph)
+        self.assertEqual(len(graph.calls), post_report.MAX_ATTEMPTS)
+        post_report.tick(self.conn, self.env, start + timedelta(hours=3), client=graph)
+        self.assertEqual(len(graph.calls), post_report.MAX_ATTEMPTS)
+        self.assertEqual([r[0] for r in self.inbox()], ["failed"])
+        self.assertEqual(post_report.tick(self.conn, self.env, start + timedelta(hours=4), client=graph), "reports 0")
+
     def test_missed_checkpoints_are_skipped_not_backfilled(self):
         self.publish()
         graph = InsightsGraph({"reach": 10})
@@ -293,8 +306,9 @@ class LearningsTests(Case):
 
 class CommandCentreLearningsTests(Case):
     def test_instagram_page_shows_learnings_and_reports(self):
-        self.publish()
-        post_report.tick(self.conn, self.env, PUBLISHED + timedelta(hours=25), client=InsightsGraph({"reach": 77}))
+        at = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(days=2)  # summary() uses the wall clock
+        self.publish(at=at)
+        post_report.tick(self.conn, self.env, at + timedelta(hours=25), client=InsightsGraph({"reach": 77}, at=at))
         settings = make_settings(
             self.root, permission_ceiling=Permission.READ, instagram_db=self.db, instagram_media=self.root / "m"
         )

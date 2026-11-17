@@ -76,10 +76,7 @@ def due(conn: sqlite3.Connection, now: datetime) -> list[tuple]:
     """(post, checkpoint) pairs whose checkpoint has come and has not been reported or given up."""
     done = {
         (row[0], row[1])
-        for row in conn.execute(
-            "SELECT media_id, checkpoint FROM post_reports WHERE notified_at IS NOT NULL OR attempts>=?",
-            (MAX_ATTEMPTS,),
-        )
+        for row in conn.execute("SELECT media_id, checkpoint FROM post_reports WHERE notified_at IS NOT NULL")
     }
     found = []
     for post in published(conn):
@@ -196,13 +193,29 @@ def _attempt_failed(conn, post, checkpoint: str, env: dict, now: datetime, page:
             "SELECT attempts FROM post_reports WHERE media_id=? AND checkpoint=?", (post["media_id"], checkpoint)
         ).fetchone()[0]
     if attempts >= MAX_ATTEMPTS:
-        title = f"Instagram {checkpoint} report not made: insights for {post['topic']} could not be read"
-        key = f"instagram-post-report-failed:{post['media_id']}:{checkpoint}"
-        notify("instagram", "failed", title, page, key=key, env=env, now=now)
+        _gave_up(conn, post, checkpoint, env, now, page)
+
+
+def _gave_up(conn, post, checkpoint: str, env: dict, now: datetime, page: str) -> None:
+    """One failure alert once fetching is exhausted; retried on later ticks until it is stored."""
+    title = f"Instagram {checkpoint} report not made: insights for {post['topic']} could not be read"
+    key = f"instagram-post-report-failed:{post['media_id']}:{checkpoint}"
+    if notify("instagram", "failed", title, page, key=key, env=env, now=now) is not None:
+        with conn:
+            conn.execute(
+                "UPDATE post_reports SET notified_at=? WHERE media_id=? AND checkpoint=?",
+                (now.astimezone(timezone.utc).isoformat(timespec="seconds"), post["media_id"], checkpoint),
+            )
 
 
 def report_one(conn, client: GraphClient, post, checkpoint: str, env: dict, now: datetime) -> bool:
     page = command_centre_link(env, "instagram")
+    tried = conn.execute(
+        "SELECT attempts FROM post_reports WHERE media_id=? AND checkpoint=?", (post["media_id"], checkpoint)
+    ).fetchone()
+    if tried and tried[0] >= MAX_ATTEMPTS:
+        _gave_up(conn, post, checkpoint, env, now, page)
+        return False
     try:
         media, values = fetch(client, post["media_id"])
     except (GraphAPIError, ValueError, KeyError, TypeError, AttributeError):
