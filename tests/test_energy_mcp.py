@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 from octopus_energy.analytics import recompute_daily_costs
@@ -315,7 +316,7 @@ class EnergyMCPTests(unittest.TestCase):
         (row,) = dispatch("get_daily_consumption", {"start": "2026-11-01", "end": "2026-11-02"}, self.database)
         self.assertIs(row["complete"], False)
         self.database.unlink()
-        with sqlite3.connect(self.database) as legacy:
+        with closing(sqlite3.connect(self.database)) as legacy, legacy:
             legacy.executescript(
                 (Path(__file__).resolve().parents[1] / "octopus_energy/schema.sql")
                 .read_text(encoding="utf-8")
@@ -429,7 +430,7 @@ class EnergyMCPTests(unittest.TestCase):
         self.assertNotIn(str(self.database), json.dumps(responses))
         self.assertEqual(hashlib.sha256(self.database.read_bytes()).digest(), before)
         write_reports(self.database, Path(self.directory.name) / "reports")
-        with connect(self.database) as migrated:
+        with closing(connect(self.database)) as migrated, migrated:
             self.assertEqual(migrated.execute("SELECT * FROM consumption").fetchall(), raw_before)
         refreshed = self.run_server(
             initialization()
