@@ -114,10 +114,16 @@
     refreshPasskeyOptions();
   }
 
+  function syncTopbarHeight() {
+    const height = document.querySelector(".topbar").offsetHeight;
+    if (height) document.documentElement.style.setProperty("--topbar-h", `${height}px`);
+  }
+
   function showApp(info) {
     session = info; csrf = info.csrf_token;
     $("login-view").hidden = true;
     $("app-view").hidden = false;
+    syncTopbarHeight();
     $("permission-badge").textContent = `Permission: ${info.permission.toUpperCase()}`;
     const start = prefs().startPage;
     if (!location.hash && start !== "overview") history.replaceState(null, "", `#${start}`);
@@ -1909,9 +1915,7 @@
       if ($("menu-toggle").contains(event.target) || ($("nav").contains(event.target) && !event.target.closest("a"))) return;
       closeMenu(false);
     });
-    const topbar = document.querySelector(".topbar");
-    const syncTopbarHeight = () => document.documentElement.style.setProperty("--topbar-h", `${topbar.offsetHeight}px`);
-    if (typeof ResizeObserver !== "undefined") new ResizeObserver(syncTopbarHeight).observe(topbar);
+    if (typeof ResizeObserver !== "undefined") new ResizeObserver(syncTopbarHeight).observe(document.querySelector(".topbar"));
     else window.addEventListener("resize", syncTopbarHeight);
     window.addEventListener("hashchange", render);
     const result = await api("api/v1/session");
