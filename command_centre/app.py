@@ -763,6 +763,8 @@ class CommandCentreApp:
 
     def _assistant_failed(self, reason: str, title: str) -> None:
         """Tell the owner the website Jarvis could not answer, at most once an hour per reason."""
+        if self.settings.notifications_db is None:
+            return
         hour = datetime.fromtimestamp(self.clock(), timezone.utc).strftime("%Y-%m-%dT%H")
         env = self._notify_env()
         link = notifications.command_centre_link(env, "settings")
