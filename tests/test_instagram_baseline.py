@@ -24,6 +24,12 @@ def media(media_id="1", **kwargs):
 
 
 class SummaryTests(unittest.TestCase):
+    def test_empty_views_falls_back_to_plays_but_zero_does_not(self):
+        for views, expected in [({"data": []}, 42), (response(0), 0)]:
+            with self.subTest(expected=expected):
+                posts, _ = BASELINE.summarize([media()], {"1": {"views": views, "plays": response(42)}}, {})
+                self.assertEqual(posts[0]["views"], expected)
+
     def test_rates_medians_rankings_and_london_cadence(self):
         items = [
             media(),

@@ -109,7 +109,7 @@ def summarize(media, insights, profile):
                         stamp.hour,
                         kind,
                         values.get("reach"),
-                        values.get("views", values.get("plays")),
+                        values.get("views") if values.get("views") is not None else values.get("plays"),
                         likes,
                         comments,
                         values.get("saved"),
