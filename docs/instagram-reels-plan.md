@@ -34,7 +34,7 @@ Meta's video limits make Create's job smaller than for carousels: no images to d
 What the repo shows about the cPanel/CloudLinux host:
 
 - Code runs on CloudLinux alt-python (`/opt/alt/python312`, picked by `scripts/find-python.sh`) inside a CageFS shell. The host can't `pip install`, so dependencies go in as hash-pinned wheels sent over SSH (`deploy_host.py`, `COMMAND_CENTRE_WHEELS_DIR`).
-- Nothing in the repo uses or checks for `ffmpeg`/`ffprobe`. **I don't know if either exists on the host**, or if CageFS exposes them to my account.
+- Nothing in the repo uses or checks for `ffmpeg`/`ffprobe`. **I don't know if either exists on the host**, or if CageFS exposes them to my account. *Update (phase 0 probe, deploy run 44110566222):* `ffmpeg` 4.2.9 is at `/usr/bin/ffmpeg` and `ffprobe` is not found; 18 CPUs, no address-space/data/CPU rlimits, about 2 TB free.
 - **Inference, not checked:** CloudLinux LVE limits (CPU, memory, process count) may make re-encoding a 1080p clip slow, or get it killed.
 
 So processing is staged:

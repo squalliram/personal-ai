@@ -90,7 +90,7 @@ Models can be changed with `CLOUDFLARE_TEXT_MODEL` / `CLOUDFLARE_IMAGE_MODEL` or
 - **Drafting:** Create gets the note and the clip's length (not the video) and writes a hook, 2-5 timed on-screen text beats, a cover moment and a caption; Tags and Review run as for photos. Nothing is burned in: the on-screen text is shown as a script on the draft and the clip posts as filmed, with its own audio.
 - **Posting:** a reel posts only once you **Approve** it. The publisher checks `content_publishing_limit`, copies the clip to the public folder, checks it with a `HEAD` request, creates a `media_type=REELS` container with `video_url`, `share_to_feed=true` and `thumb_offset`, checks `status_code` once a minute for up to 5 minutes, then calls `media_publish` once (never retried).
 - **Analytics:** synced posts store `media_product_type`; reels also store average and total watch time (`avg_watch_ms`, `total_watch_ms`).
-- **Host check:** each dashboard deploy prints `video host:` lines (ffmpeg/ffprobe path and version, CPUs, rlimits, cgroup limits, free disk) in the "Instagram" step's log.
+- **Host check:** each dashboard deploy prints `video host:` lines (ffmpeg/ffprobe path and version, CPUs, rlimits, cgroup limits, free disk) in the "Instagram" step's log. The first run (deploy run 44110566222, 17 Nov 2026) found `ffmpeg` 4.2.9 at `/usr/bin/ffmpeg`, **no `ffprobe`**, 18 CPUs, no address-space/data/CPU rlimits and about 2 TB free. So phase 1 on the host checks clips with the Python header reader only; chroma and interlacing are left to Meta's container `status_code`.
 
 ## Reviewing in the Command Centre
 
