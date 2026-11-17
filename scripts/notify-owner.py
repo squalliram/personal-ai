@@ -112,7 +112,7 @@ def main() -> int:
     except (ValueError, RuntimeError, OSError) as exc:
         print(f"Notification not sent: {exc}", file=sys.stderr)
         return 1
-    print(f"Notification stored (inbox ID {stored}) and passed to Telegram.")
+    print(f"Notification stored (inbox ID {stored}); Telegram delivery is reported in the Command Centre Inbox.")
     return 0
 
 
