@@ -155,6 +155,7 @@ def folder(media_dir: Path, upload_id: str) -> Path:
 def save(conn: sqlite3.Connection, media_dir: Path, note: str, prepared: list[tuple[bytes, bytes]], now: datetime):
     """Store the cleaned photos, then the waiting row. Returns the upload ID."""
     root = media_dir / FOLDER
+    media_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     for path in (media_dir, root):
         path.mkdir(mode=0o700, exist_ok=True)
         if path.is_symlink() or not path.is_dir():

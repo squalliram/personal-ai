@@ -189,6 +189,12 @@ class UploadApiTests(Fixture):
         for query in (f"upload=../{upload_id}&n=1", f"upload={upload_id}&n=0", "upload=x&n=1"):
             self.assertEqual(client.request("GET", "/api/v1/instagram/upload-photo", query=query).status, 400)
 
+    def test_the_first_upload_creates_the_media_folders(self):
+        self.media = self.root / "instagram" / "drafts"
+        response = self.upload(self.client())
+        self.assertEqual(response.status, 200, response.body)
+        self.assertTrue((self.media / "uploads" / response.json()["upload_id"] / "photo-1.jpg").is_file())
+
     def test_upload_needs_recommend_and_csrf(self):
         self.assertEqual(self.upload(self.client(Permission.READ)).status, 403)
         self.assertEqual(self.upload(self.client(), csrf=False).status, 403)
