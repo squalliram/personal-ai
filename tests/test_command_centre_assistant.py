@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -170,6 +171,7 @@ class AssistantTests(unittest.TestCase):
 
     def capture_notifications(self):
         sent = []
+        self.app.settings = replace(self.app.settings, notifications_db=self.root / "notifications.sqlite3")
         self.app.notify = lambda *args, **kwargs: sent.append((args, kwargs)) or len(sent)
         return sent
 
@@ -190,6 +192,14 @@ class AssistantTests(unittest.TestCase):
         self.assertNotIn("sk-secret", repr(sent))
         self.assertTrue(kwargs["key"].startswith("assistant:unavailable:"))
         self.assertEqual(kwargs["key"], again["key"])
+
+    def test_no_alert_when_the_inbox_is_disabled(self):
+        client = self.client()
+        sent = []
+        self.app.notify = lambda *args, **kwargs: sent.append(args)
+        with patch.object(openai_client, "urlopen", side_effect=OSError("boom")):
+            self.assertEqual(self.ask(client, {"question": "Anything?"}).status, 502)
+        self.assertEqual(sent, [])
 
     def test_rate_limit_notifies_the_owner(self):
         client = self.client()
