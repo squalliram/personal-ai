@@ -7,6 +7,7 @@ cleaned JPEGs into a draft folder, so it needs no image library.
 from __future__ import annotations
 
 import io
+import json
 import os
 import re
 import secrets
@@ -35,7 +36,9 @@ CREATE TABLE IF NOT EXISTS uploads (
     photos INTEGER NOT NULL CHECK (photos BETWEEN 1 AND 10),
     status TEXT NOT NULL DEFAULT 'waiting' CHECK (status IN ('waiting', 'used')),
     draft_id TEXT,
-    used_at TEXT
+    used_at TEXT,
+    reel INTEGER NOT NULL DEFAULT 0,
+    music TEXT
 )
 """
 
@@ -163,8 +166,17 @@ def private_root(media_dir: Path, name: str) -> Path:
     return root
 
 
-def save(conn: sqlite3.Connection, media_dir: Path, note: str, prepared: list[tuple[bytes, bytes]], now: datetime):
-    """Store the cleaned photos, then the waiting row. Returns the upload ID."""
+def save(
+    conn: sqlite3.Connection,
+    media_dir: Path,
+    note: str,
+    prepared: list[tuple[bytes, bytes]],
+    now: datetime,
+    *,
+    reel: bool = False,
+    music: dict | None = None,
+):
+    """Store the cleaned photos, then the waiting row (`reel`: make them a reel, with `music` if chosen)."""
     root = private_root(media_dir, FOLDER)
     upload_id = secrets.token_hex(8)
     staging, final = root / f".{upload_id}", root / upload_id
@@ -176,9 +188,17 @@ def save(conn: sqlite3.Connection, media_dir: Path, note: str, prepared: list[tu
         staging.rename(final)
         with conn:
             conn.execute(TABLE)
+            add_columns(conn)
             conn.execute(
-                "INSERT INTO uploads(upload_id,created_at,note,photos) VALUES(?,?,?,?)",
-                (upload_id, now.isoformat(timespec="seconds"), note, len(prepared)),
+                "INSERT INTO uploads(upload_id,created_at,note,photos,reel,music) VALUES(?,?,?,?,?,?)",
+                (
+                    upload_id,
+                    now.isoformat(timespec="seconds"),
+                    note,
+                    len(prepared),
+                    int(reel),
+                    json.dumps(music) if reel and music else None,
+                ),
             )
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)
@@ -196,9 +216,21 @@ def delete(conn: sqlite3.Connection, media_dir: Path, upload_id: str) -> bool:
     return bool(changed)
 
 
+def add_columns(conn: sqlite3.Connection, table: str = "uploads") -> None:
+    """Add the reel and music choices to a table made before reels could be rendered."""
+    have = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if "music" not in have:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN music TEXT")
+    if table == "uploads" and "reel" not in have:
+        conn.execute("ALTER TABLE uploads ADD COLUMN reel INTEGER NOT NULL DEFAULT 0")
+
+
 def oldest(conn: sqlite3.Connection):
+    with conn:
+        add_columns(conn)
     return conn.execute(
-        "SELECT upload_id, created_at, note, photos FROM uploads WHERE status='waiting' ORDER BY created_at, upload_id"
+        "SELECT upload_id, created_at, note, photos, reel, music FROM uploads WHERE status='waiting' "
+        "ORDER BY created_at, upload_id"
     ).fetchone()
 
 

@@ -13,7 +13,7 @@ from pathlib import Path
 from notifications import command_centre_link, notify
 from octopus_energy.cli import load_env
 
-from . import analysis, clips, cloudflare_client, drafts, following, publish, storage, uploads
+from . import analysis, clips, cloudflare_client, drafts, following, publish, render, storage, uploads
 from .analysis import LONDON
 from .cloudflare_client import CloudflareAI
 from .graph import GRAPH_HOST, GRAPH_VERSION, INSTAGRAM_HOST, REEL_METRICS, GraphAPIError, GraphClient
@@ -170,29 +170,48 @@ def _insights(client: GraphClient, media: dict) -> dict[str, int]:
     return client.media_insights(media["id"])
 
 
+def _reel_ask(env: dict, row) -> str:
+    when = publish.posts_at(row["scheduled_for"], row["created_at"])
+    if when and publish.configured(env):
+        return f"approve it to post at {when.astimezone(LONDON).strftime('%H:%M')}"
+    return "posting is manual"
+
+
+def _notify_render(env: dict, now: datetime):
+    """Tell the owner a reel didn't render; after the last try it is held rather than posted unedited."""
+    page = command_centre_link(env, "instagram")
+
+    def failed(row, error: str, final: bool) -> None:
+        then = "it won't post; delete it or send the media again" if final else "it will try again on the next run"
+        title = f"Reel for {_short(row['topic'])} didn't render ({error}): {then}"
+        key = f"instagram-render:{row['draft_id']}:{'final' if final else 'retry'}"
+        notify("instagram", "failed", title, page, key=key, env=env, now=now)
+
+    return failed
+
+
 def _notify_daily(conn, env: dict, outcome: str, now: datetime) -> None:
     today = now.astimezone(LONDON).date().isoformat()
     page = command_centre_link(env, "instagram")
     if outcome in ("ok", "partial"):
         for row in conn.execute(
-            "SELECT u.upload_id, u.note, d.status, d.review_score, d.scheduled_for, d.created_at FROM uploads u "
-            "JOIN drafts d ON d.draft_id=u.draft_id WHERE d.created_on=?",
+            "SELECT u.upload_id, u.note, u.reel, d.kind, d.status, d.review_score, d.scheduled_for, d.created_at "
+            "FROM uploads u JOIN drafts d ON d.draft_id=u.draft_id WHERE d.created_on=?",
             (today,),
         ).fetchall():
-            title = f'Your photos ("{_short(row["note"])}") are now an Instagram draft, {_posting(env, [row])}'
+            if row["kind"] == "reel":
+                title = f'Your photos ("{_short(row["note"])}") are now a reel draft: {_reel_ask(env, row)}'
+            else:
+                unrendered = " (this server can't render reels yet)" if row["reel"] else ""
+                title = f'Your photos ("{_short(row["note"])}") are now an Instagram draft{unrendered}, '
+                title += _posting(env, [row])
             notify("instagram", "ok", title, page, key=f"instagram-upload-draft:{row['upload_id']}", env=env, now=now)
         for row in conn.execute(
             "SELECT c.clip_id, c.note, d.scheduled_for, d.created_at FROM clips c "
             "JOIN drafts d ON d.draft_id=c.draft_id WHERE d.created_on=?",
             (today,),
         ).fetchall():
-            when = publish.posts_at(row["scheduled_for"], row["created_at"])
-            ask = (
-                f"approve it to post at {when.astimezone(LONDON).strftime('%H:%M')}"
-                if when and publish.configured(env)
-                else "posting is manual"
-            )
-            title = f'Your clip ("{_short(row["note"])}") is now a reel draft: {ask}'
+            title = f'Your clip ("{_short(row["note"])}") is now a reel draft: {_reel_ask(env, row)}'
             notify("instagram", "ok", title, page, key=f"instagram-clip-draft:{row['clip_id']}", env=env, now=now)
     if outcome == "ok":
         rows = conn.execute(
@@ -254,13 +273,17 @@ def make_drafts(conn, env: dict, media_dir: Path, now: datetime | None = None) -
             clips.delete(conn, media_dir, clip["clip_id"])  # its file was lost; don't let it block every day
             clip = clips.oldest(conn)
         if clip is not None:
-            draft = drafts.generate_from_clip(conn, ai, now, clip, rules=rules, voice=voice)
+            rendered = render.can_render("clip")
+            draft = drafts.generate_from_clip(conn, ai, now, clip, rules=rules, voice=voice, rendered=rendered)
             if draft is None:
                 raise AIError("the agents wrote no usable reel from your clip")
             stored += drafts.store_clip_draft(conn, draft, clip, media_dir, now) is not None
         upload = uploads.oldest(conn) if stored < wanted else None  # also when the clip was deleted meanwhile
         if upload is not None:
-            draft = drafts.generate_from_upload(conn, ai, now, upload, media_dir, rules=rules, voice=voice)
+            as_reel = bool(upload["reel"]) and render.can_render("photos")
+            draft = drafts.generate_from_upload(
+                conn, ai, now, upload, media_dir, rules=rules, voice=voice, as_reel=as_reel
+            )
             if draft is None:
                 raise AIError("the agents wrote no usable post from your photos")
             stored += drafts.store_upload_draft(conn, draft, upload, media_dir, now) is not None
@@ -316,6 +339,7 @@ def main(argv: list[str] | None = None) -> int:
                 except BlockingIOError:
                     return 0  # The previous tick is still drafting.
                 outcome = daily(conn, env, args.media)
+                render.render_due(conn, args.media, _notify_render(env, _now()))
                 published = publish.tick(conn, env, args.media, _now())
             print(outcome, published, sep="; ")
             return 0 if outcome in ("ok", "partial", "skipped", "gave_up") else 1

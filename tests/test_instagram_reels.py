@@ -17,7 +17,7 @@ from test_instagram_publish import DUE, ENV, MADE, SLOT, FakeGraph
 import notifications
 from command_centre import sources
 from command_centre.security import Permission
-from instagram_agent import cli, clips, drafts, publish, storage, uploads, video
+from instagram_agent import cli, clips, drafts, publish, render, storage, uploads, video
 from instagram_agent.graph import GraphAPIError
 
 NOW = datetime(2026, 11, 12, 10, 0, tzinfo=timezone.utc)
@@ -65,6 +65,10 @@ class Case(unittest.TestCase):
         self.db, self.media = self.root / "instagram.sqlite3", self.root / "drafts"
         self.conn = storage.connect(self.db)
         self.addCleanup(self.conn.close)
+        no_ffmpeg = {"ffmpeg": None, "zoompan": False, "drawtext": False, "libx264": False, "aac": False}
+        patcher = patch.object(render, "capabilities", return_value={**no_ffmpeg, "loudnorm": False, "pillow": True})
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def file(self, data: bytes, name="clip.mp4") -> Path:
         path = self.root / name
@@ -394,7 +398,10 @@ class ReelDraftTests(Case):
         self.assertEqual(reel["file"], "reel.mp4")
         self.assertTrue((self.media / row["draft_id"] / "reel.mp4").is_file())
         self.assertFalse((self.media / "clips" / clip_id).exists())
-        self.assertIn(drafts.CREATE_FROM_CLIP.format(seconds=10), ai.calls[0])
+        self.assertIn(
+            drafts.CREATE_FROM_CLIP.format(seconds=10, how=drafts.AS_FILMED[0], beats_for=drafts.AS_FILMED[1]),
+            ai.calls[0],
+        )
         self.assertEqual(self.conn.execute("SELECT status FROM clips").fetchone()[0], "used")
         with closing(notifications.connect(self.root / "n.sqlite3")) as notes:
             titles = [e["title"] for e in notifications.recent(notes)[0]]
