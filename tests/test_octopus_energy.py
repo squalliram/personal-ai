@@ -211,8 +211,9 @@ class SyncTests(unittest.TestCase):
             {
                 ("electricity", "consumption"): "2026-10-25T00:30:00Z",
                 ("gas", "consumption"): "2026-10-25T00:00:00Z",
-                ("electricity", "standard-unit-rates"): "2026-11-01T00:00:00Z",
-                ("gas", "standard-unit-rates"): "2026-11-01T00:00:00Z",
+                # Rates start where the consumption catch-up starts, so re-read readings always have rates.
+                ("electricity", "standard-unit-rates"): "2026-10-25T00:30:00Z",
+                ("gas", "standard-unit-rates"): "2026-10-25T00:00:00Z",
                 ("electricity", "standing-charges"): "2026-04-01T00:00:00Z",
                 ("gas", "standing-charges"): "2026-04-01T00:00:00Z",
             },
