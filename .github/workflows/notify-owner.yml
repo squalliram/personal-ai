@@ -2,11 +2,16 @@ name: Notify owner
 
 # Sends one update to the owner's Command Centre Inbox and Telegram (@IramsJarvisBot) through
 # POST /api/v1/notifications, using the NOTIFY_INGEST_TOKEN Actions secret, so the caller
-# (the Jarvis Builder Bot) never holds the token. Trigger with:
+# (the Jarvis Builder Bot) never holds the token. Trigger with either:
+#   gh api repos/squalliram/personal-ai/dispatches -f event_type=notify-owner \
+#     -f 'client_payload[title]=...' [-f 'client_payload[outcome]=failed'] [-f 'client_payload[link]=https://...']
 #   gh workflow run notify-owner.yml -R squalliram/personal-ai -f title="..." [-f outcome=failed] [-f link=https://...]
+# repository_dispatch needs only contents:write (Devin's GitHub app has it); workflow_dispatch needs actions:write.
 # The repo is public: the message never reaches the run log, but keep secrets out of it anyway.
 
 on:
+  repository_dispatch:
+    types: [notify-owner]
   workflow_dispatch:
     inputs:
       title:

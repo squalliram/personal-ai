@@ -91,6 +91,11 @@ class NotifyOwnerTests(unittest.TestCase):
             event.write_text(json.dumps({"inputs": {"title": "From dispatch", "outcome": "failed", "link": ""}}))
             env = SCRIPT["with_event_inputs"]({"NOTIFY_INGEST_TOKEN": TOKEN, "GITHUB_EVENT_PATH": str(event)})
         self.assertEqual(SCRIPT["payload"](env), {"source": "jarvis", "outcome": "failed", "title": "From dispatch"})
+        with TemporaryDirectory() as directory:
+            event = Path(directory) / "event.json"
+            event.write_text(json.dumps({"action": "notify-owner", "client_payload": {"title": "Via API"}}))
+            env = SCRIPT["with_event_inputs"]({"NOTIFY_INGEST_TOKEN": TOKEN, "GITHUB_EVENT_PATH": str(event)})
+        self.assertEqual(SCRIPT["payload"](env), {"source": "jarvis", "outcome": "ok", "title": "Via API"})
         self.assertIs(SCRIPT["with_event_inputs"](ENV), ENV)
         workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/notify-owner.yml").read_text()
         self.assertNotIn("inputs.title", workflow.split("jobs:", 1)[1])

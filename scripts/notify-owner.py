@@ -3,7 +3,8 @@
 
 Run by .github/workflows/notify-owner.yml, so callers (the Jarvis Builder Bot) never hold the token.
 Reads NOTIFY_INGEST_TOKEN and optional COMMAND_CENTRE_URL from the environment, and the message from the
-workflow_dispatch inputs in GITHUB_EVENT_PATH (title, outcome ok/failed, link), so the text never appears in
+workflow_dispatch inputs or repository_dispatch client_payload in GITHUB_EVENT_PATH (title, outcome ok/failed,
+link), so the text never appears in
 the step's env listing of this public repo's run log; NOTIFY_TITLE / NOTIFY_OUTCOME / NOTIFY_LINK serve local
 runs. Prints only the status and inbox ID, never the token or the message.
 """
@@ -97,7 +98,10 @@ def with_event_inputs(env: dict[str, str]) -> dict[str, str]:
     if not path:
         return env
     with open(path, encoding="utf-8") as event:
-        inputs = json.load(event).get("inputs") or {}
+        payload = json.load(event)
+    inputs = payload.get("inputs") or payload.get("client_payload") or {}
+    if not isinstance(inputs, dict):
+        raise ValueError("event inputs must be an object")
     names = {"title": "NOTIFY_TITLE", "outcome": "NOTIFY_OUTCOME", "link": "NOTIFY_LINK"}
     return env | {var: str(inputs.get(name) or "") for name, var in names.items()}
 
