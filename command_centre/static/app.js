@@ -1894,10 +1894,25 @@
     $("assistant").addEventListener("keydown", (event) => { if (event.key === "Escape") closeAssistant(); });
     $("passkey-signin").addEventListener("click", passkeySignIn);
     $("hello-jarvis").addEventListener("click", helloJarvis);
+    const closeMenu = (refocus) => {
+      if (!$("nav").classList.contains("open")) return;
+      $("nav").classList.remove("open");
+      $("menu-toggle").setAttribute("aria-expanded", "false");
+      if (refocus) $("menu-toggle").focus();
+    };
     $("menu-toggle").addEventListener("click", () => {
       const open = $("nav").classList.toggle("open");
       $("menu-toggle").setAttribute("aria-expanded", String(open));
     });
+    document.addEventListener("keydown", (event) => { if (event.key === "Escape") closeMenu($("nav").contains(document.activeElement)); });
+    document.addEventListener("click", (event) => {
+      if ($("menu-toggle").contains(event.target) || ($("nav").contains(event.target) && !event.target.closest("a"))) return;
+      closeMenu(false);
+    });
+    const topbar = document.querySelector(".topbar");
+    const syncTopbarHeight = () => document.documentElement.style.setProperty("--topbar-h", `${topbar.offsetHeight}px`);
+    if (typeof ResizeObserver !== "undefined") new ResizeObserver(syncTopbarHeight).observe(topbar);
+    else window.addEventListener("resize", syncTopbarHeight);
     window.addEventListener("hashchange", render);
     const result = await api("api/v1/session");
     if (result.ok) showApp(result.data);
