@@ -106,12 +106,11 @@ def outcome(thread: dict | None) -> str:
     if thread is None:
         return "open"
     if thread["isResolved"]:
-        # CodeRabbit resolves its own thread only after it accepts the fix.
-        return (
-            "fixed (confirmed by CodeRabbit)"
-            if (thread.get("resolvedBy") or {}).get("login") in ("coderabbitai", "coderabbitai[bot]")
-            else "resolved"
-        )
+        if (thread.get("resolvedBy") or {}).get("login") not in ("coderabbitai", "coderabbitai[bot]"):
+            return "resolved"
+        # CodeRabbit resolves its own thread after it accepts a fix, or after it withdraws the request.
+        replies = [c["body"] for c in thread.get("comments", {}).get("nodes", [])[1:] if c["author"]["login"].startswith("coderabbitai")]
+        return "withdrawn by CodeRabbit" if replies and "withdraw" in replies[-1].lower() else "fixed (confirmed by CodeRabbit)"
     return "outdated" if thread["isOutdated"] else "open"
 
 
@@ -199,7 +198,7 @@ def render(prs: list[dict], findings: list[dict], now: datetime, repos: tuple[st
         "Do not edit by hand; rerun the script. See [README.md](README.md) for the configuration and the comparison with other reviewers.",
         "",
         "Outcome: `fixed (confirmed by CodeRabbit)` means CodeRabbit accepted the fix and resolved the thread itself; "
-        "`resolved` means someone else resolved the thread; `outdated` means the commented lines changed but the thread stayed open; "
+        "`withdrawn by CodeRabbit` means CodeRabbit dropped its request and resolved the thread without a fix; `resolved` means someone else resolved the thread; `outdated` means the commented lines changed but the thread stayed open; "
         "`review body (untracked)` findings sit in the review summary, where GitHub has no thread to resolve.",
         "",
         "## Summary",
