@@ -207,7 +207,7 @@ def render(prs: list[dict], findings: list[dict], now: datetime, repos: tuple[st
         "Do not edit by hand; rerun the script. See [README.md](README.md) for the configuration and the comparison with other reviewers.",
         "",
         'Outcome: `fixed (confirmed by CodeRabbit)` means CodeRabbit marked the finding "✅ Addressed in commit" and resolved the thread itself; '
-        "`resolved by CodeRabbit` means CodeRabbit resolved the thread without marking it addressed (for example, it withdrew the request); `resolved` means someone else resolved the thread; `outdated` means the commented lines changed but the thread stayed open; "
+        "`resolved by CodeRabbit` means CodeRabbit resolved the thread but its last comment has no addressed mark (for example, it withdrew the request, or replied after an earlier mark); `resolved` means someone else resolved the thread; `outdated` means the commented lines changed but the thread stayed open; "
         "`review body (untracked)` findings sit in the review summary, where GitHub has no thread to resolve.",
         "",
         "## Summary",
