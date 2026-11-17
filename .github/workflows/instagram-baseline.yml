@@ -19,20 +19,31 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    env:
+      IG_BASELINE_AGE_RECIPIENT: age1ry79v2lep9e8me0ppdmuhueaevehhrl3vaqfc0fqltrah44evawq6mzwrs
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Install age
+        run: sudo apt-get install -y age
       - name: Export read-only Instagram baseline
         env:
           INSTAGRAM_ACCESS_TOKEN: ${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
           INSTAGRAM_USER_ID: ${{ secrets.INSTAGRAM_USER_ID }}
-        run: python scripts/instagram-baseline.py --output baseline-output
+        run: |
+          umask 077
+          python scripts/instagram-baseline.py --output "$RUNNER_TEMP/instagram-baseline"
+      - name: Encrypt baseline
+        run: |
+          set -euo pipefail
+          umask 077
+          tar -czf - -C "$RUNNER_TEMP/instagram-baseline" . |
+            age -r "$IG_BASELINE_AGE_RECIPIENT" -o "$RUNNER_TEMP/baseline.tar.gz.age"
       - uses: actions/upload-artifact@v4
-        if: always()
         with:
           name: instagram-baseline
-          path: baseline-output/
+          path: ${{ runner.temp }}/baseline.tar.gz.age
           retention-days: 7
-          if-no-files-found: warn
+          if-no-files-found: error

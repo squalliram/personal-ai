@@ -47,6 +47,22 @@ then download its seven-day artifact with
 `gh run download <run-id> --repo squalliram/personal-ai -n instagram-baseline -D ~/baseline/live`.
 Use a fresh destination directory for each download. Manual dispatch and same-repository PR runs are also supported.
 
+The repository and Actions artifacts/logs are public. Plaintext insights stay under the runner's temporary directory;
+only `baseline.tar.gz.age`, encrypted to the committed age public recipient, is uploaded. Failed exports or encryption
+do not upload an artifact. Logs contain status only, not account data. Previously uploaded plaintext artifacts are not
+protected retroactively by this change and must be removed separately.
+
+Install `age` locally and decrypt inside the download directory using the private key provisioned as the Devin secret
+environment variable `IG_BASELINE_AGE_KEY` (never print it):
+
+```bash
+umask 077
+age -d -i <(printf '%s\n' "$IG_BASELINE_AGE_KEY") baseline.tar.gz.age | tar xz
+```
+
+This extracts `posts.csv`, `summary.json` and `raw/`. Keep the decrypted files private; never attach them to public
+issues, PRs, artifacts or logs.
+
 ## Daily drafts
 
 ```bash
