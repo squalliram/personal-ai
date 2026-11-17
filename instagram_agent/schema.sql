@@ -99,3 +99,25 @@ CREATE TABLE IF NOT EXISTS publisher_state (
     value TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS post_reports (
+    media_id TEXT NOT NULL,
+    checkpoint TEXT NOT NULL CHECK (checkpoint IN ('24h', '72h')),
+    draft_id TEXT,
+    format TEXT,
+    posted_at TEXT,
+    permalink TEXT,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    captured_at TEXT,
+    reach INTEGER,
+    likes INTEGER,
+    comments INTEGER,
+    saved INTEGER,
+    shares INTEGER,
+    views INTEGER,
+    total_interactions INTEGER,
+    avg_watch_ms INTEGER,
+    total_watch_ms INTEGER,
+    summary TEXT,
+    notified_at TEXT,
+    PRIMARY KEY (media_id, checkpoint)
+);

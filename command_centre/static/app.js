@@ -2132,6 +2132,28 @@
       }));
   }
 
+  // Measured results of past posts. Every finding carries its sample size; nothing here is a fact about a venue.
+  function learningsCard(learned) {
+    const list = (items, empty) => (items && items.length
+      ? el("ul", {}, items.map((f) => el("li", {}, f.text)))
+      : muted(empty));
+    const postLink = (p) => (typeof p.permalink === "string" && p.permalink.startsWith("https://")
+      ? el("a", { href: p.permalink, rel: "noopener noreferrer", target: "_blank" }, "Open")
+      : "None");
+    const times = (v) => (typeof v === "number" ? `${v.toFixed(1)}x` : "Unavailable");
+    const posts = (rows, empty) => table([["Post", (p) => p.topic || "Unknown"], ["Hook", (p) => p.hook || ""],
+      ["Format", (p) => p.format], ["vs median", (p) => times(p.vs_median)], ["Link", postLink]], rows, empty);
+    return card("What's working",
+      muted(`${learned.sample_note} Each post is compared with the median of its own format, 24 and 72 hours after it goes live. The next drafts and reels use these results; they are suggestions, not facts.`),
+      el("h3", {}, "Beating the median"), list(learned.working, "Nothing clearly above the median yet."),
+      el("h3", {}, "Below the median"), list(learned.not_working, "Nothing clearly below the median yet."),
+      el("h3", {}, "Best posts"), posts(learned.best_posts, "Needs at least two measured posts."),
+      el("h3", {}, "Weakest posts"), posts(learned.weakest_posts, "Needs at least four measured posts."),
+      el("h3", {}, "Latest post reports"),
+      table([["When", (r) => when(r.captured_at)], ["Checkpoint", (r) => r.checkpoint], ["Report", (r) => r.summary || ""],
+        ["Link", postLink]], learned.reports, "No post reports yet: the first arrives 24 hours after a post goes live."));
+  }
+
   async function instagram(view) {
     const data = await load("api/v1/instagram/drafts");
     if (!data) return;
@@ -2144,6 +2166,7 @@
       last ? keyValues([["Last run", when(last.started_at)], ["Result", last.outcome], ["Drafts made", last.drafts],
         ...(last.error ? [["Error", last.error]] : [])])
         : muted(data.state === "not_configured" ? "Not connected: there is no Instagram database on this server yet." : "No daily run recorded yet.")));
+    if (data.learnings) view.append(learningsCard(data.learnings));
     view.append(uploadCard(data, canDecide));
     const waiting = waitingCard(data.uploads || [], canDecide);
     if (waiting) view.append(waiting);
