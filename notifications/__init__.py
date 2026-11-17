@@ -179,10 +179,11 @@ def notify(
     env: Mapping[str, str] | None = None,
     now: datetime | None = None,
     send: Callable[[str, str, str], None] = send_telegram,
-) -> bool:
-    """Store a notification and push it to Telegram if configured. Returns False if it couldn't be stored.
+) -> int | None:
+    """Store a notification and push it to Telegram if configured. Returns its inbox ID, or None if not stored.
 
-    `key` makes the call idempotent: a second notification with the same key is dropped.
+    `key` makes the call idempotent: a second notification with the same key is dropped (the first one's ID
+    is returned).
     """
     try:
         env = _env() if env is None else env
@@ -210,25 +211,37 @@ def notify(
                     "VALUES(?,?,?,?,?,?,?,?)",
                     (stamp, source, outcome, title, safe_link(link), key, delivery, error),
                 )
+            if inserted.rowcount:
+                stored = inserted.lastrowid
+            else:
+                stored = conn.execute("SELECT id FROM notifications WHERE dedupe_key=?", (key,)).fetchone()[0]
             if inserted.rowcount and valid:
-                with conn:
-                    conn.execute(
-                        "UPDATE notifications SET delivery='failed', claim=NULL, claimed_until=NULL, error='send interrupted' "
-                        "WHERE delivery='pending' AND attempts>=? AND claimed_until<?",
-                        (MAX_SEND_ATTEMPTS, stamp),
-                    )
-                new_id = inserted.lastrowid
-                queue = conn.execute("SELECT * FROM notifications WHERE id=?", (new_id,)).fetchall()
-                queue += conn.execute(
-                    "SELECT * FROM notifications WHERE delivery='pending' AND attempts<? AND id<>? ORDER BY id LIMIT ?",
-                    (MAX_SEND_ATTEMPTS, new_id, RETRY_BATCH),
-                ).fetchall()
-                for row in queue:
-                    if not _deliver(conn, row, token, chat_id, send, clock):
-                        break
+                _send_queue(conn, inserted.lastrowid, stamp, token, chat_id, send, clock)
         finally:
             conn.close()
-        return True
+        return stored
     except Exception as exc:
         print(f"notifications: not stored ({type(exc).__name__})", file=sys.stderr)
-        return False
+        return None
+
+
+def _send_queue(conn, new_id, stamp, token, chat_id, send, clock) -> None:
+    """Send the new row and retry earlier pending ones. The row is already stored, so a failure here only
+    leaves rows pending for the next call; it never hides the stored ID from the caller."""
+    try:
+        with conn:
+            conn.execute(
+                "UPDATE notifications SET delivery='failed', claim=NULL, claimed_until=NULL, error='send interrupted' "
+                "WHERE delivery='pending' AND attempts>=? AND claimed_until<?",
+                (MAX_SEND_ATTEMPTS, stamp),
+            )
+        queue = conn.execute("SELECT * FROM notifications WHERE id=?", (new_id,)).fetchall()
+        queue += conn.execute(
+            "SELECT * FROM notifications WHERE delivery='pending' AND attempts<? AND id<>? ORDER BY id LIMIT ?",
+            (MAX_SEND_ATTEMPTS, new_id, RETRY_BATCH),
+        ).fetchall()
+        for row in queue:
+            if not _deliver(conn, row, token, chat_id, send, clock):
+                break
+    except Exception as exc:
+        print(f"notifications: stored, delivery deferred ({type(exc).__name__})", file=sys.stderr)

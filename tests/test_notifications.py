@@ -209,10 +209,22 @@ class NotifyTests(NotifierTestCase):
 
     def test_keys_make_a_notification_idempotent(self):
         telegram = FakeTelegram()
-        for _ in range(2):
-            self.assertTrue(notifications.notify("instagram", "ok", "x", key="k1", env=self.env, send=telegram))
-        self.assertEqual(len(self.rows()), 1)
-        self.assertEqual(len(telegram.sent), 1)
+        ids = [notifications.notify("instagram", "ok", "x", key="k1", env=self.env, send=telegram) for _ in range(2)]
+        self.assertEqual(ids, [self.rows()[0]["id"]] * 2)
+        self.assertEqual(notifications.notify("instagram", "ok", "y", env=self.env, send=telegram), ids[0] + 1)
+        self.assertEqual(len(self.rows()), 2)
+        self.assertEqual(len(telegram.sent), 2)
+
+    def test_a_delivery_bookkeeping_failure_still_returns_the_stored_id(self):
+        stderr = io.StringIO()
+        with (
+            patch.object(notifications, "_deliver", side_effect=sqlite3.OperationalError("locked")),
+            redirect_stderr(stderr),
+        ):
+            stored = notifications.notify("instagram", "ok", "x", env=self.env, send=FakeTelegram())
+        self.assertEqual(stored, self.rows()[0]["id"])
+        self.assertEqual(self.rows()[0]["delivery"], "pending")
+        self.assertIn("delivery deferred (OperationalError)", stderr.getvalue())
 
     def test_only_https_links_are_kept_and_titles_are_cleaned(self):
         for link in ("http://example.test/", "javascript:alert(1)", "https://exa mple.test/", "https://" + "a" * 600):

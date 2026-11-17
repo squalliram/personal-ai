@@ -73,6 +73,11 @@ jobs:
           COMMAND_CENTRE_CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           COMMAND_CENTRE_CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           COMMAND_CENTRE_OPENAI_API_KEY: ${{ secrets.COMMAND_CENTRE_OPENAI_API_KEY }}
+          # Optional: lets Jarvis POST its results to /api/v1/notifications (Inbox + Telegram).
+          # Without NOTIFY_INGEST_TOKEN that endpoint answers 503 not_configured.
+          COMMAND_CENTRE_NOTIFY_INGEST_TOKEN: ${{ secrets.NOTIFY_INGEST_TOKEN }}
+          COMMAND_CENTRE_TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          COMMAND_CENTRE_TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           COMMAND_CENTRE_WHEELS_DIR: ${{ runner.temp }}/wheels
         shell: bash
         run: |
