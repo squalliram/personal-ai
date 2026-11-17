@@ -10,7 +10,7 @@
 - Record operational metadata only. Never log tokens, credentials, event descriptions, or task descriptions.
 - Preserve source URLs when supplied. Clearly label generated priorities as suggestions.
 - Any future write capability requires explicit user approval.
-- Approved write: `instagram_agent/publish.py` publishes the daily carousels through Meta's official content publishing API, only for drafts not rejected, never retrying a `media_publish` call. No other Instagram writes (comments, follows, DMs).
+- Approved write: `instagram_agent/publish.py` publishes the daily post (a carousel, a single photo, or a reel from the owner's own clip) through Meta's official content publishing API, only for drafts not rejected (reels only once approved), never retrying a `media_publish` call. No other Instagram writes (comments, follows, DMs).
 - Approved write: Telegram messages to the owner's own chat (`TELEGRAM_CHAT_ID`), sent only through `notifications.notify`. Every notification is also stored for the Command Centre Inbox. The Command Centre ingest endpoint (`POST /api/v1/notifications`, bearer `NOTIFY_INGEST_TOKEN`) may relay authenticated Jarvis results through it. No other Telegram calls, recipients or bots.
 
 ## Verification

@@ -13,10 +13,10 @@ from pathlib import Path
 from notifications import command_centre_link, notify
 from octopus_energy.cli import load_env
 
-from . import analysis, cloudflare_client, drafts, following, publish, storage, uploads
+from . import analysis, clips, cloudflare_client, drafts, following, publish, storage, uploads
 from .analysis import LONDON
 from .cloudflare_client import CloudflareAI
-from .graph import GRAPH_HOST, GRAPH_VERSION, INSTAGRAM_HOST, GraphAPIError, GraphClient
+from .graph import GRAPH_HOST, GRAPH_VERSION, INSTAGRAM_HOST, REEL_METRICS, GraphAPIError, GraphClient
 from .openai_client import IMAGE_MODEL, IMAGE_SIZE, TEXT_MODEL, AIError, OpenAIClient
 
 DEFAULT_MEDIA = Path("data/instagram/drafts")
@@ -60,7 +60,7 @@ def sync(conn, client: GraphClient, *, benchmarks: int = 50, now: datetime | Non
             counts["posts"] += 1
             if analysis._instant(media["timestamp"]) >= now - INSIGHT_WINDOW:
                 try:
-                    values = client.media_insights(media["id"])
+                    values = _insights(client, media)
                 except GraphAPIError:
                     counts["metric_errors"] += 1
                     continue
@@ -157,6 +157,19 @@ def _posting(env: dict, rows) -> str:
     return "it won't post unless you approve it" if len(rows) == 1 else "none will post unless you approve one"
 
 
+def _insights(client: GraphClient, media: dict) -> dict[str, int]:
+    """A post's metrics; reels add watch time, falling back to the common set if Meta refuses those."""
+    if media.get("media_product_type") == "REELS":
+        try:
+            values = client.media_insights(media["id"], REEL_METRICS)
+        except GraphAPIError:
+            return client.media_insights(media["id"])
+        values["avg_watch_ms"] = values.pop("ig_reels_avg_watch_time", None)
+        values["total_watch_ms"] = values.pop("ig_reels_video_view_total_time", None)
+        return values
+    return client.media_insights(media["id"])
+
+
 def _notify_daily(conn, env: dict, outcome: str, now: datetime) -> None:
     today = now.astimezone(LONDON).date().isoformat()
     page = command_centre_link(env, "instagram")
@@ -168,10 +181,24 @@ def _notify_daily(conn, env: dict, outcome: str, now: datetime) -> None:
         ).fetchall():
             title = f'Your photos ("{_short(row["note"])}") are now an Instagram draft, {_posting(env, [row])}'
             notify("instagram", "ok", title, page, key=f"instagram-upload-draft:{row['upload_id']}", env=env, now=now)
+        for row in conn.execute(
+            "SELECT c.clip_id, c.note, d.scheduled_for, d.created_at FROM clips c "
+            "JOIN drafts d ON d.draft_id=c.draft_id WHERE d.created_on=?",
+            (today,),
+        ).fetchall():
+            when = publish.posts_at(row["scheduled_for"], row["created_at"])
+            ask = (
+                f"approve it to post at {when.astimezone(LONDON).strftime('%H:%M')}"
+                if when and publish.configured(env)
+                else "posting is manual"
+            )
+            title = f'Your clip ("{_short(row["note"])}") is now a reel draft: {ask}'
+            notify("instagram", "ok", title, page, key=f"instagram-clip-draft:{row['clip_id']}", env=env, now=now)
     if outcome == "ok":
         rows = conn.execute(
             "SELECT status, review_score, scheduled_for, created_at FROM drafts WHERE created_on=? AND draft_id NOT "
-            "IN (SELECT draft_id FROM uploads WHERE draft_id IS NOT NULL)",
+            "IN (SELECT draft_id FROM uploads WHERE draft_id IS NOT NULL UNION "
+            "SELECT draft_id FROM clips WHERE draft_id IS NOT NULL)",
             (today,),
         ).fetchall()
         if rows:
@@ -220,8 +247,15 @@ def make_drafts(conn, env: dict, media_dir: Path, now: datetime | None = None) -
     try:
         rules = drafts.load_rules(Path(skills).expanduser() if skills else None)
         voice = _read(env.get("INSTAGRAM_VOICE_FILE", "agents/instagram-voice.md"))
-        # The owner's oldest waiting photos come first; the AI carousel only fills what they don't.
-        upload = uploads.oldest(conn)
+        # The owner's oldest waiting clip comes first (a reel replaces the day's carousel), then their oldest
+        # photos; the AI carousel only fills what they don't.
+        clip = clips.oldest(conn)
+        upload = uploads.oldest(conn) if clip is None else None
+        if clip is not None:
+            draft = drafts.generate_from_clip(conn, ai, now, clip, rules=rules, voice=voice)
+            if draft is None:
+                raise AIError("the agents wrote no usable reel from your clip")
+            stored += drafts.store_clip_draft(conn, draft, clip, media_dir, now) is not None
         if upload is not None:
             draft = drafts.generate_from_upload(conn, ai, now, upload, media_dir, rules=rules, voice=voice)
             if draft is None:

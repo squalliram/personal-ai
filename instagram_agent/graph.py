@@ -11,8 +11,9 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 GRAPH_HOST = "https://graph.facebook.com/"
 INSTAGRAM_HOST = "https://graph.instagram.com/"
 GRAPH_VERSION = "v27.0"
-MEDIA_FIELDS = "id,caption,media_type,timestamp,permalink,like_count,comments_count"
+MEDIA_FIELDS = "id,caption,media_type,media_product_type,timestamp,permalink,like_count,comments_count"
 MEDIA_METRICS = "reach,likes,comments,saved,shares,views,total_interactions"
+REEL_METRICS = MEDIA_METRICS + ",ig_reels_avg_watch_time,ig_reels_video_view_total_time"  # in ms
 BENCHMARK_MEDIA_FIELDS = "id,caption,media_type,timestamp,permalink,like_count,comments_count,view_count"
 
 

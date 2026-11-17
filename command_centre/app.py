@@ -28,6 +28,7 @@ from urllib.parse import parse_qs
 from zoneinfo import ZoneInfo
 
 import notifications
+from instagram_agent import clips as instagram_clips
 from instagram_agent import cloudflare_client, openai_client
 from instagram_agent import storage as instagram_storage
 from instagram_agent import uploads as instagram_uploads
@@ -297,6 +298,16 @@ class CommandCentreApp:
                 self.instagram_upload_delete, Permission.RECOMMEND, csrf=True
             ),
             ("GET", "/api/v1/instagram/upload-photo"): Route(self.instagram_upload_photo, Permission.READ),
+            ("POST", "/api/v1/instagram/clips"): Route(self.instagram_clip_start, Permission.RECOMMEND, csrf=True),
+            ("POST", "/api/v1/instagram/clips/chunk"): Route(
+                self.instagram_clip_chunk, Permission.RECOMMEND, csrf=True
+            ),
+            ("POST", "/api/v1/instagram/clips/finish"): Route(
+                self.instagram_clip_finish, Permission.RECOMMEND, csrf=True
+            ),
+            ("POST", "/api/v1/instagram/clips/delete"): Route(
+                self.instagram_clip_delete, Permission.RECOMMEND, csrf=True
+            ),
             ("GET", "/api/v1/notifications"): Route(self.notifications, Permission.READ),
             ("POST", "/api/v1/notifications"): Route(self.notification_ingest, None, bearer=True),
         }
@@ -1157,6 +1168,101 @@ class CommandCentreApp:
             self._collected = None
         self.audit.record("instagram_upload", "deleted", actor="owner", upload=body["upload_id"], client=request.client)
         return 200, {"upload_id": body["upload_id"], "deleted": True}, []
+
+    def _clip_body(self, request: Request, keys: set[str]) -> tuple[dict | None, Result | None]:
+        body, error = _json_body(request.environ)
+        if error:
+            return None, error
+        if not isinstance(body, dict) or set(body) != keys:
+            return None, _error(400, "invalid_request")
+        if "clip_id" in keys and not (
+            isinstance(body["clip_id"], str) and instagram_uploads.UPLOAD_ID.fullmatch(body["clip_id"])
+        ):
+            return None, _error(400, "invalid_request")
+        if not self._instagram_ready():
+            return None, _error(404, "not_found")
+        return body, None
+
+    def _clip_call(self, call: Callable[[sqlite3.Connection], object]):
+        conn = sqlite3.connect(self.settings.instagram_db, timeout=5)
+        conn.row_factory = sqlite3.Row
+        try:
+            return call(conn)
+        finally:
+            conn.close()
+
+    def instagram_clip_start(self, request: Request) -> Result:
+        """Start a clip upload: the note and the size; the browser then sends the bytes in chunks."""
+        body, error = self._clip_body(request, {"note", "size"})
+        if error:
+            return error
+        try:
+            note = instagram_uploads.clean_note(body["note"])
+            media, now = self.settings.instagram_media, self._now()
+            clip_id = self._clip_call(lambda c: instagram_clips.start(c, media, note, body["size"], now))
+        except (instagram_uploads.PhotoError, instagram_clips.ClipError) as exc:
+            return _error(413 if exc.code == "clip_too_large" else 400, exc.code)
+        return 200, {"clip_id": clip_id, "chunk_bytes": instagram_clips.CHUNK_BYTES}, []
+
+    def instagram_clip_chunk(self, request: Request) -> Result:
+        clip_id, offset = request.query("clip") or "", request.query("offset") or ""
+        if not instagram_uploads.UPLOAD_ID.fullmatch(clip_id) or not offset.isdigit() or len(offset) > 12:
+            return _error(400, "invalid_parameters")
+        if request.environ.get("CONTENT_TYPE", "").split(";")[0].strip() != "application/octet-stream":
+            return _error(415, "octet_stream_required")
+        try:
+            length = int(request.environ.get("CONTENT_LENGTH") or 0)
+        except ValueError:
+            return _error(400, "invalid_request")
+        if not self._instagram_ready():
+            return _error(404, "not_found")
+        stream, media = request.environ["wsgi.input"], self.settings.instagram_media
+        try:
+            received = self._clip_call(lambda c: instagram_clips.append(c, media, clip_id, int(offset), stream, length))
+        except instagram_clips.ClipError as exc:
+            return _error(404 if exc.code == "not_found" else 409 if exc.code == "wrong_offset" else 400, exc.code)
+        except OSError:
+            return _error(404, "not_found")
+        return 200, {"clip_id": clip_id, "received": received}, []
+
+    def instagram_clip_finish(self, request: Request) -> Result:
+        """Check the whole clip against Meta's spec; a clip that fails is dropped with the reasons."""
+        body, error = self._clip_body(request, {"clip_id"})
+        if error:
+            return error
+        media = self.settings.instagram_media
+        try:
+            facts = self._clip_call(lambda c: instagram_clips.finish(c, media, body["clip_id"]))
+        except instagram_clips.ClipError as exc:
+            if exc.code == "clip_rejected":
+                self.audit.record(
+                    "instagram_clip", "refused", actor="owner", clip=body["clip_id"], client=request.client
+                )
+                return 422, {"error": exc.code, "problems": exc.problems}, []
+            return _error(404 if exc.code == "not_found" else 409, exc.code)
+        with self._collect_lock:
+            self._collected = None
+        self.audit.record(
+            "instagram_clip",
+            "saved",
+            actor="owner",
+            clip=body["clip_id"],
+            seconds=facts.get("seconds"),
+            client=request.client,
+        )
+        return 200, {"clip_id": body["clip_id"], "seconds": facts.get("seconds")}, []
+
+    def instagram_clip_delete(self, request: Request) -> Result:
+        body, error = self._clip_body(request, {"clip_id"})
+        if error:
+            return error
+        media = self.settings.instagram_media
+        if not self._clip_call(lambda c: instagram_clips.delete(c, media, body["clip_id"])):
+            return _error(404, "not_found")
+        with self._collect_lock:
+            self._collected = None
+        self.audit.record("instagram_clip", "deleted", actor="owner", clip=body["clip_id"], client=request.client)
+        return 200, {"clip_id": body["clip_id"], "deleted": True}, []
 
     def instagram_upload_photo(self, request: Request) -> Result:
         upload, number = request.query("upload") or "", request.query("n") or ""

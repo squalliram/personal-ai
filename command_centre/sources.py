@@ -549,6 +549,7 @@ def instagram_drafts(settings: Settings, limit: int = 30) -> dict:
         "auto_publish": False,
         "drafts": [],
         "uploads": [],
+        "clips": [],
         "runs": [],
         "latest_attempt": None,
     }
@@ -558,8 +559,10 @@ def instagram_drafts(settings: Settings, limit: int = 30) -> dict:
     try:
         with closing(connect_read_only(path)) as conn:
             # Every pending draft stays reviewable; only decided ones are capped.
+            have = {row[1] for row in conn.execute("PRAGMA table_info(drafts)")}
+            columns = DRAFT_COLUMNS + "".join(f",{c}" for c in ("kind", "reel") if c in have)
             rows = conn.execute(
-                f"SELECT {DRAFT_COLUMNS} FROM drafts WHERE status='pending' OR draft_id IN "
+                f"SELECT {columns} FROM drafts WHERE status='pending' OR draft_id IN "
                 "(SELECT draft_id FROM drafts WHERE status!='pending' ORDER BY decided_at DESC, draft_id LIMIT ?) "
                 "ORDER BY created_at DESC",
                 (limit,),
@@ -570,6 +573,8 @@ def instagram_drafts(settings: Settings, limit: int = 30) -> dict:
             ).fetchall()
             publishing = _publishing(conn)
             waiting, notes = _uploads(conn)
+            clips, clip_notes = _clips(conn)
+            notes.update(clip_notes)
             # Ticks every 15 minutes mostly skip, so find the latest real attempt separately.
             attempt = conn.execute(
                 "SELECT run_on,started_at,outcome,drafts,error FROM daily_runs WHERE outcome!='skipped' "
@@ -585,6 +590,11 @@ def instagram_drafts(settings: Settings, limit: int = 30) -> dict:
             slides = []
         if not isinstance(slides, list):
             slides = []
+        draft_kind = instagram_publish.kind(row)
+        try:
+            reel = json.loads(row["reel"]) if draft_kind == "reel" else None
+        except (TypeError, ValueError):
+            reel = None
         result["drafts"].append(
             {
                 **dict(row),
@@ -598,7 +608,9 @@ def instagram_drafts(settings: Settings, limit: int = 30) -> dict:
                 ],
                 "hashtags": (row["hashtags"] or "").split(),
                 "posts_at": _posts_at(row),
-                "will_post": instagram_publish.will_post(row["status"], row["review_score"]),
+                "kind": draft_kind,
+                "reel": _reel(reel) if draft_kind == "reel" else None,
+                "will_post": instagram_publish.will_post(row["status"], row["review_score"], draft_kind),
                 "publish_error": publishing["errors"].get(row["draft_id"]),
                 "publishing": row["draft_id"] in publishing["started"],
             }
@@ -606,11 +618,56 @@ def instagram_drafts(settings: Settings, limit: int = 30) -> dict:
     for draft in result["drafts"]:
         draft["note"] = notes.get(draft["draft_id"])
     result["uploads"] = waiting
+    result["clips"] = clips
     result["auto_publish"] = publishing["on"]
     result["runs"] = [dict(run) for run in runs]
     result["latest_attempt"] = dict(attempt) if attempt else None
     result["state"] = "available"
     return result
+
+
+def _reel(reel) -> dict:
+    """The reel's script for the draft card: hook, timed on-screen text and cover moment."""
+    reel = reel if isinstance(reel, dict) else {}
+    beats = reel.get("on_screen") if isinstance(reel.get("on_screen"), list) else []
+    number = lambda v: v if isinstance(v, (int, float)) and not isinstance(v, bool) else 0  # noqa: E731
+    return {
+        "hook": str(reel.get("hook", "")),
+        "on_screen": [
+            {"start": number(b.get("start")), "end": number(b.get("end")), "text": str(b.get("text", ""))}
+            for b in beats
+            if isinstance(b, dict)
+        ],
+        "cover_seconds": number(reel.get("cover_ms")) / 1000,
+        "seconds": number(reel.get("seconds")),
+    }
+
+
+def _clips(conn) -> tuple[list[dict], dict[str, str]]:
+    """Clips waiting to become reels, oldest (next) first, and the owner's note for each drafted one."""
+    try:
+        rows = conn.execute("SELECT clip_id,created_at,note,status,facts,draft_id FROM clips").fetchall()
+    except sqlite3.OperationalError:
+        return [], {}  # the daily run hasn't added the table yet
+    waiting = []
+    for row in rows:
+        if row["status"] != "waiting":
+            continue
+        try:
+            facts = json.loads(row["facts"] or "{}")
+        except ValueError:
+            facts = {}
+        seconds = facts.get("seconds") if isinstance(facts, dict) else None
+        waiting.append(
+            {
+                "clip_id": row["clip_id"],
+                "created_at": row["created_at"],
+                "note": row["note"],
+                "seconds": seconds if isinstance(seconds, (int, float)) else None,
+            }
+        )
+    waiting.sort(key=lambda c: (c["created_at"], c["clip_id"]))
+    return waiting, {row["draft_id"]: row["note"] for row in rows if row["draft_id"]}
 
 
 def _uploads(conn) -> tuple[list[dict], dict[str, str]]:

@@ -152,14 +152,20 @@ def folder(media_dir: Path, upload_id: str) -> Path:
     return media_dir / FOLDER / upload_id
 
 
-def save(conn: sqlite3.Connection, media_dir: Path, note: str, prepared: list[tuple[bytes, bytes]], now: datetime):
-    """Store the cleaned photos, then the waiting row. Returns the upload ID."""
-    root = media_dir / FOLDER
+def private_root(media_dir: Path, name: str) -> Path:
+    """media_dir/name, made private and refused if either is a symlink."""
+    root = media_dir / name
     media_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     for path in (media_dir, root):
         path.mkdir(mode=0o700, exist_ok=True)
         if path.is_symlink() or not path.is_dir():
             raise OSError("Upload directory is not a private directory")
+    return root
+
+
+def save(conn: sqlite3.Connection, media_dir: Path, note: str, prepared: list[tuple[bytes, bytes]], now: datetime):
+    """Store the cleaned photos, then the waiting row. Returns the upload ID."""
+    root = private_root(media_dir, FOLDER)
     upload_id = secrets.token_hex(8)
     staging, final = root / f".{upload_id}", root / upload_id
     staging.mkdir(mode=0o700)

@@ -6,7 +6,8 @@ CREATE TABLE IF NOT EXISTS posts (
     caption TEXT,
     likes INTEGER,
     comments INTEGER,
-    synced_at TEXT NOT NULL
+    synced_at TEXT NOT NULL,
+    media_product_type TEXT
 );
 CREATE TABLE IF NOT EXISTS post_metrics (
     media_id TEXT NOT NULL REFERENCES posts(media_id),
@@ -18,6 +19,8 @@ CREATE TABLE IF NOT EXISTS post_metrics (
     shares INTEGER,
     views INTEGER,
     total_interactions INTEGER,
+    avg_watch_ms INTEGER,
+    total_watch_ms INTEGER,
     PRIMARY KEY (media_id, captured_on)
 );
 CREATE TABLE IF NOT EXISTS audience_hours (
@@ -70,7 +73,9 @@ CREATE TABLE IF NOT EXISTS drafts (
     review_notes TEXT,
     scheduled_for TEXT,
     decided_at TEXT,
-    media_id TEXT
+    media_id TEXT,
+    kind TEXT NOT NULL DEFAULT 'carousel' CHECK (kind IN ('carousel', 'reel')),
+    reel TEXT
 );
 CREATE INDEX IF NOT EXISTS drafts_created_on ON drafts(created_on);
 CREATE TABLE IF NOT EXISTS daily_runs (

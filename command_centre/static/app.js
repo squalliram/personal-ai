@@ -78,8 +78,9 @@
   async function api(path, options) {
     const opts = options || {};
     const headers = { Accept: "application/json" };
-    const form = opts.body instanceof FormData;
-    if (opts.body !== undefined && !form) headers["Content-Type"] = "application/json";
+    const form = opts.body instanceof FormData || opts.body instanceof Blob;
+    if (opts.body instanceof Blob) headers["Content-Type"] = "application/octet-stream";
+    else if (opts.body !== undefined && !form) headers["Content-Type"] = "application/json";
     if (opts.method && opts.method !== "GET" && csrf) headers["X-CSRF-Token"] = csrf;
     let response;
     try {
@@ -1718,6 +1719,7 @@
         $("view-status").textContent = "Couldn't copy automatically; select the caption above and copy it.";
       }
     });
+    if (draft.kind === "reel") return el("div", { class: "ig-actions" }, copy);
     const downloads = draft.slides.map((slide, i) =>
       el("a", { href: slideUrl(draft, i + 1), download: `instafoodielove-${draft.created_on}-${i + 1}.${slide.format}` }, `Slide ${i + 1}`));
     return el("div", { class: "ig-actions" }, copy, el("span", { class: "ig-downloads" }, "Download: ", downloads));
@@ -1728,12 +1730,21 @@
     if (draft.publish_error) return muted(`Last publish attempt failed: ${draft.publish_error}`);
     if (!auto) return null;
     if (draft.will_post && draft.posts_at) return muted(`Posts to Instagram automatically at ${when(draft.posts_at)} unless you reject it before then.`);
+    if (draft.kind === "reel" && draft.status === "pending") return muted("A reel from your clip only posts once you approve it.");
     if (draft.status === "pending") return muted("Scored under 70, so it only posts if you approve it.");
     return null;
   }
 
+  function reelScript(reel) {
+    const at = (s) => `${Number(s).toFixed(1)} s`;
+    return el("div", { class: "ig-reel" },
+      el("p", {}, el("strong", {}, "Reel hook: "), reel.hook),
+      reel.on_screen.length ? el("ol", {}, reel.on_screen.map((beat) => el("li", {}, `${at(beat.start)}-${at(beat.end)}: ${beat.text}`))) : null,
+      muted(`On-screen text is a script for your editor; the clip posts as filmed with its own audio. Cover frame at ${at(reel.cover_seconds)} of ${at(reel.seconds)}.`));
+  }
+
   function draftCard(draft, canDecide, auto) {
-    const slides = el("div", { class: "ig-slides" }, draft.slides.map((slide, i) => el("figure", {},
+    const slides = draft.kind === "reel" && draft.reel ? reelScript(draft.reel) : el("div", { class: "ig-slides" }, draft.slides.map((slide, i) => el("figure", {},
       el("img", {
         src: slideUrl(draft, i + 1),
         alt: slide.text, width: "200", height: "250", loading: "lazy",
@@ -1741,7 +1752,7 @@
       el("figcaption", {}, `${i + 1}. ${slide.text}`))));
     const children = [
       slides,
-      draft.note ? el("p", { class: "muted" }, `From your photos. Your note: ${draft.note}`) : null,
+      draft.note ? el("p", { class: "muted" }, `From your ${draft.kind === "reel" ? "clip" : "photos"}. Your note: ${draft.note}`) : null,
       el("p", { class: "ig-caption" }, draft.caption),
       el("p", { class: "muted" }, draft.hashtags.length ? `${draft.hashtags.length} hashtags: ${draft.hashtags.join(" ")}` : "No hashtags"),
       keyValues([
@@ -1847,6 +1858,98 @@
     return card("Add your photos", intro, form);
   }
 
+  const MAX_CLIP_BYTES = 300 * 1024 * 1024;
+  const CLIP_ERRORS = {
+    clip_too_large: "The clip is over 300 MB. Export it at 1080p.",
+    invalid_note: "Add a short note (up to 300 characters).",
+    network_error: "The connection dropped. Try again.",
+  };
+
+  async function sendClip(file, note, status) {
+    const start = await api("api/v1/instagram/clips", { method: "POST", body: { note, size: file.size } });
+    if (!start.ok) return start;
+    const { clip_id: clipId, chunk_bytes: chunk } = start.data;
+    for (let offset = 0; offset < file.size; offset += chunk) {
+      status.textContent = `Uploading… ${Math.floor((offset / file.size) * 100)}%`;
+      const part = file.slice(offset, Math.min(offset + chunk, file.size));
+      let sent = await api(`api/v1/instagram/clips/chunk?clip=${clipId}&offset=${offset}`, { method: "POST", body: part });
+      if (sent.status === 0) sent = await api(`api/v1/instagram/clips/chunk?clip=${clipId}&offset=${offset}`, { method: "POST", body: part });
+      if (!sent.ok) return sent;
+    }
+    status.textContent = "Checking the clip against Instagram's video rules…";
+    return api("api/v1/instagram/clips/finish", { method: "POST", body: { clip_id: clipId } });
+  }
+
+  function clipCard(data, canDecide) {
+    const intro = muted("Add one of your own clips (3-90 seconds, raw or edited) and a short note. The next daily run turns the oldest waiting clip into the day's reel instead of a carousel; it keeps its own audio and posts only once you approve the draft. The note is the only source for the place, dish, rating or price.");
+    if (!canDecide) return card("Add a reel clip", intro, muted("Adding clips needs RECOMMEND permission."));
+    if (data.state !== "available") return card("Add a reel clip", intro, muted("Not available until the Instagram agent has run on this server."));
+    const clip = el("input", { id: "ig-clip", type: "file", name: "clip", accept: "video/mp4,video/quicktime", required: "" });
+    const note = el("textarea", { id: "ig-clip-note", name: "note", rows: "3", maxlength: "300", required: "", placeholder: "Bar Italia Soho, espresso, 9/10" });
+    const submit = el("button", { type: "submit", class: "primary" }, "Add clip");
+    const status = el("p", { class: "muted", role: "status" });
+    const problems = el("ul", { class: "muted" });
+    const form = el("form", { class: "ig-upload" },
+      el("label", { for: "ig-clip" }, "Clip (MP4 or MOV, up to 300 MB, at most 1080 px wide)"), clip,
+      el("label", { for: "ig-clip-note" }, "Note"), note,
+      el("div", { class: "ig-actions" }, submit), status, problems);
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      problems.replaceChildren();
+      const file = (clip.files || [])[0];
+      if (!file) { status.textContent = "Choose a clip."; return; }
+      if (file.size > MAX_CLIP_BYTES) { status.textContent = CLIP_ERRORS.clip_too_large; return; }
+      if (!note.value.trim()) { status.textContent = CLIP_ERRORS.invalid_note; return; }
+      submit.disabled = true;
+      const result = await sendClip(file, note.value.trim(), status);
+      if (result.status === 401) { showLogin("Your session has ended. Sign in again."); return; }
+      if (!result.ok) {
+        const code = (result.data && result.data.error) || result.status;
+        if (code === "clip_rejected") {
+          status.textContent = "Instagram won't accept this clip as it is. Export it again (1080p, H.264, 30 fps works everywhere):";
+          problems.replaceChildren(...(result.data.problems || []).map((p) => el("li", {}, p)));
+        } else {
+          status.textContent = `Could not add the clip. ${CLIP_ERRORS[code] || `(${code})`}`;
+        }
+        submit.disabled = false;
+        return;
+      }
+      clearCache();
+      render();
+    });
+    return card("Add a reel clip", intro, form);
+  }
+
+  async function deleteClip(clip, button, status) {
+    if (!window.confirm("Delete this clip? It won't be posted.")) return;
+    button.disabled = true;
+    const result = await api("api/v1/instagram/clips/delete", { method: "POST", body: { clip_id: clip.clip_id } });
+    if (result.status === 401) { showLogin("Your session has ended. Sign in again."); return; }
+    if (!result.ok) {
+      const gone = result.status === 404;
+      status.textContent = gone ? "Already used or deleted. Refresh to see the queue." : `Could not delete it (${(result.data && result.data.error) || result.status}). Try again.`;
+      button.disabled = gone;
+      clearCache();
+      return;
+    }
+    clearCache();
+    render();
+  }
+
+  function waitingClipsCard(clips, canDecide) {
+    if (!clips.length) return null;
+    return card("Your clips waiting", muted(`Oldest first: the first clip becomes the next daily reel. ${clips.length} waiting.`),
+      clips.map((clip, index) => {
+        const status = el("p", { class: "muted", role: "status" });
+        const remove = canDecide ? el("button", { type: "button" }, "Delete") : null;
+        if (remove) remove.addEventListener("click", () => deleteClip(clip, remove, status));
+        return el("div", { class: "ig-upload-item" },
+          el("p", {}, el("strong", {}, index === 0 ? "Next: " : `${index + 1}. `), clip.note),
+          el("p", { class: "muted" }, `${clip.seconds === null ? "Clip" : `${Math.round(clip.seconds)} s clip`} · added ${when(clip.created_at)}`),
+          remove ? el("div", { class: "ig-actions" }, remove) : null, status);
+      }));
+  }
+
   const uploadPhotoUrl = (upload, n) => `api/v1/instagram/upload-photo?upload=${encodeURIComponent(upload.upload_id)}&n=${n}`;
 
   async function deleteUpload(upload, button, status) {
@@ -1896,6 +1999,9 @@
     view.append(uploadCard(data, canDecide));
     const waiting = waitingCard(data.uploads || [], canDecide);
     if (waiting) view.append(waiting);
+    view.append(clipCard(data, canDecide));
+    const waitingClips = waitingClipsCard(data.clips || [], canDecide);
+    if (waitingClips) view.append(waitingClips);
     for (const draft of data.drafts) view.append(draftCard(draft, canDecide, data.auto_publish));
   }
 
