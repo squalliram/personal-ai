@@ -1863,7 +1863,8 @@
     const note = el("textarea", { id: "ig-note", name: "note", rows: "3", maxlength: "300", required: "", placeholder: "Dishoom Kings Cross, lamb raan, 8/10" });
     const submit = el("button", { type: "submit", class: "primary" }, "Add photos");
     const status = el("p", { class: "muted", role: "status" });
-    const renders = Boolean(data.renders && data.renders.photos);
+    // Only Instagram gets the rendered video, so a photo reel needs automatic posting on.
+    const renders = Boolean(data.renders && data.renders.photos && data.auto_publish);
     const reel = el("input", { id: "ig-as-reel", type: "checkbox", name: "reel" });
     if (!renders) reel.disabled = true;
     const music = musicChoice(data, "ig-photo", false);
@@ -1873,7 +1874,7 @@
       el("label", { for: "ig-photos" }, "Photos (1-10, JPEG or PNG; iPhone photos are converted)"), photos,
       el("label", { for: "ig-note" }, "Note"), note,
       el("label", { for: "ig-as-reel" }, reel, " Make it a reel (7-30 s, slow zooms, text burned in)"),
-      renders ? null : muted("This server can't make reels yet (its ffmpeg lacks what's needed)."), music.node,
+      renders ? null : muted(data.auto_publish ? "This server can't make reels yet (its ffmpeg lacks what's needed)." : "Photo reels need automatic posting switched on, since the video only goes to Instagram."), music.node,
       el("div", { class: "ig-actions" }, submit), status);
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
