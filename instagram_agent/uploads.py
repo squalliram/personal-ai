@@ -113,8 +113,10 @@ def _decode(data: bytes):
 
 
 def _jpeg(image, quality: int) -> bytes:
+    image = image.copy()
+    image.info = {}  # Pillow would otherwise copy a source JPEG's comment (and other info) into the new file
     out = io.BytesIO()
-    image.save(out, "JPEG", quality=quality, optimize=True)  # no exif=, icc_profile= or comment: nothing carried over
+    image.save(out, "JPEG", quality=quality, optimize=True)
     return out.getvalue()
 
 

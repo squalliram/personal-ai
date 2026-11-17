@@ -23,7 +23,7 @@ NOTE = "Dishoom Kings Cross, lamb raan, 8/10"
 GPS_TAG, ORIENTATION_TAG = 0x8825, 0x0112
 
 
-def photo(size=(800, 1000), fmt="JPEG", *, gps=False, orientation=None, mode="RGB"):
+def photo(size=(800, 1000), fmt="JPEG", *, gps=False, orientation=None, mode="RGB", comment=None):
     image = Image.new(mode, size, (200, 80, 40, 255) if mode == "RGBA" else (200, 80, 40))
     exif = Image.Exif()
     exif[0x010F] = "PhoneMaker"
@@ -32,7 +32,8 @@ def photo(size=(800, 1000), fmt="JPEG", *, gps=False, orientation=None, mode="RG
     if orientation:
         exif[ORIENTATION_TAG] = orientation
     out = io.BytesIO()
-    image.save(out, fmt, exif=exif.tobytes()) if fmt == "JPEG" else image.save(out, fmt)
+    extra = {"comment": comment} if comment else {}
+    image.save(out, fmt, exif=exif.tobytes(), **extra) if fmt == "JPEG" else image.save(out, fmt)
     return out.getvalue()
 
 
@@ -84,12 +85,14 @@ class PrepareTests(unittest.TestCase):
         return Image.open(io.BytesIO(data))
 
     def test_portrait_photos_become_clean_4_5_jpegs(self):
-        [(slide, thumb)] = uploads.prepare([photo((900, 1600), gps=True)])
+        [(slide, thumb)] = uploads.prepare([photo((900, 1600), gps=True, comment=b"home address")])
         image = self.decoded(slide)
         self.assertEqual((image.format, image.size), ("JPEG", uploads.PORTRAIT))
         self.assertEqual(dict(image.getexif()), {})
         self.assertNotIn(b"Exif", slide)
         self.assertNotIn(b"PhoneMaker", slide + thumb)
+        self.assertNotIn(b"home address", slide + thumb)
+        self.assertNotIn("comment", image.info)
         self.assertNotIn("icc_profile", image.info)
         self.assertEqual(self.decoded(thumb).size, (540, 675))
 
