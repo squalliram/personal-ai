@@ -1713,7 +1713,7 @@
   }
 
   function holdToggle(draft, status) {
-    const box = el("input", { type: "checkbox", id: `ig-hold-${draft.draft_id}` });
+    const box = el("input", { type: "checkbox", id: `ig-hold-${draft.draft_id}`, "data-hold": String(draft.reel.hold) });
     box.checked = draft.reel.hold;
     box.addEventListener("change", async () => {
       box.disabled = true;
@@ -1721,6 +1721,13 @@
       if (result.status === 401) { showLogin("Your session has ended. Sign in again."); return; }
       if (!result.ok) {
         const code = (result.data && result.data.error) || result.status;
+        if (![400, 404, 409].includes(result.status)) {
+          // The change may have been saved; reload the stored hold rather than guess.
+          status.textContent = "Couldn't confirm the hold change. Reloading…";
+          clearCache();
+          render();
+          return;
+        }
         status.textContent = `Could not change the hold. ${DECISION_ERRORS[code] || `(${code})`}`;
         box.checked = !box.checked;
         box.disabled = false;
