@@ -36,7 +36,7 @@ HEDGED = re.compile(r"\b(?:partially|partly|not|n't|only)\W+(?:\w+\W+)?$", re.I)
 HEDGED_AFTER = re.compile(r"[^.!?\n]*\b(?:partially|partly|in part|not fully|only some)\b", re.I)
 QUERY = """query($o:String!,$r:String!,$n:Int!,$c:String){repository(owner:$o,name:$r){pullRequest(number:$n){
 reviewThreads(first:100,after:$c){pageInfo{hasNextPage endCursor}
-nodes{isResolved isOutdated comments(first:50){nodes{databaseId author{login} body}}}}}}}"""
+nodes{isResolved isOutdated comments(first:100){nodes{databaseId author{login} body}}}}}}}"""
 
 
 def gh(*args: str):
