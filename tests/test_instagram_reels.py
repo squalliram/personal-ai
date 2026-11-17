@@ -496,6 +496,31 @@ class ReelPublishTests(Case):
         self.assertEqual(storage.hold_reel(self.conn, "b" * 16, False), "not_pending")
         self.assertEqual(self.tick(ReelGraph(statuses=("FINISHED",))), "published 1, failed 0")
 
+    def test_a_hold_during_the_last_attempt_skips_instead_of_failing(self):
+        def hold_then_publish(*args, on_publish, **kwargs):
+            storage.hold_reel(self.conn, "b" * 16, True)
+            on_publish()
+
+        with patch.object(publish, "MAX_ATTEMPTS", 1), patch.object(publish, "publish_reel", hold_then_publish):
+            self.assertEqual(self.tick(ReelGraph()), "published 0, failed 0")
+        row = self.conn.execute("SELECT status FROM drafts").fetchone()
+        self.assertEqual(row[0], "pending")
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM publish_runs").fetchone()[0], 0)
+
+    def test_a_hold_set_while_rendering_survives_the_render(self):
+        with self.conn:
+            self.conn.execute("UPDATE drafts SET reel=json_set(reel, '$.render', 'pending')")
+
+        def held_meanwhile(conn, media_dir, draft_id, reel):
+            storage.hold_reel(self.conn, draft_id, True)
+            return {**reel, "render": "done"}
+
+        with patch.object(render, "render", held_meanwhile):
+            render.render_due(self.conn, self.media, now=MADE)
+        [row] = self.conn.execute("SELECT * FROM drafts").fetchall()
+        self.assertTrue(publish.held(row))
+        self.assertTrue(publish.rendered(row))
+
     def test_a_passing_reel_auto_posts_once_and_notifies(self):
         graph = ReelGraph(statuses=("FINISHED",))
         with patch.object(publish, "notify") as told:

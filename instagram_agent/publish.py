@@ -38,6 +38,10 @@ class PublishError(RuntimeError):
     """A safe publishing error: no tokens, URLs or response bodies."""
 
 
+class Withdrawn(PublishError):
+    """Rejected or held between being picked and the final publish call: skipped, not failed."""
+
+
 def _instant(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
@@ -345,7 +349,7 @@ def tick(conn, env: dict, media_dir: Path, now: datetime, client: GraphClient | 
                     "SELECT status, review_score, kind, reel FROM drafts WHERE draft_id=?", (draft_id,)
                 ).fetchone()
                 if not will_post(now_row["status"], now_row["review_score"], held(now_row)):
-                    raise PublishError("rejected or held before posting")
+                    raise Withdrawn("rejected or held before posting")
                 _record(conn, draft_id, stamp, "started")
             except BaseException:
                 conn.rollback()
@@ -356,6 +360,8 @@ def tick(conn, env: dict, media_dir: Path, now: datetime, client: GraphClient | 
         try:
             send = publish_reel if kind(row) == "reel" else publish_draft
             media_id = send(client, row, media_dir, Path(public_dir), public_url, on_publish=started, **kwargs)
+        except Withdrawn:
+            continue
         except (PublishError, GraphAPIError, OSError, ValueError) as exc:
             error = str(exc) if isinstance(exc, (PublishError, GraphAPIError)) else type(exc).__name__
             with conn:
