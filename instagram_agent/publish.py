@@ -1,9 +1,9 @@
-"""Publish due drafts to @instafoodielove as carousels: the one Instagram write this project makes.
+"""Publish due drafts to @instafoodielove as carousels, single photos or reels: the one Instagram write this project makes.
 
 A draft is due at max(scheduled_for, created_at + VETO_LEAD) when it was approved, or is still
-pending and passed review. Rejecting it in the Command Centre before then stops it. Meta fetches
-each slide from a public URL, so the slides are copied to an unguessable folder under
-INSTAGRAM_PUBLIC_DIR for the length of the call and removed afterwards.
+pending and passed review (reels from the owner's clips need Approve). Rejecting it in the Command
+Centre before then stops it. Meta fetches each slide or video from a public URL, so they are copied
+to an unguessable folder under INSTAGRAM_PUBLIC_DIR for the length of the call and removed afterwards.
 """
 
 from __future__ import annotations
@@ -30,6 +30,8 @@ VETO_LEAD = timedelta(hours=1)
 STALE_AFTER = timedelta(hours=3)
 MAX_ATTEMPTS = 3
 STATUS_POLLS = 10
+REEL_POLLS = 5  # Meta: check a video container once a minute for at most 5 minutes
+REEL_WAIT = 60
 
 
 class PublishError(RuntimeError):
@@ -46,7 +48,13 @@ def posts_at(scheduled_for: str | None, created_at: str) -> datetime | None:
     return max(_instant(scheduled_for), _instant(created_at) + VETO_LEAD)
 
 
-def will_post(status: str, review_score: int | None) -> bool:
+def kind(row) -> str:
+    return row["kind"] if "kind" in row.keys() and row["kind"] else "carousel"
+
+
+def will_post(status: str, review_score: int | None, draft_kind: str = "carousel") -> bool:
+    if draft_kind == "reel":  # the owner's own clips post only once approved
+        return status == "approved"
     return status == "approved" or (status == "pending" and (review_score or 0) >= PASS_SCORE)
 
 
@@ -92,7 +100,7 @@ def due(conn, now: datetime) -> list:
     found = []
     for row in rows:
         when = posts_at(row["scheduled_for"], row["created_at"])
-        if will_post(row["status"], row["review_score"]) and when <= now <= when + STALE_AFTER:
+        if will_post(row["status"], row["review_score"], kind(row)) and when <= now <= when + STALE_AFTER:
             if row["fails"] < MAX_ATTEMPTS:
                 found.append(row)
     return found
@@ -111,6 +119,91 @@ def _check_public(url: str, size: int) -> None:
         raise PublishError(f"public slide URL not reachable (HTTP {exc.code})") from None
     except (URLError, TimeoutError) as exc:
         raise PublishError(f"public slide URL not reachable ({type(exc).__name__})") from None
+
+
+def _check_public_video(url: str, size: int) -> None:
+    try:
+        request = Request(url, method="HEAD", headers={"User-Agent": "personal-ai-instagram/1.0"})
+        with urlopen(request, timeout=15) as response:
+            if response.headers.get("Content-Length") != str(size):
+                raise PublishError("public video URL served a different size")
+    except HTTPError as exc:
+        raise PublishError(f"public video URL not reachable (HTTP {exc.code})") from None
+    except (URLError, TimeoutError) as exc:
+        raise PublishError(f"public video URL not reachable ({type(exc).__name__})") from None
+
+
+def _public_folder(public_dir: Path) -> Path:
+    if public_dir.is_symlink() or (public_dir.exists() and not public_dir.is_dir()):
+        raise PublishError("public media folder is not a directory")
+    public_dir.mkdir(mode=0o755, parents=True, exist_ok=True)
+    index = public_dir / "index.html"
+    if not index.exists() and not index.is_symlink():
+        index.write_text("")  # No directory listing while a post's folder exists.
+    return public_dir / secrets.token_hex(16)
+
+
+def _quota_left(client: GraphClient) -> None:
+    """Refuse when Meta says the 24-hour publishing limit is used up; carry on if it doesn't say."""
+    try:
+        data = client.get(f"{client.user_id}/content_publishing_limit", {"fields": "quota_usage,config"})["data"][0]
+        used, total = data["quota_usage"], data["config"]["quota_total"]
+    except (GraphAPIError, KeyError, IndexError, TypeError):
+        return
+    if isinstance(used, int) and isinstance(total, int) and used >= total:
+        raise PublishError(f"Instagram's publishing limit is used up ({used} of {total} in 24 hours)")
+
+
+def publish_reel(
+    client: GraphClient,
+    row,
+    media_dir: Path,
+    public_dir: Path,
+    public_url: str,
+    *,
+    check: Callable[[str, int], None] = _check_public_video,
+    sleep: Callable[[float], None] = time.sleep,
+    on_publish: Callable[[], None] = lambda: None,
+) -> str:
+    """A REELS container from the clip's public URL, polled until Meta has processed it, then media_publish."""
+    reel = json.loads(row["reel"] or "{}")
+    name = str(reel.get("file", ""))
+    if name not in ("reel.mp4", "reel.mov"):
+        raise PublishError("the reel's video is missing")
+    source = media_dir / row["draft_id"] / name
+    if source.parent.is_symlink() or source.is_symlink() or not source.is_file():
+        raise PublishError("the reel's video is missing")
+    _quota_left(client)
+    folder = _public_folder(public_dir)
+    try:
+        folder.mkdir(mode=0o755)
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+        with source.open("rb") as stream_in, os.fdopen(os.open(folder / name, flags, 0o644), "wb") as stream_out:
+            shutil.copyfileobj(stream_in, stream_out, 1024 * 1024)
+        url = f"{public_url.rstrip('/')}/{folder.name}/{name}"
+        check(url, source.stat().st_size)
+        user = client.user_id
+        caption = row["caption"] + ("\n\n" + row["hashtags"] if row["hashtags"] else "")
+        params = {"media_type": "REELS", "video_url": url, "caption": caption, "share_to_feed": "true"}
+        cover = reel.get("cover_ms")
+        if isinstance(cover, int) and not isinstance(cover, bool) and cover > 0:
+            params["thumb_offset"] = str(cover)
+        container = client.post(f"{user}/media", params)["id"]
+        for _ in range(REEL_POLLS):
+            sleep(REEL_WAIT)
+            status = client.get(container, {"fields": "status_code"}).get("status_code")
+            if status == "FINISHED":
+                break
+            if status in ("ERROR", "EXPIRED"):
+                raise PublishError(f"Instagram could not process the clip ({status}); export it again")
+        else:
+            raise PublishError("Instagram was still processing the clip after 5 minutes")
+        on_publish()
+        return str(client.post(f"{user}/media_publish", {"creation_id": container}, retry=False)["id"])
+    except KeyError:
+        raise PublishError("Instagram returned no ID") from None
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
 
 
 def publish_draft(
@@ -142,13 +235,7 @@ def publish_draft(
         images.append(data)
     if not 1 <= len(images) <= 20:
         raise PublishError("a post needs 1-20 slides")
-    if public_dir.is_symlink() or (public_dir.exists() and not public_dir.is_dir()):
-        raise PublishError("public media folder is not a directory")
-    public_dir.mkdir(mode=0o755, parents=True, exist_ok=True)
-    index = public_dir / "index.html"
-    if not index.exists() and not index.is_symlink():
-        index.write_text("")  # No directory listing while a post's folder exists.
-    folder = public_dir / secrets.token_hex(16)
+    folder = _public_folder(public_dir)
     try:
         folder.mkdir(mode=0o755)
         urls = []
@@ -231,9 +318,9 @@ def tick(conn, env: dict, media_dir: Path, now: datetime, client: GraphClient | 
             conn.execute("BEGIN IMMEDIATE")
             try:
                 now_row = conn.execute(
-                    "SELECT status, review_score FROM drafts WHERE draft_id=?", (draft_id,)
+                    "SELECT status, review_score, kind FROM drafts WHERE draft_id=?", (draft_id,)
                 ).fetchone()
-                if not will_post(now_row["status"], now_row["review_score"]):
+                if not will_post(now_row["status"], now_row["review_score"], kind(now_row)):
                     raise PublishError("rejected before posting")
                 _record(conn, draft_id, stamp, "started")
             except BaseException:
@@ -243,7 +330,8 @@ def tick(conn, env: dict, media_dir: Path, now: datetime, client: GraphClient | 
             sent.append(True)
 
         try:
-            media_id = publish_draft(client, row, media_dir, Path(public_dir), public_url, on_publish=started, **kwargs)
+            send = publish_reel if kind(row) == "reel" else publish_draft
+            media_id = send(client, row, media_dir, Path(public_dir), public_url, on_publish=started, **kwargs)
         except (PublishError, GraphAPIError, OSError, ValueError) as exc:
             error = str(exc) if isinstance(exc, (PublishError, GraphAPIError)) else type(exc).__name__
             with conn:
