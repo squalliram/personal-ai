@@ -4,7 +4,7 @@
 
 ## Keeping the log current
 
-After any PR in these repositories gets its CodeRabbit review, and before it merges, rerun the script and commit the updated `findings.md`:
+The [CodeRabbit findings log](../../.github/workflows/coderabbit-findings.yml) workflow rebuilds `findings.md` every day at 06:17 UTC and on demand (Actions → Run workflow). It commits to `main` only when a finding changed. Commits made with the workflow's `GITHUB_TOKEN` do not start Test, so they never trigger a deploy. To refresh by hand:
 
 ```bash
 python3 scripts/coderabbit-findings.py              # all three repositories
