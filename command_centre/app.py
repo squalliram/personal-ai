@@ -1427,9 +1427,9 @@ class CommandCentreApp:
             return error
         if (
             not isinstance(body, dict)
-            or not {"draft_id", "hold"} <= set(body) <= {"draft_id", "hold", "version"}
-            or type(body.get("version", 0)) is not int
-            or not 0 <= body.get("version", 0) < 2**31
+            or set(body) != {"draft_id", "hold", "version"}
+            or type(body["version"]) is not int
+            or not 0 <= body["version"] < 2**31
             or not isinstance(body["draft_id"], str)
             or not sources.DRAFT_ID.fullmatch(body["draft_id"])
             or not isinstance(body["hold"], bool)
@@ -1441,7 +1441,7 @@ class CommandCentreApp:
         draft_id = body["draft_id"]
         conn = sqlite3.connect(path, timeout=5)
         try:
-            outcome = instagram_storage.hold_reel(conn, draft_id, body["hold"], body.get("version"))
+            outcome = instagram_storage.hold_reel(conn, draft_id, body["hold"], body["version"])
         finally:
             conn.close()
         if outcome == "not_found":

@@ -676,7 +676,7 @@ class ReelCommandCentreTests(Case):
         self.assertEqual(shown["reel"]["hook"], REEL["hook"])
         self.assertEqual(shown["reel"]["cover_seconds"], 9.9)
         client = self.client()
-        held = client.request("POST", "/api/v1/instagram/hold", body={"draft_id": "c" * 16, "hold": True})
+        held = client.request("POST", "/api/v1/instagram/hold", body={"draft_id": "c" * 16, "hold": True, "version": 0})
         self.assertEqual(held.json(), {"draft_id": "c" * 16, "hold": True})
         [shown] = sources.instagram_drafts(settings)["drafts"]
         self.assertFalse(shown["will_post"])
@@ -685,10 +685,15 @@ class ReelCommandCentreTests(Case):
             "POST", "/api/v1/instagram/hold", body={"draft_id": "c" * 16, "hold": False, "version": 0}
         )
         self.assertEqual((stale.status, stale.json()), (409, {"error": "hold_changed"}))
-        bad = client.request("POST", "/api/v1/instagram/hold", body={"draft_id": "c" * 16, "hold": "yes"})
+        unversioned = client.request("POST", "/api/v1/instagram/hold", body={"draft_id": "c" * 16, "hold": False})
+        self.assertEqual(unversioned.status, 400)  # every request is fenced by the version its page showed
+        bad = client.request("POST", "/api/v1/instagram/hold", body={"draft_id": "c" * 16, "hold": "yes", "version": 1})
         self.assertEqual(bad.status, 400)
         self.assertEqual(
-            client.request("POST", "/api/v1/instagram/hold", body={"draft_id": "d" * 16, "hold": True}).status, 404
+            client.request(
+                "POST", "/api/v1/instagram/hold", body={"draft_id": "d" * 16, "hold": True, "version": 0}
+            ).status,
+            404,
         )
 
 

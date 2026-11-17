@@ -1713,37 +1713,54 @@
     render();
   }
 
+  // A hold change the server never confirmed: resent on every render until it is, so a delayed copy is fenced.
+  const unconfirmedHold = (id) => { try { return JSON.parse(sessionStorage.getItem(`ig-hold:${id}`)); } catch { return null; } };
+  const rememberHold = (id, body) => { try { if (body) sessionStorage.setItem(`ig-hold:${id}`, JSON.stringify(body)); else sessionStorage.removeItem(`ig-hold:${id}`); } catch { /* best effort */ } };
+
   function holdToggle(draft, status) {
     const box = el("input", { type: "checkbox", id: `ig-hold-${draft.draft_id}`, "data-hold": String(draft.reel.hold) });
     box.checked = draft.reel.hold;
-    box.addEventListener("change", async () => {
+    const definite = (r) => r.ok || [400, 401, 404, 409].includes(r.status);
+    async function send(body) {
       box.disabled = true;
-      const body = { draft_id: draft.draft_id, hold: box.checked, version: draft.reel.hold_version };
-      const definite = (r) => r.ok || [400, 401, 404, 409].includes(r.status);
+      const signIn = signInCount;
       let result = await api("api/v1/instagram/hold", { method: "POST", body });
-      // Setting the same hold again is harmless, so resend until the server gives a definite answer:
-      // then any earlier copy still in flight sets the same value.
-      for (let tries = 0; !definite(result) && tries < 3; tries++) {
+      // Resending the same versioned hold is harmless, so resend until the server gives a definite answer.
+      for (let tries = 0; !definite(result) && tries < 3 && signIn === signInCount; tries++) {
         status.textContent = "Couldn't confirm the hold change. Trying again…";
         await new Promise((resolve) => setTimeout(resolve, 2000));
+        if (signIn !== signInCount) break;
         result = await api("api/v1/instagram/hold", { method: "POST", body });
       }
+      if (signIn !== signInCount) { if (result.ok) clearCache(); return; } // an older sign-in's reply
       if (result.status === 401) { showLogin("Your session has ended. Sign in again."); return; }
+      if (!definite(result)) {
+        rememberHold(draft.draft_id, body);
+        box.indeterminate = true;
+        status.textContent = "The hold state is unknown: the server didn't answer. It will be resent when this page reloads.";
+        return;
+      }
+      rememberHold(draft.draft_id, null);
       if (!result.ok) {
         const code = (result.data && result.data.error) || result.status;
-        if (!definite(result)) {
-          box.indeterminate = true;
-          status.textContent = "The hold state is unknown: the server didn't answer. Refresh the page before relying on it.";
-          return;
-        }
         status.textContent = `Could not change the hold. ${DECISION_ERRORS[code] || `(${code})`}`;
-        box.checked = !box.checked;
+        box.indeterminate = false;
+        box.checked = draft.reel.hold;
         box.disabled = false;
         return;
       }
       clearCache();
       render();
-    });
+    }
+    box.addEventListener("change", () => send({ draft_id: draft.draft_id, hold: box.checked, version: draft.reel.hold_version }));
+    const pending = unconfirmedHold(draft.draft_id);
+    if (pending && pending.draft_id === draft.draft_id && typeof pending.hold === "boolean") {
+      box.indeterminate = true;
+      queueMicrotask(() => {
+        status.textContent = "Confirming an earlier hold change…";
+        send(pending);
+      });
+    }
     return el("p", {}, box, " ", el("label", { for: box.id }, "Hold for my approval (otherwise it posts automatically if it scores 70 or more)"));
   }
 
