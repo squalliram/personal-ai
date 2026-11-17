@@ -122,14 +122,14 @@ def _jpeg(image, quality: int) -> bytes:
 
 def prepare(photos: list[bytes]) -> list[tuple[bytes, bytes]]:
     """(slide, thumbnail) JPEGs per photo: 4:5 if the first photo is portrait, else 1:1, centre-cropped."""
-    from PIL import Image, ImageOps
-
     if not 1 <= len(photos) <= MAX_PHOTOS:
         raise PhotoError("photo_count")
     if any(len(data) > MAX_PHOTO_BYTES for data in photos):
         raise PhotoError("photo_too_large")
     if any(kind(data) not in ("jpeg", "png", "heif") for data in photos):
         raise PhotoError("unsupported_photo")
+    from PIL import Image, ImageOps
+
     size, prepared = None, []
     for data in photos:
         image = _decode(data)
