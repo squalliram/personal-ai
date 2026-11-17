@@ -148,7 +148,7 @@ def _posting(env: dict, rows) -> str:
     times = [
         publish.posts_at(r["scheduled_for"], r["created_at"])
         for r in rows
-        if r["scheduled_for"] and publish.will_post(r["status"], r["review_score"])
+        if r["scheduled_for"] and publish.will_post(r["status"], r["review_score"], publish.held(r))
     ]
     if not publish.configured(env):
         return "posting is manual"
@@ -168,13 +168,6 @@ def _insights(client: GraphClient, media: dict) -> dict[str, int]:
         values["total_watch_ms"] = values.pop("ig_reels_video_view_total_time", None)
         return values
     return client.media_insights(media["id"])
-
-
-def _reel_ask(env: dict, row) -> str:
-    when = publish.posts_at(row["scheduled_for"], row["created_at"])
-    if when and publish.configured(env):
-        return f"approve it to post at {when.astimezone(LONDON).strftime('%H:%M')}"
-    return "posting is manual"
 
 
 def _notify_render(env: dict, now: datetime):
@@ -197,23 +190,24 @@ def _notify_daily(conn, env: dict, outcome: str, now: datetime) -> None:
         with conn:
             uploads.add_columns(conn)  # a clip can fill the day before uploads.oldest adds them
         for row in conn.execute(
-            "SELECT u.upload_id, u.note, u.reel, d.kind, d.status, d.review_score, d.scheduled_for, d.created_at "
+            "SELECT u.upload_id, u.note, u.reel AS as_reel, d.kind, d.reel, d.status, d.review_score, d.scheduled_for, d.created_at "
             "FROM uploads u JOIN drafts d ON d.draft_id=u.draft_id WHERE d.created_on=?",
             (today,),
         ).fetchall():
             if row["kind"] == "reel":
-                title = f'Your photos ("{_short(row["note"])}") are now a reel draft: {_reel_ask(env, row)}'
+                title = f'Your photos ("{_short(row["note"])}") are now a reel draft, {_posting(env, [row])}'
             else:
-                unrendered = " (this server can't render reels yet)" if row["reel"] else ""
+                unrendered = " (this server can't render reels yet)" if row["as_reel"] else ""
                 title = f'Your photos ("{_short(row["note"])}") are now an Instagram draft{unrendered}, '
                 title += _posting(env, [row])
             notify("instagram", "ok", title, page, key=f"instagram-upload-draft:{row['upload_id']}", env=env, now=now)
         for row in conn.execute(
-            "SELECT c.clip_id, c.note, d.scheduled_for, d.created_at FROM clips c "
+            "SELECT c.clip_id, c.note, d.kind, d.reel, d.status, d.review_score, d.scheduled_for, d.created_at "
+            "FROM clips c "
             "JOIN drafts d ON d.draft_id=c.draft_id WHERE d.created_on=?",
             (today,),
         ).fetchall():
-            title = f'Your clip ("{_short(row["note"])}") is now a reel draft: {_reel_ask(env, row)}'
+            title = f'Your clip ("{_short(row["note"])}") is now a reel draft, {_posting(env, [row])}'
             notify("instagram", "ok", title, page, key=f"instagram-clip-draft:{row['clip_id']}", env=env, now=now)
     if outcome == "ok":
         rows = conn.execute(

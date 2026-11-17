@@ -222,6 +222,25 @@ def publishing_started(conn: sqlite3.Connection, draft_id: str) -> bool:
     return conn.execute(_LATEST_RUN_STARTED, (draft_id,)).fetchone() is not None
 
 
+def hold_reel(conn: sqlite3.Connection, draft_id: str, hold: bool) -> str:
+    """Hold a pending reel for the owner's approval, or let it auto-post again: ok, not_found or not_pending."""
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT kind, status, reel FROM drafts WHERE draft_id=?", (draft_id,)).fetchone()
+        if row is None or row[0] != "reel":
+            return "not_found"
+        if row[1] != "pending" or publishing_started(conn, draft_id):
+            return "not_pending"
+        try:
+            reel = json.loads(row[2] or "{}")
+        except ValueError:
+            reel = {}
+        reel = reel if isinstance(reel, dict) else {}
+        reel["hold"] = bool(hold)
+        conn.execute("UPDATE drafts SET reel=? WHERE draft_id=?", (json.dumps(reel), draft_id))
+    return "ok"
+
+
 def decide_draft(conn: sqlite3.Connection, draft_id: str, decision: str, decided_at: str) -> bool:
     """Move a pending draft to approved/rejected and remember it. False if it was not pending."""
     if decision not in ("approved", "rejected"):

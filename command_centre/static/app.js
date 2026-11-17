@@ -1712,6 +1712,26 @@
     render();
   }
 
+  function holdToggle(draft, status) {
+    const box = el("input", { type: "checkbox", id: `ig-hold-${draft.draft_id}` });
+    box.checked = draft.reel.hold;
+    box.addEventListener("change", async () => {
+      box.disabled = true;
+      const result = await api("api/v1/instagram/hold", { method: "POST", body: { draft_id: draft.draft_id, hold: box.checked } });
+      if (result.status === 401) { showLogin("Your session has ended. Sign in again."); return; }
+      if (!result.ok) {
+        const code = (result.data && result.data.error) || result.status;
+        status.textContent = `Could not change the hold. ${DECISION_ERRORS[code] || `(${code})`}`;
+        box.checked = !box.checked;
+        box.disabled = false;
+        return;
+      }
+      clearCache();
+      render();
+    });
+    return el("p", {}, box, " ", el("label", { for: box.id }, "Hold for my approval (otherwise it posts automatically if it scores 70 or more)"));
+  }
+
   const slideUrl = (draft, n) => `api/v1/instagram/slide?draft=${encodeURIComponent(draft.draft_id)}&n=${n}`;
 
   function postKit(draft) {
@@ -1738,7 +1758,7 @@
     if (draft.kind === "reel" && draft.reel && draft.reel.render === "failed") return muted(`The reel couldn't be made (${draft.reel.render_error || "unknown error"}), so it won't post. Delete it or send the media again.`);
     if (!auto) return null;
     if (draft.will_post && draft.posts_at) return muted(`Posts to Instagram automatically at ${when(draft.posts_at)} unless you reject it before then.`);
-    if (draft.kind === "reel" && draft.status === "pending") return muted("A reel from your own media only posts once you approve it.");
+    if (draft.kind === "reel" && draft.reel && draft.reel.hold && draft.status === "pending") return muted("Held for your approval: it only posts once you approve it.");
     if (draft.status === "pending") return muted("Scored under 70, so it only posts if you approve it.");
     return null;
   }
@@ -1791,6 +1811,7 @@
       approve.addEventListener("click", () => decide(draft, "approve", [approve, reject], status));
       reject.addEventListener("click", () => decide(draft, "reject", [approve, reject], status));
       children.push(el("div", { class: "ig-actions" }, approve, reject), status);
+      if (draft.kind === "reel" && draft.reel) children.push(holdToggle(draft, status));
     } else if (draft.status === "pending") {
       children.push(muted("Approving or rejecting needs RECOMMEND permission."));
     } else if (draft.status === "approved" && !auto) {
@@ -1954,7 +1975,7 @@
 
   function clipCard(data, canDecide) {
     const renders = Boolean(data.renders && data.renders.clip);
-    const intro = muted(`Add one of your own clips (3-90 seconds, raw or edited) and a short note. The next daily run turns the oldest waiting clip into the day's reel instead of a carousel; ${renders ? "the agents trim it and burn in the on-screen text" : "it posts as filmed"}, and it posts only once you approve the draft. The note is the only source for the place, dish, rating or price.`);
+    const intro = muted(`Add one of your own clips (3-90 seconds, raw or edited) and a short note. The next daily run turns the oldest waiting clip into the day's reel instead of a carousel; ${renders ? "the agents trim it and burn in the on-screen text" : "it posts as filmed"}. Like a carousel it posts automatically if it scores 70 or more, unless you reject it or hold it for your approval. The note is the only source for the place, dish, rating or price.`);
     if (!canDecide) return card("Add a reel clip", intro, muted("Adding clips needs RECOMMEND permission."));
     if (data.state !== "available") return card("Add a reel clip", intro, muted("Not available until the Instagram agent has run on this server."));
     const clip = el("input", { id: "ig-clip", type: "file", name: "clip", accept: "video/mp4,video/quicktime", required: "" });

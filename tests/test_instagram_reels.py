@@ -486,9 +486,28 @@ class ReelPublishTests(Case):
         check = lambda url, size: self.checked.append((url, size))  # noqa: E731
         return publish.tick(self.conn, self.env, self.media, DUE, graph, check=check, sleep=lambda s: None)
 
-    def test_a_reel_needs_approve_even_with_a_high_score(self):
+    def test_a_reel_held_for_approval_waits_for_approve(self):
+        self.assertEqual(storage.hold_reel(self.conn, "b" * 16, True), "ok")
         graph = ReelGraph()
         self.assertEqual(self.tick(graph), "published 0, failed 0")
+        self.assertEqual(graph.posts, [])
+        self.assertEqual(storage.hold_reel(self.conn, "f" * 16, True), "not_found")
+        storage.decide_draft(self.conn, "b" * 16, "approved", MADE.isoformat())
+        self.assertEqual(storage.hold_reel(self.conn, "b" * 16, False), "not_pending")
+        self.assertEqual(self.tick(ReelGraph(statuses=("FINISHED",))), "published 1, failed 0")
+
+    def test_a_passing_reel_auto_posts_once_and_notifies(self):
+        graph = ReelGraph(statuses=("FINISHED",))
+        with patch.object(publish, "notify") as told:
+            self.assertEqual(self.tick(graph), "published 1, failed 0")
+        self.assertEqual(sum(p.endswith("media_publish") for p, _, _ in graph.posts), 1)
+        self.assertEqual(told.call_args.args[1], "ok")
+        self.assertIn("is live", told.call_args.args[2])
+
+    def test_auto_posting_reels_respects_the_kill_switch(self):
+        self.env["INSTAGRAM_AUTO_PUBLISH"] = "0"
+        graph = ReelGraph()
+        self.assertEqual(self.tick(graph), "publish_off")
         self.assertEqual(graph.posts, [])
 
     def test_approved_reel_posts_through_the_reels_api_once(self):
@@ -594,7 +613,7 @@ class ReelCommandCentreTests(Case):
             anonymous.request("POST", "/api/v1/instagram/clips", body={"note": NOTE, "size": 10}).status, 401
         )
 
-    def test_reel_draft_shows_its_script_and_needs_approve(self):
+    def test_reel_draft_shows_its_script_and_auto_posts_unless_held(self):
         draft = drafts.normalise_reel_draft(REEL, 10.0)
         draft.update(draft_id="c" * 16, review_score=95, scheduled_for=SLOT, hashtags=[])
         with self.conn:
@@ -602,9 +621,21 @@ class ReelCommandCentreTests(Case):
         settings = make_settings(self.root, instagram_db=self.db, instagram_media=self.media)
         [shown] = sources.instagram_drafts(settings)["drafts"]
         self.assertEqual(shown["kind"], "reel")
-        self.assertFalse(shown["will_post"])
+        self.assertTrue(shown["will_post"])
+        self.assertFalse(shown["reel"]["hold"])
         self.assertEqual(shown["reel"]["hook"], REEL["hook"])
         self.assertEqual(shown["reel"]["cover_seconds"], 9.9)
+        client = self.client()
+        held = client.request("POST", "/api/v1/instagram/hold", body={"draft_id": "c" * 16, "hold": True})
+        self.assertEqual(held.json(), {"draft_id": "c" * 16, "hold": True})
+        [shown] = sources.instagram_drafts(settings)["drafts"]
+        self.assertFalse(shown["will_post"])
+        self.assertTrue(shown["reel"]["hold"])
+        bad = client.request("POST", "/api/v1/instagram/hold", body={"draft_id": "c" * 16, "hold": "yes"})
+        self.assertEqual(bad.status, 400)
+        self.assertEqual(
+            client.request("POST", "/api/v1/instagram/hold", body={"draft_id": "d" * 16, "hold": True}).status, 404
+        )
 
 
 if __name__ == "__main__":
