@@ -1777,7 +1777,9 @@
     } else if (draft.status === "pending") {
       children.push(muted("Approving or rejecting needs RECOMMEND permission."));
     } else if (draft.status === "approved" && !auto) {
-      children.push(muted("Approved and saved as an example. Post it yourself: download the slides in order and copy the caption."));
+      children.push(muted(draft.kind === "reel"
+        ? "Approved. Post it yourself: share your original clip as a reel, add the on-screen text above in Instagram's editor and copy the caption."
+        : "Approved and saved as an example. Post it yourself: download the slides in order and copy the caption."));
       children.push(postKit(draft));
     } else if (draft.status === "published" && draft.media_id) {
       children.push(muted(`Posted to Instagram (media ${draft.media_id}).`));
