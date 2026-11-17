@@ -120,14 +120,18 @@ def append(conn: sqlite3.Connection, media_dir: Path, clip_id: str, offset: int,
         if have != offset:
             raise ClipError("wrong_offset")
         left = length
-        while left:
-            data = stream.read(min(left, 1024 * 1024))
-            if not data:
-                out.truncate(offset)
-                raise ClipError("invalid_chunk")
-            out.write(data)
-            left -= len(data)
-        out.flush()
+        try:
+            while left:
+                data = stream.read(min(left, 1024 * 1024))
+                if not data:
+                    raise ClipError("invalid_chunk")
+                out.write(data)
+                left -= len(data)
+            out.flush()
+        except BaseException:
+            out.flush()
+            os.ftruncate(out.fileno(), offset)  # a failed chunk leaves nothing behind, so it can be resent
+            raise
         return offset + length
 
 
