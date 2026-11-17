@@ -212,7 +212,7 @@ class ClipQueueTests(Case):
             self.assertEqual(clips.finish(self.conn, self.media, clip_id)["seconds"], 10)
         self.assertEqual(clips.oldest(self.conn)["clip_id"], clip_id)
 
-    def test_rename_failure_returns_stored_facts_only_for_a_waiting_clip(self):
+    def test_a_vanished_file_returns_stored_facts_only_for_a_waiting_clip(self):
         for status in ("waiting", "uploading", "used", "deleted"):
             for error in (FileNotFoundError, PermissionError):
                 with self.subTest(status=status, error=error):
@@ -237,7 +237,10 @@ class ClipQueueTests(Case):
                         def check(p):
                             return {"ext": "mp4", "seconds": 10}, []
 
-                        if status == "waiting":
+                        if error is PermissionError:
+                            with self.assertRaises(PermissionError):  # a storage error, answered as storage_error
+                                clips.finish(self.conn, self.media, clip_id, check=check)
+                        elif status == "waiting":
                             self.assertEqual(clips.finish(self.conn, self.media, clip_id, check=check), stored)
                         else:
                             with self.assertRaises(clips.ClipError) as caught:

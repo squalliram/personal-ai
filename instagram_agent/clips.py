@@ -199,7 +199,7 @@ def _finish(conn: sqlite3.Connection, media_dir: Path, clip_id: str, check) -> d
     final = folder(media_dir, clip_id) / f"clip.{facts['ext']}"
     try:
         part.rename(final)
-    except OSError as exc:
+    except FileNotFoundError as exc:  # deleted meanwhile; any other storage error is raised as is
         done = conn.execute("SELECT facts FROM clips WHERE clip_id=? AND status='waiting'", (clip_id,)).fetchone()
         if done is None or not done["facts"]:
             raise ClipError("not_found") from exc

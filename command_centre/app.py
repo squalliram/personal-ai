@@ -1260,6 +1260,8 @@ class CommandCentreApp:
                 )
                 return 422, {"error": exc.code, "problems": exc.problems}, []
             return _error(404 if exc.code == "not_found" else 409, exc.code)
+        except OSError:
+            return _error(507, "storage_error")
         with self._collect_lock:
             self._collected = None
         self.audit.record(
