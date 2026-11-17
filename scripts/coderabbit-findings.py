@@ -97,7 +97,9 @@ def nested(body: str) -> list[dict]:
             section = value
         elif kind == "file":
             path = value.strip()
-        elif section and (finding := parse(text[value.start() : marks[index + 1][0] if index + 1 < len(marks) else None])):
+        elif section and (
+            finding := parse(text[value.start() : marks[index + 1][0] if index + 1 < len(marks) else None])
+        ):
             found.append({**finding, "kind": section, "path": path, "line": value.group(1)})
     return found
 

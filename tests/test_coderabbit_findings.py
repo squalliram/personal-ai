@@ -117,7 +117,9 @@ class CodeRabbitFindingsTests(unittest.TestCase):
             text,
         )
         other = [{**prs[0], "repo": "someone/else"}]
-        text = findings.render(other, [{**row, "repo": "someone/else"}], datetime(2026, 11, 17, tzinfo=timezone.utc), ("someone/else",))
+        text = findings.render(
+            other, [{**row, "repo": "someone/else"}], datetime(2026, 11, 17, tzinfo=timezone.utc), ("someone/else",)
+        )
         self.assertIn("## someone/else", text)
         self.assertIn("[Keep failed test runs out of the deployment queue (static analysis)]", text)
 
