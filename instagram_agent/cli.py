@@ -194,6 +194,8 @@ def _notify_daily(conn, env: dict, outcome: str, now: datetime) -> None:
     today = now.astimezone(LONDON).date().isoformat()
     page = command_centre_link(env, "instagram")
     if outcome in ("ok", "partial"):
+        with conn:
+            uploads.add_columns(conn)  # a clip can fill the day before uploads.oldest adds them
         for row in conn.execute(
             "SELECT u.upload_id, u.note, u.reel, d.kind, d.status, d.review_score, d.scheduled_for, d.created_at "
             "FROM uploads u JOIN drafts d ON d.draft_id=u.draft_id WHERE d.created_on=?",
