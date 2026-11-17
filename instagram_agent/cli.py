@@ -216,10 +216,10 @@ def make_drafts(conn, env: dict, media_dir: Path, now: datetime | None = None) -
         except GraphAPIError:
             pass  # Draft from yesterday's data rather than miss noon.
     skills = env.get("INSTAGRAM_SKILLS_DIR")
-    rules = drafts.load_rules(Path(skills).expanduser() if skills else None)
-    voice = _read(env.get("INSTAGRAM_VOICE_FILE", "agents/instagram-voice.md"))
     wanted, stored = DAILY_DRAFTS - have, 0
     try:
+        rules = drafts.load_rules(Path(skills).expanduser() if skills else None)
+        voice = _read(env.get("INSTAGRAM_VOICE_FILE", "agents/instagram-voice.md"))
         # The owner's oldest waiting photos come first; the AI carousel only fills what they don't.
         upload = uploads.oldest(conn)
         if upload is not None:

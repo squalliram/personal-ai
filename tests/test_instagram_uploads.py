@@ -384,6 +384,14 @@ class DailyFromUploadTests(Fixture):
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM drafts").fetchone()[0], 0)
         self.assertTrue((self.media / "uploads" / upload_id / "photo-1.jpg").is_file())
 
+    def test_an_unreadable_voice_file_is_a_failed_run_not_a_crash(self):
+        upload_id = self.add_upload()
+        with patch.object(cli, "_read", side_effect=PermissionError("denied")):
+            self.assertEqual(self.tick(PhotoAI([photo_draft()], [[85]])), "failed")
+        run = self.conn.execute("SELECT outcome, error FROM daily_runs").fetchone()
+        self.assertEqual(tuple(run), ("failed", "PermissionError"))
+        self.assertTrue(uploads.is_waiting(self.conn, upload_id))
+
     def test_an_upload_deleted_mid_run_falls_back_to_ai(self):
         upload_id = self.add_upload()
         real = drafts.generate_from_upload
