@@ -151,17 +151,41 @@ def _replay(part: Path, offset: int, stream, length: int, have: int) -> int:
 def finish(conn: sqlite3.Connection, media_dir: Path, clip_id: str, *, check=video.check) -> dict:
     """Check the whole clip; keep it `waiting` and return its facts, or drop it and raise the problems.
 
-    Finishing an already finished clip again (its reply was lost) returns the same facts.
+    Finishing an already finished clip again (its reply was lost) returns the same facts; concurrent
+    finishes of one clip run one at a time.
     """
+    try:
+        fd = os.open(folder(media_dir, clip_id), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError:
+        return _finished(conn, clip_id)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        if _uploading(conn, clip_id) is None:
+            return _finished(conn, clip_id)
+        try:
+            return _finish(conn, media_dir, clip_id, check)
+        except FileNotFoundError:  # deleted meanwhile
+            return _finished(conn, clip_id)
+    finally:
+        os.close(fd)
+
+
+def _finished(conn: sqlite3.Connection, clip_id: str) -> dict:
+    try:
+        done = conn.execute(
+            "SELECT facts FROM clips WHERE clip_id=? AND status IN ('waiting','used')", (clip_id,)
+        ).fetchone()
+    except sqlite3.OperationalError:
+        done = None  # no clips table yet
+    if done is None or not done["facts"]:
+        raise ClipError("not_found")
+    return json.loads(done["facts"])
+
+
+def _finish(conn: sqlite3.Connection, media_dir: Path, clip_id: str, check) -> dict:
     row = _uploading(conn, clip_id)
     if row is None:
-        try:
-            done = conn.execute("SELECT facts FROM clips WHERE clip_id=? AND status='waiting'", (clip_id,)).fetchone()
-        except sqlite3.OperationalError:
-            done = None  # no clips table yet
-        if done is not None and done["facts"]:
-            return json.loads(done["facts"])
-        raise ClipError("not_found")
+        return _finished(conn, clip_id)
     part = folder(media_dir, clip_id) / PART
     for done in (folder(media_dir, clip_id) / f"clip.{ext}" for ext in ("mp4", "mov")):
         if not part.exists() and done.is_file() and not done.is_symlink():

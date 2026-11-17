@@ -197,6 +197,10 @@ class ClipQueueTests(Case):
             first = clips.finish(self.conn, self.media, clip_id)
             self.assertEqual(clips.finish(self.conn, self.media, clip_id), first)
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM clips").fetchone()[0], 1)
+        self.conn.execute("UPDATE clips SET status='used'")
+        self.assertEqual(clips.finish(self.conn, self.media, clip_id), first)  # drafted before the retry
+        with self.assertRaises(clips.ClipError):
+            clips.finish(self.conn, self.media, "0" * 16)
 
     def test_finish_recovers_a_rename_that_was_not_committed(self):
         data = mp4()
