@@ -17,6 +17,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from instagram_agent import learnings as instagram_learnings
 from instagram_agent import publish as instagram_publish
 from octopus_energy.mcp_server import RefreshRequiredError, dispatch
 from octopus_energy.refresh import validate_status
@@ -552,6 +553,7 @@ def instagram_drafts(settings: Settings, limit: int = 30) -> dict:
         "clips": [],
         "runs": [],
         "latest_attempt": None,
+        "learnings": None,
     }
     path = settings.instagram_db
     if path is None or path.is_symlink() or not path.is_file():
@@ -580,6 +582,7 @@ def instagram_drafts(settings: Settings, limit: int = 30) -> dict:
                 "SELECT run_on,started_at,outcome,drafts,error FROM daily_runs WHERE outcome!='skipped' "
                 "ORDER BY id DESC LIMIT 1"
             ).fetchone()
+            learned = instagram_learnings.summary(conn)
     except (OSError, sqlite3.Error):
         result["state"] = "unavailable"
         return result
@@ -622,6 +625,7 @@ def instagram_drafts(settings: Settings, limit: int = 30) -> dict:
     result["auto_publish"] = publishing["on"]
     result["runs"] = [dict(run) for run in runs]
     result["latest_attempt"] = dict(attempt) if attempt else None
+    result["learnings"] = learned
     result["state"] = "available"
     return result
 
