@@ -125,6 +125,13 @@ def _sample_table(stbl: bytes, track: dict) -> None:
 
 def read(path: Path) -> tuple[dict, list[str]]:
     """What the headers say about the clip, and every limit it breaks."""
+    try:
+        return _read(path)
+    except (IndexError, struct.error, ValueError, ZeroDivisionError):
+        return {"bytes": path.stat().st_size, "ext": "mp4"}, ["its headers are damaged; export it again"]
+
+
+def _read(path: Path) -> tuple[dict, list[str]]:
     size = path.stat().st_size
     boxes, moov = _top_level(path)
     kinds = [kind for kind, _, _ in boxes]
