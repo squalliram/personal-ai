@@ -168,18 +168,21 @@ def _ken_burns(index: int, seconds: float) -> str:
     )
 
 
-def _audio(source_audio: str | None, track: int | None, mix: str, seconds: float) -> tuple[str, str | None]:
+def _audio(
+    source_audio: str | None, track: int | None, mix: str, seconds: float, loudnorm: bool = True
+) -> tuple[str, str | None]:
     """The audio filter chain and its output label, or ('', None) for silence."""
     fade = max(seconds - 1.5, 0)
     tail = "aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo"
+    level = f"{LOUDNESS}," if loudnorm else ""
     if track is not None:
         song = f"[{track}:a]atrim=0:{seconds},asetpts=N/SR/TB,{tail},afade=t=in:d=0.5,afade=t=out:st={fade}:d=1.5"
         if source_audio and mix == "under":
             return (
                 f"[{source_audio}]{tail}[orig];{song},volume={MUSIC_UNDER}[song];"
-                f"[orig][song]amix=inputs=2:duration=first:dropout_transition=0,{LOUDNESS},{tail}[aout]"
+                f"[orig][song]amix=inputs=2:duration=first:dropout_transition=0,{level}{tail}[aout]"
             ), "aout"
-        return f"{song},{LOUDNESS},{tail}[aout]", "aout"
+        return f"{song},{level}{tail}[aout]", "aout"
     if source_audio:
         return f"[{source_audio}]{tail}[aout]", "aout"
     return "", None
@@ -223,7 +226,8 @@ def command(draft_dir: Path, reel: dict, work: Path, caps: dict, track: Path | N
     if track is not None:
         inputs += ["-stream_loop", "-1", "-i", str(track)]
         track_index = count
-    chain, audio = _audio(source_audio, track_index, (reel.get("music") or {}).get("mix", "under"), seconds)
+    mix = (reel.get("music") or {}).get("mix", "under")
+    chain, audio = _audio(source_audio, track_index, mix, seconds, bool(caps.get("loudnorm")))
     if chain:
         graph.append(chain)
     argv = [caps["ffmpeg"], "-hide_banner", "-loglevel", "error", "-nostdin", "-y", *inputs]

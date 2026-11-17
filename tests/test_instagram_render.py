@@ -123,6 +123,12 @@ class CommandTests(unittest.TestCase):
         self.assertNotIn("[0:a]", graph)
         self.assertNotIn("amix", graph)
 
+    def test_music_skips_loudnorm_when_ffmpeg_lacks_it(self):
+        argv, _ = render.command(self.dir, photo_reel(), self.work, {**CAPS, "loudnorm": False}, self.dir / "t.mp3")
+        graph = argv[argv.index("-filter_complex") + 1]
+        self.assertNotIn("loudnorm", graph)
+        self.assertIn("afade", graph)
+
     def test_unsafe_paths_and_missing_hook_beat(self):
         with self.assertRaises(render.RenderError):
             render.command(self.dir / "it's", photo_reel(), self.dir / "it's", CAPS, None)
@@ -245,6 +251,10 @@ class ReelDraftRenderTests(Case):
             as_reel=True,
         )
         self.assertNotIn("music", draft["reel"])
+        odd = drafts.generate_from_upload(
+            self.conn, ReelAI({**REEL, "music_track": ["x"]}), NOW, uploads.oldest(self.conn), self.media, as_reel=True
+        )
+        self.assertNotIn("music", odd["reel"])
 
     def test_a_rendered_clip_keeps_its_source_and_gets_the_agents_trim(self):
         clip_id = self.waiting_clip()
