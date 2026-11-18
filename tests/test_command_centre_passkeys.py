@@ -298,7 +298,9 @@ class PasskeyApiTests(unittest.TestCase):
         self.assertEqual(response.status, 409)
         self.assertEqual(recovery.count(), 0)
         with closing(sqlite3.connect(recovery.path)) as conn:
-            self.assertIsNone(conn.execute("SELECT 1 FROM passkey_challenges WHERE purpose LIKE 'register:%'").fetchone())
+            self.assertIsNone(
+                conn.execute("SELECT 1 FROM passkey_challenges WHERE purpose LIKE 'register:%'").fetchone()
+            )
 
     def test_recovery_before_options_handler_rejects_cached_session(self):
         generation = self.app.passkeys.generation
