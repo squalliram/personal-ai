@@ -50,8 +50,28 @@ class ServerSmokeTests(unittest.TestCase):
     def test_server_settings_isolate_developer_state(self):
         root = Path(self.directory.name)
         # Simulate developer configuration pointing every resource outside the test.
+        developer_token = secrets.token_hex(32)
+        developer_env = {
+            "COMMAND_CENTRE_ENERGY_DB": "/developer-state/energy.sqlite3",
+            "COMMAND_CENTRE_BRIEFING_DB": "/developer-state/briefing.sqlite3",
+            "COMMAND_CENTRE_BRIEFING_REPORTS": "/developer-state/daily",
+            "COMMAND_CENTRE_ENERGY_STATUS": "/developer-state/status.json",
+            "COMMAND_CENTRE_AUDIT_DB": "/developer-state/audit.sqlite3",
+            "COMMAND_CENTRE_PASSKEYS_DB": "/developer-state/passkeys.sqlite3",
+            "COMMAND_CENTRE_SESSIONS_DB": "/developer-state/sessions.sqlite3",
+            "COMMAND_CENTRE_NOTIFICATIONS_DB": "/developer-state/notifications.sqlite3",
+            "COMMAND_CENTRE_INSTAGRAM_DB": "/developer-state/instagram.sqlite3",
+            "COMMAND_CENTRE_INSTAGRAM_MEDIA": "/developer-state/media",
+            "COMMAND_CENTRE_ENERGY_REFRESH_DIR": "/developer-state/refresh",
+            "COMMAND_CENTRE_OPENAI_API_KEY": "developer-openai-key",
+            "COMMAND_CENTRE_CLOUDFLARE_ACCOUNT_ID": "developer-account-id",
+            "COMMAND_CENTRE_CLOUDFLARE_API_TOKEN": "developer-api-token",
+            "COMMAND_CENTRE_NOTIFY_INGEST_TOKEN": developer_token,
+            "COMMAND_CENTRE_TELEGRAM_BOT_TOKEN": "developer-bot-token",
+            "COMMAND_CENTRE_TELEGRAM_CHAT_ID": "developer-chat-id",
+        }
         (root / ".env").write_text(
-            "\n".join(f"{key}=/developer-state/{key}" for key in self.env if key.startswith("COMMAND_CENTRE_")),
+            "\n".join(f"{key}={value}" for key, value in developer_env.items()),
             encoding="utf-8",
         )
         settings = load_settings(root=root, environ=self.env)
@@ -69,6 +89,9 @@ class ServerSmokeTests(unittest.TestCase):
         ):
             with self.subTest(integration=name):
                 self.assertIsNone(getattr(settings, name))
+        env = self.env.copy()
+        del env["COMMAND_CENTRE_NOTIFY_INGEST_TOKEN"]
+        self.assertEqual(load_settings(root=root, environ=env).notify_ingest_token, developer_token)
 
     def run_cli(self, *args, input_text=None, env=None):
         return subprocess.run(
@@ -129,8 +152,9 @@ class ServerSmokeTests(unittest.TestCase):
         self.assertEqual(response.status, 200)
         self.assertEqual(request("GET", "/api/v1/overview", headers={"Cookie": cookie})[0].status, 401)
         process.terminate()
-        _, stderr = process.communicate(timeout=10)
-        self.assertNotIn(self.password, stderr)
+        stdout, stderr = process.communicate(timeout=10)
+        for output in (line, stdout, stderr):
+            self.assertFalse(self.password in output, "Generated password leaked in server output")
         self.assertNotIn(cookie.split("=", 1)[1], stderr)
         self.assertNotIn("Traceback", stderr)
 
