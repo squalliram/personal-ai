@@ -505,6 +505,9 @@ class ReelPublishTests(Case):
         self.assertEqual(storage.hold_reel(self.conn, "b" * 16, False, version=seen), "hold_changed")
         self.assertEqual(storage.hold_reel(self.conn, "b" * 16, True, version=seen), "unchanged")  # same value: no-op
         self.assertEqual(version(), seen + 2)
+        # Asking for the hold already stored, even with the current version, changes nothing.
+        self.assertEqual(storage.hold_reel(self.conn, "b" * 16, True, version=seen + 2), "unchanged")
+        self.assertEqual(version(), seen + 2)
         storage.decide_draft(self.conn, "b" * 16, "approved", MADE.isoformat())
         self.assertEqual(storage.hold_reel(self.conn, "b" * 16, False), "not_pending")
         self.assertEqual(self.tick(ReelGraph(statuses=("FINISHED",))), "published 1, failed 0")

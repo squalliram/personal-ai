@@ -242,8 +242,10 @@ def hold_reel(conn: sqlite3.Connection, draft_id: str, hold: bool, version: int 
         current = reel.get("hold") is True
         stored = reel.get("hold_version")
         stored = stored if isinstance(stored, int) and not isinstance(stored, bool) else 0
+        if current == hold:
+            return "unchanged"
         if version is not None and version != stored:
-            return "unchanged" if current == hold else "hold_changed"
+            return "hold_changed"
         reel["hold"] = bool(hold)
         reel["hold_version"] = stored + 1
         conn.execute("UPDATE drafts SET reel=? WHERE draft_id=?", (json.dumps(reel), draft_id))
