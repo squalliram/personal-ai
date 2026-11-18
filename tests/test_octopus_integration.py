@@ -4,6 +4,7 @@ import json
 import os
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from email.message import Message
 from pathlib import Path
 from unittest.mock import patch
@@ -437,6 +438,71 @@ class IntegrationTests(unittest.TestCase):
                 self.assertEqual(conn.execute("SELECT total_cost_gbp FROM daily_costs").fetchone()[0], 0.6)
                 self.assertEqual(conn.execute("SELECT status FROM sync_history").fetchone()[0], expected)
                 conn.close()
+
+    def test_retired_meter_without_readings_does_not_block_the_active_meter(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "energy.sqlite3"
+            meters = [
+                Meter("electricity", "point", "old-serial", None, None, None),
+                Meter("electricity", "point", "new-serial", None, None, None),
+            ]
+            reading = {
+                "interval_start": "2026-11-01T00:00:00Z",
+                "interval_end": "2026-11-01T00:30:00Z",
+                "consumption": 1,
+            }
+            with patch("octopus_energy.cli.OctopusClient") as client:
+                client.return_value.meters.return_value = meters
+                client.return_value.consumption.side_effect = [[], [reading]]
+                client.return_value.tariff_rates.return_value = []
+                result = sync(database, "account", "key", 400)
+            self.assertEqual(result["status"], "success")
+            self.assertEqual(result["empty_meters"], 0)
+            conn = connect(database)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM consumption").fetchone()[0], 1)
+            conn.close()
+
+    def test_rates_are_fetched_from_the_consumption_catch_up_start(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "energy.sqlite3"
+            watermark = datetime.now(timezone.utc) - timedelta(days=30)
+            conn = connect(database)
+            meter_id = upsert_meter(
+                conn,
+                fuel="electricity",
+                point_id="point",
+                serial="serial",
+                tariff_code=None,
+                valid_from=None,
+                valid_to=None,
+                synced_at="old-sync",
+            )
+            upsert_consumption(
+                conn,
+                meter_id,
+                {
+                    "interval_start": watermark.isoformat().replace("+00:00", "Z"),
+                    "interval_end": (watermark + timedelta(minutes=30)).isoformat().replace("+00:00", "Z"),
+                    "consumption": 1,
+                },
+            )
+            conn.commit()
+            conn.close()
+            reading = {
+                "interval_start": (watermark + timedelta(days=1)).isoformat().replace("+00:00", "Z"),
+                "interval_end": (watermark + timedelta(days=1, minutes=30)).isoformat().replace("+00:00", "Z"),
+                "consumption": 1,
+            }
+            with patch("octopus_energy.cli.OctopusClient") as client:
+                client.return_value.meters.return_value = [Meter("electricity", "point", "serial", None, None, None)]
+                client.return_value.consumption.return_value = [reading]
+                client.return_value.tariff_rates.return_value = []
+                self.assertEqual(sync(database, "account", "key", 7)["status"], "success")
+            resume = client.return_value.consumption.call_args.kwargs["period_from"]
+            for call in client.return_value.tariff_rates.call_args_list:
+                rates_from = datetime.fromisoformat(call.kwargs["period_from"].replace("Z", "+00:00"))
+                self.assertLessEqual(rates_from, datetime.fromisoformat(resume.replace("Z", "+00:00")))
+            self.assertEqual(client.return_value.tariff_rates.call_count, 2)
 
     def test_incomplete_cli_sync_does_not_regenerate_outputs_or_claim_success(self):
         for status in ("no_data", "partial"):

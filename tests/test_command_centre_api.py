@@ -1,5 +1,6 @@
 import json
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -181,6 +182,14 @@ class SessionLifecycleTests(ApiTestCase):
         self.client.cookies = cookie  # a replayed cookie must stay dead
         self.assertEqual(self.client.request("GET", "/api/v1/overview").status, 401)
 
+    def test_repeated_cross_origin_rejections_do_not_grow_the_audit_log_without_bound(self):
+        for _ in range(50):
+            response = self.client.request("POST", "/api/v1/session", body={}, origin="http://evil.example")
+            self.assertEqual(response.status, 403)
+        rejected = [e for e in self.app.audit.recent(limit=200) if e["outcome"] == "cross_origin_rejected"]
+        self.assertGreater(len(rejected), 0)
+        self.assertLessEqual(len(rejected), 10)
+
     def test_cross_origin_state_change_is_refused_even_with_csrf_token(self):
         self.client.login()
         response = self.client.request(
@@ -245,6 +254,17 @@ class PermissionTests(ApiTestCase):
         self.assertEqual(response.json(), {"error": "insufficient_permission"})
         self.assertIn(("request", "permission_denied"), [(e["action"], e["outcome"]) for e in app.audit.recent()])
         self.assertEqual(client.request("GET", "/api/v1/overview").status, 200)
+
+    def test_lowered_ceiling_applies_to_existing_sessions(self):
+        self.add_recommend_route(self.app)
+        self.assertEqual(self.client.login().json()["permission"], "recommend")
+        headers = {"X-CSRF-Token": self.client.csrf}
+        self.assertEqual(self.client.request("POST", "/api/v1/test-draft", headers=headers).status, 200)
+        self.app.settings = replace(self.app.settings, permission_ceiling=Permission.READ)
+        response = self.client.request("POST", "/api/v1/test-draft", headers=headers)
+        self.assertEqual(response.status, 403)
+        self.assertEqual(response.json(), {"error": "insufficient_permission"})
+        self.assertEqual(self.client.request("GET", "/api/v1/session").json()["permission"], "read")
 
     def test_recommend_ceiling_can_use_recommend_routes_with_csrf(self):
         self.add_recommend_route(self.app)

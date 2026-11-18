@@ -63,24 +63,44 @@ class _Rates:
             cursor = boundary
 
 
-def _previous_day(day: str) -> str:
-    return (datetime.fromisoformat(day) - timedelta(days=1)).date().isoformat()
+def _london_midnight(day) -> datetime:
+    return datetime.combine(day, datetime.min.time(), LONDON).astimezone(timezone.utc)
 
 
-def _covers_day(day: str, readings: list, earlier: list) -> bool:
-    """Every supply point read that day has readings spanning the whole London day (23, 24 or 25 hours).
+def _split_by_london_day(row) -> list[dict]:
+    """Allocate a reading across the London days it spans, in proportion to time.
 
-    `earlier` holds the previous day's readings, so one running past midnight covers this day's start.
+    Each segment keeps the original interval so tariff changes inside the reading are still detected.
     """
-    start = datetime.fromisoformat(day).replace(tzinfo=LONDON).astimezone(timezone.utc)
-    end = (datetime.fromisoformat(day) + timedelta(days=1)).replace(tzinfo=LONDON).astimezone(timezone.utc)
+    start, end = _instant(row["interval_start"]), _instant(row["interval_end"])
+    duration = (end - start).total_seconds()
+    base = {"meter_id": row["meter_id"], "point_id": row["point_id"], "original": (start, end)}
+    if duration <= 0:
+        return [
+            {
+                **base,
+                "day": start.astimezone(LONDON).date().isoformat(),
+                "span": (start, end),
+                "kwh": row["consumption_kwh"],
+            }
+        ]
+    segments, cursor = [], start
+    while cursor < end:
+        day = cursor.astimezone(LONDON).date()
+        stop = min(end, _london_midnight(day + timedelta(days=1)))
+        share = row["consumption_kwh"] * (stop - cursor).total_seconds() / duration
+        segments.append({**base, "day": day.isoformat(), "span": (cursor, stop), "kwh": share})
+        cursor = stop
+    return segments
+
+
+def _covers_day(day: str, readings: list) -> bool:
+    """Every supply point read that day has segments spanning the whole London day (23, 24 or 25 hours)."""
+    date = datetime.fromisoformat(day).date()
+    start, end = _london_midnight(date), _london_midnight(date + timedelta(days=1))
     points: dict[str, list] = defaultdict(list)
-    for row in readings:
-        points[row["point_id"]].append((_instant(row["interval_start"]), _instant(row["interval_end"])))
-    for row in earlier:
-        right = _instant(row["interval_end"])
-        if right > start and row["point_id"] in points:
-            points[row["point_id"]].append((_instant(row["interval_start"]), right))
+    for segment in readings:
+        points[segment["point_id"]].append(segment["span"])
     for spans in points.values():
         cursor = start
         for left, right in sorted(spans):
@@ -122,28 +142,24 @@ def _recompute_daily_costs(conn: sqlite3.Connection, gas_units: str) -> None:
     rates = _Rates(conn)
     groups: dict[tuple[str, str], list] = defaultdict(list)
     for row in rows:
-        groups[_local_date(row["interval_start"]), row["fuel"]].append(row)
+        for segment in _split_by_london_day(row):
+            groups[segment["day"], row["fuel"]].append(segment)
     for (day, fuel), readings in groups.items():
-        kwh = sum(row["consumption_kwh"] for row in readings) if fuel == "electricity" or gas_units == "kwh" else None
+        kwh = sum(seg["kwh"] for seg in readings) if fuel == "electricity" or gas_units == "kwh" else None
         unit_cost = 0.0 if kwh is not None else None
         points: dict[str, list] = defaultdict(list)
-        for row in readings:
-            points[row["point_id"]].append(row)
+        for seg in readings:
+            points[seg["point_id"]].append(seg)
             if unit_cost is not None:
-                rate = rates.value(
-                    row["meter_id"],
-                    "standard-unit-rates",
-                    _instant(row["interval_start"]),
-                    _instant(row["interval_end"]),
-                )
-                unit_cost = unit_cost + row["consumption_kwh"] * rate / 100 if rate is not None else None
+                rate = rates.value(seg["meter_id"], "standard-unit-rates", *seg["original"])
+                unit_cost = unit_cost + seg["kwh"] * rate / 100 if rate is not None else None
         standing = 0.0
-        midnight = datetime.fromisoformat(day).replace(tzinfo=LONDON).astimezone(timezone.utc)
+        midnight = _london_midnight(datetime.fromisoformat(day).date())
         for point_readings in points.values():
             # A replacement meter does not introduce another standing charge.
             # Agreement dates are not meter installation dates. Only supplies
             # evidenced by readings for this day participate in this charge.
-            first = min(point_readings, key=lambda row: _instant(row["interval_start"]))
+            first = min(point_readings, key=lambda seg: seg["span"][0])
             rate = rates.value(first["meter_id"], "standing-charges", midnight)
             if rate is None:
                 standing = None
@@ -153,15 +169,7 @@ def _recompute_daily_costs(conn: sqlite3.Connection, gas_units: str) -> None:
         conn.execute(
             "INSERT INTO daily_costs(date,fuel,consumption_kwh,unit_cost_gbp,standing_charge_gbp,total_cost_gbp,complete)"
             " VALUES(?,?,?,?,?,?,?)",
-            (
-                day,
-                fuel,
-                kwh,
-                unit_cost,
-                standing,
-                total,
-                int(_covers_day(day, readings, groups.get((_previous_day(day), fuel), []))),
-            ),
+            (day, fuel, kwh, unit_cost, standing, total, int(_covers_day(day, readings))),
         )
 
 

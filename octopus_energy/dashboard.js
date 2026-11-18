@@ -129,9 +129,14 @@ function validateData(data) {
             !(row.cost === null || Number.isFinite(row.cost))) throw new Error('Invalid latest hour');
         previous = Date.parse(row.end);
       }
-      const clock = value => new Intl.DateTimeFormat('en-GB', {timeZone: LONDON_TIMEZONE, hour: '2-digit', minute: '2-digit', hourCycle: 'h23'}).format(new Date(value));
+      const midnight = value => {
+        const instant = new Date(value);
+        const clock = new Intl.DateTimeFormat('en-GB', {timeZone: LONDON_TIMEZONE, hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23'}).format(instant);
+        const fraction = value.match(/\.(\d+)/);
+        return clock === '00:00:00' && (!fraction || /^0+$/.test(fraction[1]));
+      };
       const next = new Date(day.date + 'T00:00:00Z'); next.setUTCDate(next.getUTCDate() + 1);
-      if (clock(day.hours[0].start) !== '00:00' || clock(day.hours.at(-1).end) !== '00:00' ||
+      if (!midnight(day.hours[0].start) || !midnight(day.hours.at(-1).end) ||
           londonDate(new Date(day.hours.at(-1).end)) !== next.toISOString().slice(0, 10)) throw new Error('Incomplete latest day');
     }
   }

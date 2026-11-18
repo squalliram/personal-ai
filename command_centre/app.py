@@ -269,6 +269,8 @@ class CommandCentreApp:
         self.assistant_limiter = RateLimiter(30, 60 * 60, clock=monotonic)
         self.passkey_options_limiter = RateLimiter(20, 15 * 60, clock=monotonic)
         self.ingest_limiter = RateLimiter(30, 10 * 60, clock=monotonic)
+        # Bounds audit rows written for rejected cross-origin requests; the 403 itself is never limited.
+        self.cross_origin_audit_limiter = RateLimiter(10, 60, clock=monotonic)
         if settings.sessions_db:
             self.login_per_client = SqliteRateLimiter(settings.sessions_db, "login_client", 5, 900, clock=clock)
             self.login_global = SqliteRateLimiter(settings.sessions_db, "login_global", 20, 900, clock=clock)
@@ -410,9 +412,13 @@ class CommandCentreApp:
             return route.handler(Request(environ, method, path, None, None, client))
         token = self._cookie_token(environ)
         session = self.sessions.get(token)
+        if session is not None and session.permission > self.settings.permission_ceiling:
+            # A lowered ceiling must apply to sessions stored before the change.
+            session.permission = self.settings.permission_ceiling
         actor = "owner" if session else "anonymous"
         if method not in ("GET", "HEAD") and not self._same_origin(environ, host):
-            self.audit.record("request", "cross_origin_rejected", actor=actor, path=path, client=client)
+            if self.cross_origin_audit_limiter.hit(client):
+                self.audit.record("request", "cross_origin_rejected", actor=actor, path=path, client=client)
             return _error(403, "cross_origin_rejected")
         if route.permission is not None:
             if session is None:

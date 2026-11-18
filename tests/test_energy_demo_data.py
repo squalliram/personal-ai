@@ -75,7 +75,7 @@ class EnergyDemoDataTests(unittest.TestCase):
         self.assertTrue(json.loads(stdout.getvalue())["synthetic"])
         connect.assert_not_called()
         create.assert_not_called()
-        with sqlite3.connect(database) as conn:
+        with contextlib.closing(sqlite3.connect(database)) as conn, conn:
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM daily_costs").fetchone()[0], 800)
             self.assertEqual(conn.execute("SELECT COUNT(DISTINCT tariff_code) FROM meters").fetchone()[0], 2)
             self.assertEqual(
@@ -122,7 +122,7 @@ class EnergyDemoDataTests(unittest.TestCase):
             self.assertEqual(self.snapshot(database), initial)
             DEMO.generate_demo(database, self.root / "site", seed=92, force=True)
             self.assertNotEqual(self.snapshot(database), initial)
-        with sqlite3.connect(database) as conn:
+        with contextlib.closing(sqlite3.connect(database)) as conn, conn:
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM daily_costs").fetchone()[0], 800)
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM meters").fetchone()[0], 2)
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM sync_history").fetchone()[0], 1)
@@ -138,7 +138,7 @@ class EnergyDemoDataTests(unittest.TestCase):
 
     def test_existing_demo_requires_explicit_force(self):
         database = self.root / "existing.sqlite3"
-        with sqlite3.connect(database) as conn:
+        with contextlib.closing(sqlite3.connect(database)) as conn, conn:
             conn.execute("CREATE TABLE energy_settings (name TEXT PRIMARY KEY,value TEXT NOT NULL)")
             conn.execute("INSERT INTO energy_settings VALUES('synthetic_demo',?)", (DEMO.DEMO_MARKER,))
         before = database.read_bytes()

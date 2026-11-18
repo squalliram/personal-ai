@@ -44,7 +44,7 @@ def rank_tasks(tasks: list[dict], today: date) -> list[dict]:
         copy = dict(task)
         copy["_score"] = urgency * 10 + priority.get(str(task.get("priority", "")).lower(), 0)
         ranked.append(copy)
-    return sorted(ranked, key=lambda task: (-task["_score"], task.get("title", "")))
+    return sorted(ranked, key=lambda task: (-task["_score"], task.get("title") or ""))
 
 
 def render(report_date: date, generated_at: datetime, events: list[dict], tasks: list[dict], errors: list[str]) -> str:
@@ -68,11 +68,11 @@ def render(report_date: date, generated_at: datetime, events: list[dict], tasks:
             time = when.strftime("%a %H:%M") if when else "All day / time unavailable"
             location = f" — {event['location']}" if event.get("location") else ""
             link = f" ([source]({event['url']}))" if event.get("url") else ""
-            lines.append(f"- {time}: {event.get('title', 'Untitled event')}{location}{link}")
+            lines.append(f"- {time}: {event.get('title') or 'Untitled event'}{location}{link}")
     else:
         lines.append("- No calendar events retrieved.")
     lines += ["", "## Overlapping commitments"]
-    lines += [f"- {a.get('title', 'Untitled')} overlaps {b.get('title', 'Untitled')}" for a, b in overlaps] or [
+    lines += [f"- {a.get('title') or 'Untitled'} overlaps {b.get('title') or 'Untitled'}" for a, b in overlaps] or [
         "- None detected."
     ]
     lines += ["", "## Outstanding work (source data)"]
@@ -80,11 +80,11 @@ def render(report_date: date, generated_at: datetime, events: list[dict], tasks:
         for task in ranked:
             deadline = f" — due {task['due']}" if task.get("due") else ""
             link = f" ([source]({task['url']}))" if task.get("url") else ""
-            lines.append(f"- {task.get('title', 'Untitled task')}{deadline}{link}")
+            lines.append(f"- {task.get('title') or 'Untitled task'}{deadline}{link}")
     else:
         lines.append("- No tasks retrieved.")
     lines += ["", "## AI-recommended priorities", "These are suggestions, not commitments."]
-    lines += [f"{i}. {task.get('title', 'Untitled task')}" for i, task in enumerate(ranked[:3], 1)] or [
+    lines += [f"{i}. {task.get('title') or 'Untitled task'}" for i, task in enumerate(ranked[:3], 1)] or [
         "- No recommendation possible: no tasks retrieved."
     ]
     if errors:

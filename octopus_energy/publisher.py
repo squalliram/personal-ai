@@ -3,15 +3,20 @@
 import argparse
 import fcntl
 import json
+import math
 import os
+import re
 import shlex
 import shutil
 import signal
 import stat
 import sys
 import tempfile
+import threading
 from contextlib import contextmanager
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from .refresh import validate_status as validate_public_status
 
@@ -43,6 +48,134 @@ def validate_status(body):
         raise ValueError("Status exceeds its size limit")
     value = json.loads(body, parse_constant=_invalid_number, object_pairs_hook=_unique_object)
     return validate_public_status(value)
+
+
+def _number(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def _nullable_number(row, key):
+    return key in row and (row[key] is None or _number(row[key]))
+
+
+def _valid_date(value):
+    try:
+        return isinstance(value, str) and date.fromisoformat(value).isoformat() == value
+    except ValueError:
+        return False
+
+
+def _valid_instant(value):
+    if (
+        not isinstance(value, str)
+        or not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})", value, re.ASCII)
+        or not _valid_date(value[:10])
+        or int(value[11:13]) >= 24
+        or int(value[14:16]) >= 60
+        or int(value[17:19]) >= 60
+        or (value[-1] != "Z" and (int(value[-5:-3]) >= 24 or int(value[-2:]) >= 60))
+    ):
+        return False
+    try:
+        instant = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (AttributeError, ValueError):
+        return False
+    return instant.utcoffset() is not None
+
+
+def validate_dashboard_data(data):
+    """Mirror the browser's validateData so a snapshot it would reject never replaces a good one."""
+    fuels = ("electricity", "gas")
+    if (
+        not isinstance(data, dict)
+        or not _valid_instant(data.get("generated_at"))
+        or not isinstance(data.get("daily"), list)
+        or not isinstance(data.get("hourly"), list)
+    ):
+        raise ValueError("Invalid dashboard JSON")
+    seen = set()
+    for row in data["daily"]:
+        if (
+            not isinstance(row, dict)
+            or row.get("fuel") not in fuels
+            or not _valid_date(row.get("date"))
+            or not _nullable_number(row, "kwh")
+            or not _nullable_number(row, "cost")
+            or (row["fuel"], row["date"]) in seen
+        ):
+            raise ValueError("Invalid dashboard daily data")
+        seen.add((row["fuel"], row["date"]))
+        if "cost_status" in row and row["cost_status"] not in ("complete", "incomplete"):
+            raise ValueError("Invalid dashboard cost status")
+        reason = row.get("cost_reason")
+        if reason is not None and not isinstance(reason, str):
+            if not isinstance(reason, list) or not all(isinstance(item, str) for item in reason):
+                raise ValueError("Invalid dashboard cost reason")
+    for row in data["hourly"]:
+        hour = row.get("hour") if isinstance(row, dict) else None
+        if (
+            not isinstance(row, dict)
+            or row.get("fuel") not in fuels
+            or not isinstance(hour, int)
+            or isinstance(hour, bool)
+            or not 0 <= hour <= 23
+            or not _number(row.get("kwh"))
+        ):
+            raise ValueError("Invalid dashboard hourly data")
+    if "latest_day" in data:
+        latest = data["latest_day"]
+        if not isinstance(latest, dict):
+            raise ValueError("Invalid dashboard latest day")
+        for fuel in fuels:
+            day = latest.get(fuel)
+            if day is None:
+                continue
+            if (
+                not isinstance(day, dict)
+                or not _valid_date(day.get("date"))
+                or day.get("complete") is not True
+                or day.get("cost_basis") != "usage_excludes_standing_charge"
+                or not isinstance(day.get("hours"), list)
+                or len(day["hours"]) not in (23, 24, 25)
+            ):
+                raise ValueError("Invalid dashboard latest day")
+            london = ZoneInfo("Europe/London")
+            day_date = date.fromisoformat(day["date"])
+            generated = datetime.fromisoformat(data["generated_at"].replace("Z", "+00:00"))
+            if day_date >= generated.astimezone(london).date():
+                raise ValueError("Invalid dashboard latest day")
+            previous = None
+            for hour in day["hours"]:
+                if (
+                    not isinstance(hour, dict)
+                    or not _valid_instant(hour.get("start"))
+                    or not _valid_instant(hour.get("end"))
+                    or not _number(hour.get("kwh"))
+                    or not _nullable_number(hour, "cost")
+                ):
+                    raise ValueError("Invalid dashboard latest hour")
+                start = datetime.fromisoformat(hour["start"].replace("Z", "+00:00")).astimezone(timezone.utc)
+                end = datetime.fromisoformat(hour["end"].replace("Z", "+00:00")).astimezone(timezone.utc)
+                if (
+                    end - start != timedelta(hours=1)
+                    or (previous is not None and start != previous)
+                    or start.astimezone(london).date() != day_date
+                ):
+                    raise ValueError("Invalid dashboard latest hour")
+                previous = end
+            first = datetime.fromisoformat(day["hours"][0]["start"].replace("Z", "+00:00")).astimezone(london)
+            last = previous.astimezone(london)
+            if (
+                any((first.hour, first.minute, first.second, first.microsecond))
+                or any((last.hour, last.minute, last.second, last.microsecond))
+                or any(
+                    re.search(r"[.,]\d*[1-9]", value[19:])
+                    for value in (day["hours"][0]["start"], day["hours"][-1]["end"])
+                )
+                or last.date() != day_date + timedelta(days=1)
+            ):
+                raise ValueError("Incomplete dashboard latest day")
+    return data
 
 
 def _read_regular(path, limit=None):
@@ -102,6 +235,26 @@ def _publication_lock(private):
         yield
 
 
+@contextmanager
+def _termination_blocked():
+    """Hold SIGTERM and SIGINT until the block ends, then drop them.
+
+    Used for rollback only: the transaction is already failing, so a termination that
+    arrives meanwhile must not cut recovery short or replace its report.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    previous = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM, signal.SIGINT})
+    try:
+        yield
+    finally:
+        try:
+            signal.pthread_sigmask(signal.SIG_SETMASK, previous)
+        except InterruptedError:
+            pass
+
+
 def publish(source, target, app, *, status_only=False):
     """Stage everything first, publish status last, and roll back failed swaps."""
     source, target = Path(source), Path(target)
@@ -125,8 +278,7 @@ def publish(source, target, app, *, status_only=False):
                 if php.count(PLACEHOLDER) != 1:
                     raise ValueError("Refresh PHP needs exactly one directory placeholder")
                 bodies["refresh.php"] = php.replace(PLACEHOLDER, str(private).encode("utf-8").hex()).encode("utf-8")
-                if not isinstance(json.loads(bodies["data.json"], parse_constant=_invalid_number), dict):
-                    raise ValueError("Invalid dashboard JSON")
+                validate_dashboard_data(json.loads(bodies["data.json"], parse_constant=_invalid_number))
             temporary = Path(tempfile.mkdtemp(dir=target, prefix=".energy-publish-"))
             backups = temporary / "previous"
             backups.mkdir(mode=0o700)
@@ -142,17 +294,25 @@ def publish(source, target, app, *, status_only=False):
                 staged.chmod(0o644)
             try:
                 for name in names:
-                    os.replace(temporary / name, target / name)
+                    # Record before swapping: a termination right after the swap must still see it.
                     changed.append(name)
-            except BaseException as exc:
-                for name in reversed(changed):
                     try:
-                        if name in existed:
-                            os.replace(backups / name, target / name)
-                        else:
-                            (target / name).unlink(missing_ok=True)
+                        os.replace(temporary / name, target / name)
+                    except InterruptedError:
+                        raise
                     except OSError:
-                        recovery = True
+                        changed.pop()  # The swap itself failed, so this file is unchanged.
+                        raise
+            except BaseException as exc:
+                with _termination_blocked():
+                    for name in reversed(changed):
+                        try:
+                            if name in existed:
+                                os.replace(backups / name, target / name)
+                            else:
+                                (target / name).unlink(missing_ok=True)
+                        except OSError:
+                            recovery = True
                 category = "partially_published" if recovery else ("rolled_back" if changed else "nothing_changed")
                 raise PublicationError(category) from exc
     except PublicationError:

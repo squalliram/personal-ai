@@ -3,16 +3,20 @@ import json
 import os
 import secrets
 import shutil
+import socket
+import ssl
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
-from command_centre_fixtures import PASSWORD, ROOT
+from command_centre_fixtures import PASSWORD, ROOT, make_settings
 
 from command_centre.config import load_settings
 from command_centre.security import hash_password
+from command_centre.server import build
 
 
 class ServerSmokeTests(unittest.TestCase):
@@ -199,3 +203,57 @@ class FrontendTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(shutil.which("openssl"), "openssl is required to create a test certificate")
+class TlsServerTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        cert, key = root / "cert.pem", root / "key.pem"
+        subprocess.run(
+            [
+                "openssl",
+                "req",
+                "-x509",
+                "-newkey",
+                "rsa:2048",
+                "-nodes",
+                "-keyout",
+                str(key),
+                "-out",
+                str(cert),
+                "-subj",
+                "/CN=localhost",
+                "-days",
+                "1",
+            ],
+            check=True,
+            capture_output=True,
+        )
+        server, _ = build(make_settings(root), "127.0.0.1", 0, tls_cert=cert, tls_key=key)
+        self.port = server.server_address[1]
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(thread.join, 5)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+
+    def get(self, path):
+        context = ssl.create_default_context()
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        conn = http.client.HTTPSConnection("127.0.0.1", self.port, timeout=5, context=context)
+        conn.request("GET", path, headers={"Host": f"127.0.0.1:{self.port}"})
+        return conn.getresponse()
+
+    def test_silent_client_does_not_stall_other_connections(self):
+        silent = socket.create_connection(("127.0.0.1", self.port))  # TCP connect, never starts a TLS handshake
+        self.addCleanup(silent.close)
+        self.assertIsInstance(self.get("/").status, int)
+
+    def test_https_requests_are_served_not_redirected_to_themselves(self):
+        response = self.get("/api/v1/session")
+        self.assertNotEqual(response.status, 308)
+        self.assertEqual(response.status, 401)

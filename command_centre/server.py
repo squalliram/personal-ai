@@ -24,6 +24,14 @@ class _ServerHandler(ServerHandler):
 class Handler(WSGIRequestHandler):
     server_version = "personal-ai"
     sys_version = ""
+    # The TLS handshake runs on the first read in the worker thread; this bounds a client that never completes it.
+    timeout = 10
+
+    def get_environ(self) -> dict:
+        environ = super().get_environ()
+        # Server-owned: wsgiref derives wsgi.url_scheme from HTTPS, not from the wrapped socket.
+        environ["HTTPS"] = "on" if isinstance(self.connection, ssl.SSLSocket) else "off"
+        return environ
 
     def handle(self) -> None:
         # Mirrors WSGIRequestHandler.handle so the Server header omits the Python version.
@@ -82,5 +90,6 @@ def build(
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.minimum_version = ssl.TLSVersion.TLSv1_2
         context.load_cert_chain(tls_cert, tls_key)
-        server.socket = context.wrap_socket(server.socket, server_side=True)
+        # Defer the handshake so a silent client cannot stall the accept loop.
+        server.socket = context.wrap_socket(server.socket, server_side=True, do_handshake_on_connect=False)
     return server, holder["app"]

@@ -255,6 +255,24 @@ class AnalyticsTests(unittest.TestCase):
         complete = {row["date"]: row["complete"] for row in self.daily()}
         self.assertEqual(complete, {"2026-11-01": 1, "2026-11-02": 1})
 
+    def test_a_reading_across_midnight_is_split_between_london_days(self):
+        meter = self.meter()
+        self.tariffs(meter)
+        self.reading(meter, "2026-11-01T23:30:00Z", "2026-11-02T00:30:00Z", 2)
+        start = datetime(2026, 11, 2, 0, 30, tzinfo=timezone.utc)
+
+        def iso(moment):
+            return moment.isoformat().replace("+00:00", "Z")
+
+        for index in range(47):
+            first = start + timedelta(minutes=30 * index)
+            self.reading(meter, iso(first), iso(first + timedelta(minutes=30)), 1)
+        days = {row["date"]: row for row in self.daily()}
+        self.assertAlmostEqual(days["2026-11-01"]["consumption_kwh"], 1)
+        self.assertAlmostEqual(days["2026-11-02"]["consumption_kwh"], 48)
+        self.assertEqual(days["2026-11-02"]["complete"], 1)
+        self.assertAlmostEqual(days["2026-11-02"]["unit_cost_gbp"], 48 * 0.10)
+
     def test_every_supply_point_must_cover_the_day(self):
         first, second = self.meter(), self.meter(point="second-point", serial="second-meter")
         self.half_hours(first, "2026-11-02")
@@ -287,7 +305,7 @@ class AnalyticsTests(unittest.TestCase):
             "INSERT INTO daily_costs(date,fuel,consumption_kwh,unit_cost_gbp,standing_charge_gbp,total_cost_gbp) VALUES('2026-11-01','gas',2,.2,.5,.7)"
         )
         self.conn.commit()
-        with connect(self.database) as migrated:
+        with closing(connect(self.database)) as migrated, migrated:
             self.assertIsNone(migrated.execute("SELECT total_cost_gbp FROM daily_costs").fetchone()[0])
             self.assertEqual(migrated.execute("SELECT COUNT(*) FROM consumption").fetchone()[0], 1)
             self.assertTrue(
@@ -297,7 +315,7 @@ class AnalyticsTests(unittest.TestCase):
                     if row["name"] not in {"date", "fuel"}
                 )
             )
-        with connect(self.database) as repeated:
+        with closing(connect(self.database)) as repeated, repeated:
             self.assertEqual(repeated.execute("SELECT COUNT(*) FROM daily_costs").fetchone()[0], 1)
 
     def test_failed_migration_preserves_original_table(self):
@@ -315,7 +333,7 @@ class AnalyticsTests(unittest.TestCase):
         self.conn.commit()
         with self.assertRaises(ValueError):
             connect(self.database)
-        with sqlite3.connect(self.database) as original:
+        with closing(sqlite3.connect(self.database)) as original, original:
             self.assertEqual(original.execute("SELECT total_cost_gbp FROM daily_costs").fetchone()[0], 0.7)
             self.assertIsNone(
                 original.execute("SELECT name FROM sqlite_master WHERE name='energy_settings'").fetchone()
@@ -471,7 +489,7 @@ class AnalyticsTests(unittest.TestCase):
         self.conn.commit()
         self.reading(meter)
         self.tariffs(meter)
-        with sqlite3.connect(self.database) as observer:
+        with closing(sqlite3.connect(self.database)) as observer, observer:
             self.assertEqual(observer.execute("SELECT COUNT(*) FROM consumption").fetchone()[0], 0)
             self.assertEqual(observer.execute("SELECT COUNT(*) FROM tariff_rates").fetchone()[0], 0)
             self.assertTrue(self.conn.in_transaction)
@@ -616,12 +634,12 @@ class GasUnitsCLITests(unittest.TestCase):
                 ]
                 with patch("sys.argv", args + ["--gas-units", "kwh"]):
                     self.assertEqual(cli.main(), 0)
-                with connect(database) as conn:
+                with closing(connect(database)) as conn, conn:
                     self.assertEqual(get_gas_units(conn), "kwh")
                     self.assertEqual(conn.execute("SELECT consumption_kwh FROM daily_costs").fetchone()[0], 2)
                 with patch("sys.argv", args):
                     self.assertEqual(cli.main(), 0)
-                with connect(database) as conn:
+                with closing(connect(database)) as conn, conn:
                     self.assertEqual(get_gas_units(conn), "unknown")
                     self.assertIsNone(conn.execute("SELECT consumption_kwh FROM daily_costs").fetchone()[0])
 

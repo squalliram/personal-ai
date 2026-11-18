@@ -5,12 +5,14 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
+from unittest.mock import patch
 
 from octopus_energy.analytics import recompute_daily_costs
 from octopus_energy.mcp_server import PROTOCOL_VERSIONS, TOOLS, dispatch
 from octopus_energy.reports import write_reports
-from octopus_energy.storage import connect
+from octopus_energy.storage import connect, get_gas_units, set_gas_units
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -305,6 +307,24 @@ class EnergyMCPTests(unittest.TestCase):
         self.assertEqual(baseline[0]["fuel"], "gas")
         self.assertEqual(hashlib.sha256(self.database.read_bytes()).digest(), before)
 
+    def test_results_and_gas_confirmation_come_from_one_snapshot(self):
+        with closing(connect(self.database)) as conn, conn:
+            conn.execute(
+                "INSERT INTO daily_costs(date,fuel,consumption_kwh,total_cost_gbp,complete)"
+                " VALUES('2026-11-01','gas',2,0.7,1)"
+            )
+            set_gas_units(conn, "kwh")
+        original = get_gas_units
+
+        def flip_then_read(conn):
+            with closing(connect(self.database)) as writer, writer:
+                set_gas_units(writer, "unknown")  # another connection commits mid-request
+            return original(conn)
+
+        with patch("octopus_energy.mcp_server.get_gas_units", side_effect=flip_then_read):
+            (row,) = dispatch("get_daily_consumption", {"start": "2026-11-01", "end": "2026-11-02"}, self.database)
+        self.assertEqual(row["consumption_kwh"], 2)
+
     def test_daily_rows_report_completeness_and_older_tables_are_read_as_unchecked(self):
         conn = connect(self.database)
         conn.execute(
@@ -315,7 +335,7 @@ class EnergyMCPTests(unittest.TestCase):
         (row,) = dispatch("get_daily_consumption", {"start": "2026-11-01", "end": "2026-11-02"}, self.database)
         self.assertIs(row["complete"], False)
         self.database.unlink()
-        with sqlite3.connect(self.database) as legacy:
+        with closing(sqlite3.connect(self.database)) as legacy, legacy:
             legacy.executescript(
                 (Path(__file__).resolve().parents[1] / "octopus_energy/schema.sql")
                 .read_text(encoding="utf-8")
@@ -429,7 +449,7 @@ class EnergyMCPTests(unittest.TestCase):
         self.assertNotIn(str(self.database), json.dumps(responses))
         self.assertEqual(hashlib.sha256(self.database.read_bytes()).digest(), before)
         write_reports(self.database, Path(self.directory.name) / "reports")
-        with connect(self.database) as migrated:
+        with closing(connect(self.database)) as migrated, migrated:
             self.assertEqual(migrated.execute("SELECT * FROM consumption").fetchall(), raw_before)
         refreshed = self.run_server(
             initialization()

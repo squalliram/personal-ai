@@ -97,10 +97,24 @@ cPanel hosting is planned for Phase 6 and needs approval.
 Reports and databases under `reports/` and `data/` are deliberately not in Git, so a lost disk means lost history. To back up a SQLite database safely while it may be in use, use the online backup API rather than copying the file:
 
 ```sh
-mkdir -p ~/personal-ai-backups
-for db in command_centre daily_briefing octopus_energy octopus_energy_live; do
-  [ -f "data/$db.sqlite3" ] && sqlite3 "data/$db.sqlite3" ".backup '~/personal-ai-backups/$db.sqlite3'"
+(
+umask 077
+checkout_path=$(pwd -P) || exit 1
+checkout_id=$(printf '%s' "$checkout_path" | cksum) || exit 1
+checkout_id=${checkout_id%% *}
+[ -n "$checkout_id" ] || exit 1
+backup_dir="$HOME/personal-ai-backups/$(basename "$checkout_path")-$checkout_id"
+mkdir -p -m 700 "$backup_dir" && chmod 700 "$backup_dir" || exit 1
+for backup in "$backup_dir"/*.sqlite3; do
+  [ ! -e "$backup" ] || chmod 600 "$backup" || exit 1
 done
+for db in command_centre daily_briefing octopus_energy octopus_energy_live; do
+  if [ -f "data/$db.sqlite3" ]; then
+    source_db="$checkout_path/data/$db.sqlite3"
+    (cd "$backup_dir" && sqlite3 "$source_db" ".backup $db.sqlite3") || exit 1
+  fi
+done
+)
 ```
 
 Run it from each checkout that holds data you care about (this branch and the main checkout). Copy `~/personal-ai-backups` somewhere off the machine. Restore by stopping the app, replacing the file and restarting.

@@ -57,6 +57,25 @@ class ParseTests(unittest.TestCase):
         event = {"title": "All day", "start": None, "end": None, "url": "https://example.com", "mystery": "kept"}
         self.assertEqual(parse({"events": [event]}).events, [event])
 
+    def test_unknown_keys_may_hold_any_json_type(self):
+        event = {"title": "Planning", "metadata": {"source": "calendar"}, "attendees": ["a", "b"], "count": 3}
+        snapshot = parse({"events": [event]})
+        self.assertEqual(snapshot.events, [event])
+        self.assertEqual(snapshot.errors, [])
+
+    def test_consumed_fields_are_still_validated(self):
+        snapshot = parse({"events": [{"title": "x", "location": {"room": 1}}, {"title": "y", "url": 5}]})
+        self.assertEqual(snapshot.events, [])
+        self.assertEqual(snapshot.errors, ["Snapshot input failure: dropped 2 invalid events"])
+
+    def test_invalid_utf8_file_is_a_counted_input_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "snapshot.json"
+            path.write_bytes(b'{"events": [], "tasks": [{"title": "\xff"}]}')
+            snapshot = load(path)
+        self.assertEqual((snapshot.events, snapshot.tasks), ([], []))
+        self.assertEqual(snapshot.errors, ["Snapshot input failure: UnicodeDecodeError"])
+
     def test_non_text_connector_errors_are_dropped(self):
         snapshot = parse({"errors": ["real", {"bad": 1}]})
         self.assertEqual(snapshot.errors, ["real", "Snapshot input failure: dropped non-text connector errors"])

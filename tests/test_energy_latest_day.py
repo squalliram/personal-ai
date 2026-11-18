@@ -1,3 +1,4 @@
+import copy
 import json
 import tempfile
 import unittest
@@ -8,6 +9,7 @@ from zoneinfo import ZoneInfo
 
 from octopus_energy.analytics import recompute_daily_costs
 from octopus_energy.dashboard import dashboard_data
+from octopus_energy.publisher import validate_dashboard_data
 from octopus_energy.storage import connect, set_gas_units, upsert_consumption, upsert_meter, upsert_rate
 
 LONDON = ZoneInfo("Europe/London")
@@ -72,7 +74,9 @@ class LatestDayTests(unittest.TestCase):
         for date, expected in [("2026-03-29", 23), ("2026-10-25", 25), ("2026-11-01", 24)]:
             with self.subTest(date=date):
                 self.fill(date)
-                day = self.data()["latest_day"]["electricity"]
+                data = self.data()
+                self.assertIs(validate_dashboard_data(data), data)
+                day = data["latest_day"]["electricity"]
                 self.assertEqual(day["date"], date)
                 self.assertTrue(day["complete"])
                 self.assertEqual(len(day["hours"]), expected)
@@ -84,6 +88,61 @@ class LatestDayTests(unittest.TestCase):
                     self.assertEqual(day["hours"][2]["start"], "2026-10-25T01:00:00+00:00")
                 if expected == 23:
                     self.assertFalse(any("T01:" in row["start"] for row in day["hours"]))
+
+    def test_publisher_rejects_invalid_latest_day_intervals(self):
+        self.fill("2026-11-01")
+        valid = self.data()
+        mutations = [
+            lambda d: d["hours"][0].update(end="2026-11-01T00:30:00Z"),
+            lambda d: d["hours"][1].update(start="2026-11-01T02:00:00Z", end="2026-11-01T03:00:00Z"),
+            lambda d: d.update(date="2026-10-31"),
+            lambda d: d["hours"].pop(),
+            lambda d: d["hours"].pop(0),
+            lambda d: d.update(hours=[]),
+            lambda d: d["hours"][0].update(start=None),
+        ]
+        for mutate in mutations:
+            data = copy.deepcopy(valid)
+            mutate(data["latest_day"]["electricity"])
+            with self.subTest(data=data), self.assertRaises(ValueError):
+                validate_dashboard_data(data)
+        for generated in ("2026-11-01T23:59:59Z", "2026-10-31T23:00:00Z"):
+            with self.subTest(generated=generated), self.assertRaises(ValueError):
+                validate_dashboard_data({**valid, "generated_at": generated})
+        self.assertIsNotNone(validate_dashboard_data({**valid, "generated_at": "2026-11-02T00:00:00Z"}))
+        self.assertIsNotNone(validate_dashboard_data({**valid, "latest_day": {"electricity": None, "gas": None}}))
+
+    def test_publisher_rejects_offsetless_timestamps(self):
+        self.fill("2026-11-01")
+        valid = self.data()
+        for field in ("generated_at", "start", "end"):
+            data = copy.deepcopy(valid)
+            target = data if field == "generated_at" else data["latest_day"]["electricity"]["hours"][0]
+            target[field] = datetime.fromisoformat(target[field]).replace(tzinfo=None).isoformat()
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                validate_dashboard_data(data)
+
+    def test_publisher_requires_exact_midnight_boundaries(self):
+        self.fill("2026-11-01")
+        valid = self.data()
+        for shift in (timedelta(seconds=1), timedelta(microseconds=1)):
+            data = copy.deepcopy(valid)
+            for hour in data["latest_day"]["electricity"]["hours"]:
+                for field in ("start", "end"):
+                    hour[field] = (datetime.fromisoformat(hour[field]) + shift).isoformat()
+            with self.subTest(shift=shift), self.assertRaises(ValueError):
+                validate_dashboard_data(data)
+
+    def test_publisher_rejects_nonzero_submicrosecond_midnight_fractions(self):
+        self.fill("2026-11-01")
+        valid = self.data()
+        for index, field in ((0, "start"), (-1, "end")):
+            for fraction in ("0000001", "000000000000000001"):
+                data = copy.deepcopy(valid)
+                hour = data["latest_day"]["electricity"]["hours"][index]
+                hour[field] = hour[field].replace("+00:00", f".{fraction}Z")
+                with self.subTest(index=index, field=field, fraction=fraction), self.assertRaises(ValueError):
+                    validate_dashboard_data(data)
 
     def test_latest_complete_day_skips_gap_and_current_or_future_days(self):
         self.fill("2026-11-01")

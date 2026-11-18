@@ -20,6 +20,18 @@ class BriefingTests(unittest.TestCase):
         ]
         self.assertEqual(rank_tasks(tasks, date(2026, 11, 5))[0]["title"], "Urgent")
 
+    def test_null_titles_do_not_break_ranking_or_rendering(self):
+        tasks = [{"title": None}, {"title": "Deliver"}]
+        ranked = rank_tasks(tasks, date(2026, 11, 5))
+        self.assertEqual([task["title"] for task in ranked], [None, "Deliver"])
+        text = render(
+            date(2026, 11, 5), datetime(2026, 11, 5, 8, tzinfo=ZoneInfo("Europe/London")), [{"title": None}], tasks, []
+        )
+        self.assertIn("Untitled task", text)
+        self.assertIn("Untitled event", text)
+        self.assertNotIn(": None", text)
+        self.assertNotIn("- None\n", text)
+
     def test_render_deduplicates_and_labels_suggestions(self):
         event = {
             "id": "same",
