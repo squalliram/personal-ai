@@ -11,6 +11,7 @@ import tarfile
 import tempfile
 import textwrap
 import unittest
+from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import patch
 
@@ -48,6 +49,41 @@ def registry(app=None):
     }
 
 
+class TelegramRegistrationTests(unittest.TestCase):
+    def test_host_registration_is_safe_and_nonfatal(self):
+        entrypoint = Path("/private/command-centre/passenger_wsgi.py")
+        for error in (None, RuntimeError("sensitive error must never print")):
+            with (
+                patch.object(HOST, "run", side_effect=error) as run,
+                patch("sys.stdout", new_callable=io.StringIO) as output,
+            ):
+                self.assertEqual(HOST.register_telegram_webhook(entrypoint), "failed" if error else "registered")
+                args = run.call_args.args[0]
+                self.assertEqual(args[0], sys.executable)
+                self.assertEqual(args[-2:], [str(entrypoint), "https://iramkhan.com/command-centre/"])
+                self.assertIn("namespace['settings']", args[2])
+                self.assertEqual(output.getvalue(), "")
+
+    def test_host_run_captures_output_without_echoing_errors(self):
+        for returncode in (0, 1):
+            with (
+                patch.object(HOST.subprocess, "run") as process,
+                patch("sys.stdout", new_callable=io.StringIO) as stdout,
+                patch("sys.stderr", new_callable=io.StringIO) as stderr,
+            ):
+                process.return_value = subprocess.CompletedProcess(
+                    ["python"], returncode, stdout=b"private token URL", stderr=b"private token URL"
+                )
+                if returncode:
+                    with self.assertRaises(HOST.ReleaseError) as error:
+                        HOST.run(["python"])
+                    self.assertNotIn("private", str(error.exception))
+                else:
+                    self.assertEqual(HOST.run(["python"]), b"private token URL")
+                self.assertTrue(process.call_args.kwargs["capture_output"])
+                self.assertEqual(stdout.getvalue() + stderr.getvalue(), "")
+
+
 class ReleaseTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -59,6 +95,8 @@ class ReleaseTests(unittest.TestCase):
         cls.archive = output.getvalue()
 
     def setUp(self):
+        self.stack = ExitStack()
+        self.addCleanup(self.stack.close)
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.home = Path(self.directory.name).resolve()
@@ -73,10 +111,13 @@ class ReleaseTests(unittest.TestCase):
         self.commands = []
         self.original_umask = os.umask(0o077)
         self.addCleanup(os.umask, self.original_umask)
-        self.run = self.enterContext(patch.object(HOST, "run", side_effect=self.command))
-        self.selector = self.enterContext(patch.object(HOST, "selector", side_effect=self.selection))
-        self.verify = self.enterContext(patch.object(HOST, "verify", side_effect=self.verification))
-        self.vendor = self.enterContext(patch.object(HOST, "vendor", return_value=True))
+        self.run = self.stack.enter_context(patch.object(HOST, "run", side_effect=self.command))
+        self.selector = self.stack.enter_context(patch.object(HOST, "selector", side_effect=self.selection))
+        self.verify = self.stack.enter_context(patch.object(HOST, "verify", side_effect=self.verification))
+        self.vendor = self.stack.enter_context(patch.object(HOST, "vendor", return_value=True))
+        self.telegram = self.stack.enter_context(
+            patch.object(HOST, "register_telegram_webhook", return_value="registered")
+        )
         self.registered = False
 
     def locked(self):
@@ -122,6 +163,7 @@ class ReleaseTests(unittest.TestCase):
 
     def test_isolated_release_holds_shared_lock_and_preserves_source(self):
         result = self.install()
+        self.telegram.assert_not_called()
         self.assertEqual(result["status"], "deployed")
         self.assertEqual(self.energy.read_bytes(), b"owner database must remain untouched")
         self.assertEqual(stat.S_IMODE(self.app.stat().st_mode), 0o711)
@@ -167,7 +209,7 @@ class ReleaseTests(unittest.TestCase):
 
     def test_notification_ingest_settings_are_written_only_when_valid(self):
         token, bot = "0123456789abcdef" * 4, "123456:" + "A" * 30
-        HOST.install(
+        result = HOST.install(
             self.checkout,
             SHA,
             self.password_hash,
@@ -180,6 +222,8 @@ class ReleaseTests(unittest.TestCase):
         self.assertIn(f"COMMAND_CENTRE_NOTIFY_INGEST_TOKEN={token}\n", config)
         self.assertIn(f"COMMAND_CENTRE_TELEGRAM_BOT_TOKEN={bot}\n", config)
         self.assertIn("COMMAND_CENTRE_TELEGRAM_CHAT_ID=-1001\n", config)
+        self.telegram.assert_called_once_with(self.app / "passenger_wsgi.py")
+        self.assertEqual(result["telegram_webhook"], "registered")
         for bad in (
             {"notify_ingest_token": "short"},
             {"notify_ingest_token": token + "\nCOMMAND_CENTRE_PERMISSION=draft"},
@@ -548,6 +592,8 @@ class SmokeTests(unittest.TestCase):
 
 class VendorTests(unittest.TestCase):
     def setUp(self):
+        self.stack = ExitStack()
+        self.addCleanup(self.stack.close)
         import base64
         import hashlib
         import io
@@ -570,7 +616,7 @@ class VendorTests(unittest.TestCase):
         hashes = " ".join(f"--hash=sha256:{hashlib.sha256(w).hexdigest()}" for w in (self.good, self.evil))
         (self.release / "deploy/command-centre/requirements.txt").write_text(f"fakepkg==1 {hashes}\n")
         self.encode = lambda data: base64.b64encode(data).decode()
-        self.pip = self.enterContext(patch.object(HOST.subprocess, "run", side_effect=OSError("no pip")))
+        self.pip = self.stack.enter_context(patch.object(HOST.subprocess, "run", side_effect=OSError("no pip")))
 
     def test_pinned_wheels_are_unpacked_without_pip(self):
         self.assertTrue(HOST.vendor(self.release, {"fakepkg-1-py3-none-any.whl": self.encode(self.good)}))
