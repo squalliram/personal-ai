@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 from instagram_agent.graph import GraphAPIError
 
@@ -51,10 +52,10 @@ class ConfigurationTests(unittest.TestCase):
 
 
 class SummaryTests(unittest.TestCase):
-    def test_empty_views_falls_back_to_plays_but_zero_does_not(self):
-        for views, expected in [({"data": []}, 42), (response(0), 0)]:
+    def test_empty_views_stays_missing_but_zero_is_preserved(self):
+        for views, expected in [({"data": []}, None), (response(0), 0)]:
             with self.subTest(expected=expected):
-                posts, _ = BASELINE.summarize([media()], {"1": {"views": views, "plays": response(42)}}, {})
+                posts, _ = BASELINE.summarize([media()], {"1": {"views": views}}, {})
                 self.assertEqual(posts[0]["views"], expected)
 
     def test_rates_medians_rankings_and_london_cadence(self):
@@ -94,6 +95,15 @@ class SummaryTests(unittest.TestCase):
 
 
 class RedactionTests(unittest.TestCase):
+    def test_permalink_sentence_punctuation_is_preserved(self):
+        permalink = "HTTPS://www.instagram.com/reel/AbC_123/"
+        for punctuation in (".", ",", ";", ":", "!", "?", ")", "]", "}", ")."):
+            with self.subTest(punctuation=punctuation):
+                text = "See " + permalink + punctuation
+                self.assertEqual(BASELINE.redact(text, ""), text)
+        for suffix in ("?tracking=1.", "#fragment.", "#"):
+            self.assertNotIn(permalink, BASELINE.redact(permalink + suffix, ""))
+
     def test_mixed_case_url_schemes_and_public_permalink(self):
         for scheme in ("HTTPS", "hTtPs", "HTTP", "hTtP"):
             with self.subTest(scheme=scheme):
@@ -133,7 +143,7 @@ class RedactionTests(unittest.TestCase):
 
 
 class ExportTests(unittest.TestCase):
-    def test_reel_requests_plays_and_exports_it_when_views_are_null(self):
+    def test_reel_missing_views_is_recorded_without_requesting_plays(self):
         class Client:
             user_id = "123"
 
@@ -154,12 +164,35 @@ class ExportTests(unittest.TestCase):
             client = Client()
             output = Path(directory)
             BASELINE.export(client, output, "")
-            self.assertIn("plays", client.metrics)
+            self.assertNotIn("plays", client.metrics)
             self.assertIn("ig_reels_avg_watch_time", client.metrics)
             with (output / "posts.csv").open() as handle:
-                self.assertEqual(list(csv.DictReader(handle))[0]["views"], "42")
+                self.assertEqual(list(csv.DictReader(handle))[0]["views"], "")
             summary = json.loads((output / "summary.json").read_text())
-            self.assertEqual(summary["by_type"]["reel"]["medians"]["views"], 42)
+            self.assertIsNone(summary["by_type"]["reel"]["medians"]["views"])
+            errors = json.loads((output / "raw/errors.json").read_text())
+            self.assertIn({"request": "media:1:views", "status": "no_value"}, errors)
+
+    def test_concurrent_claim_of_raw_directory_fails_before_api_call(self):
+        class Client:
+            def get(self, *args):
+                raise AssertionError("API must not be called")
+
+        mkdir = Path.mkdir
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            raw = output / "raw"
+
+            def competing_mkdir(path, *args, **kwargs):
+                if path == raw:
+                    mkdir(path)
+                    (path / "other-capture.json").write_text("{}")
+                return mkdir(path, *args, **kwargs)
+
+            with patch.object(Path, "mkdir", competing_mkdir):
+                with self.assertRaisesRegex(FileExistsError, "already claimed"):
+                    BASELINE.export(Client(), output, "")
+            self.assertEqual(list(raw.iterdir()), [raw / "other-capture.json"])
 
     def test_second_export_requires_fresh_directory_to_avoid_stale_files(self):
         class Client:

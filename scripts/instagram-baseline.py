@@ -73,27 +73,30 @@ def redact(value, token):
         return [redact(v, token) for v in value]
     if not isinstance(value, str):
         return value
-    if token:
-        for secret in {token, quote(token, safe=""), quote_plus(token)}:
-            value = value.replace(secret, "[REDACTED]")
 
     def safe_url(match):
-        url = match.group()
+        matched = match.group()
+        url = matched.rstrip(".,;:!?)]}")
+        punctuation = matched[len(url) :]
         try:
             parts = urlsplit(url)
         except ValueError:
-            return "[REDACTED_URL]"
+            return "[REDACTED_URL]" + punctuation
         if (
             parts.scheme == "https"
             and parts.netloc.lower() in ("www.instagram.com", "instagram.com")
             and re.fullmatch(r"/(?:p|reel|tv)/[A-Za-z0-9_-]+/?", parts.path)
             and not parts.query
             and not parts.fragment
+            and "#" not in matched
         ):
-            return url
-        return "[REDACTED_URL]"
+            return url + punctuation
+        return "[REDACTED_URL]" + punctuation
 
     value = re.sub(r"https?://[^\s<>\"']+", safe_url, value, flags=re.I)
+    if token:
+        for secret in {token, quote(token, safe=""), quote_plus(token)}:
+            value = value.replace(secret, "[REDACTED]")
     return re.sub(r"(?i)(access_token|authorization|bearer)\s*[:= ]\s*[^\s&,]+", r"\1=[REDACTED]", value)
 
 
@@ -142,7 +145,7 @@ def summarize(media, insights, profile):
                         stamp.hour,
                         kind,
                         values.get("reach"),
-                        values.get("views") if values.get("views") is not None else values.get("plays"),
+                        values.get("views"),
                         likes,
                         comments,
                         values.get("saved"),
@@ -219,7 +222,10 @@ def export(client, output, token, now=None):
     until = now.astimezone(LONDON).replace(hour=0, minute=0, second=0, microsecond=0)
     since = until - timedelta(days=28)
     raw = output / "raw"
-    raw.mkdir(parents=True, exist_ok=True)
+    try:
+        raw.mkdir(parents=True, exist_ok=False)
+    except FileExistsError:
+        raise FileExistsError("Output directory already claimed; choose a new output directory") from None
     errors = []
 
     def save(name, payload):
@@ -260,8 +266,6 @@ def export(client, output, token, now=None):
         metrics = COMMON_METRICS
         if item.get("media_product_type") == "REELS":
             metrics += REEL_METRICS
-        if item.get("media_type") == "VIDEO":
-            metrics += ("plays",)
         values = {}
         for metric in metrics:
             response = get(f"{item['id']}/insights", {"metric": metric}, f"media:{item['id']}:{metric}")
