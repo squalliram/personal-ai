@@ -66,7 +66,15 @@ def _valid_date(value):
 
 
 def _valid_instant(value):
-    if not isinstance(value, str) or value[10:11] != "T":
+    if (
+        not isinstance(value, str)
+        or not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})", value, re.ASCII)
+        or not _valid_date(value[:10])
+        or int(value[11:13]) >= 24
+        or int(value[14:16]) >= 60
+        or int(value[17:19]) >= 60
+        or (value[-1] != "Z" and (int(value[-5:-3]) >= 24 or int(value[-2:]) >= 60))
+    ):
         return False
     try:
         instant = datetime.fromisoformat(value.replace("Z", "+00:00"))

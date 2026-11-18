@@ -42,6 +42,32 @@ class PublishDashboardTests(unittest.TestCase):
         self.assertTrue(publisher._valid_instant("2026-11-05T12:00:00Z"))
         self.assertTrue(publisher._valid_instant("2026-11-05T12:00:00+00:00"))
 
+    def test_dashboard_instants_match_browser_grammar(self):
+        for value in (
+            "2026-11-05T12:00:00Z",
+            "2026-11-05T12:00:00+01:00",
+            "2026-11-05T12:00:00-05:30",
+            "2026-11-05T12:00:00.123456Z",
+        ):
+            with self.subTest(value=value):
+                self.assertTrue(publisher._valid_instant(value))
+        for value in (
+            "2026-11-05T12:00:00+00:00:00",
+            "2026-11-05T12:00:00-05:30:01",
+            "2026-11-05T12:00:00+0000",
+            "2026-11-05T12:00:00+00:60",
+            "2026-11-05T12:00:00+24:00",
+            "2026-11-05T12:00:00",
+            "2026-11-05T12:00Z",
+            "2026-11-05T12:00:00,1Z",
+            "2026-11-05T24:00:00Z",
+            "2026-11-05T12:60:00Z",
+            "2026-11-05T12:00:60Z",
+            "2026-02-30T12:00:00Z",
+        ):
+            with self.subTest(value=value):
+                self.assertFalse(publisher._valid_instant(value))
+
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)

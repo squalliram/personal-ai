@@ -17,11 +17,11 @@ class OperationsBackupTests(unittest.TestCase):
         checksum = subprocess.check_output(["cksum"], input=str(checkout).encode()).decode().split()[0]
         return home / "personal-ai-backups" / f"{checkout.name}-{checksum}"
 
-    def run_backup(self, home, checkout):
+    def run_backup(self, home, checkout, environ=None):
         return subprocess.run(
             ["sh", "-c", self.snippet],
             cwd=checkout,
-            env={**os.environ, "HOME": str(home)},
+            env={**os.environ, "HOME": str(home), **(environ or {})},
             capture_output=True,
             text=True,
         )
@@ -67,10 +67,25 @@ class OperationsBackupTests(unittest.TestCase):
             link = home / "linked"
             link.symlink_to(checkout.parent, target_is_directory=True)
             linked_checkout = link / checkout.name
-            self.assertEqual(self.run_backup(home, linked_checkout).returncode, 0)
+            self.assertEqual(self.run_backup(home, linked_checkout, {"PWD": str(linked_checkout)}).returncode, 0)
             self.assertEqual(self.destination(home, linked_checkout), self.destination(home, checkout))
             with sqlite3.connect(self.destination(home, linked_checkout) / "command_centre.sqlite3") as conn:
                 self.assertEqual(conn.execute("SELECT COUNT(*) FROM sample").fetchone(), (0,))
+
+    def test_failed_or_empty_checksum_does_not_create_backup_directory(self):
+        for output, status in (("12345 10", 1), ("", 0), ("", 1)):
+            with self.subTest(output=output, status=status), tempfile.TemporaryDirectory() as directory:
+                home = Path(directory)
+                checkout = home / "checkout"
+                checkout.mkdir()
+                bin_dir = home / "bin"
+                bin_dir.mkdir()
+                cksum = bin_dir / "cksum"
+                cksum.write_text(f"#!/bin/sh\nprintf '%s' '{output}'\nexit {status}\n")
+                cksum.chmod(0o700)
+                result = self.run_backup(home, checkout, {"PATH": f"{bin_dir}:{os.environ['PATH']}"})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse((home / "personal-ai-backups").exists())
 
     def test_existing_directory_and_backups_are_made_private(self):
         with tempfile.TemporaryDirectory() as directory:
