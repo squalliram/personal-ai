@@ -48,6 +48,23 @@ def registry(app=None):
     }
 
 
+class TelegramRegistrationTests(unittest.TestCase):
+    def test_host_registration_is_safe_and_nonfatal(self):
+        entrypoint = Path("/private/command-centre/passenger_wsgi.py")
+        for error in (None, RuntimeError("sensitive error must never print")):
+            with (
+                patch.object(HOST, "run", side_effect=error) as run,
+                patch("sys.stdout", new_callable=io.StringIO) as output,
+            ):
+                HOST.register_telegram_webhook(entrypoint)
+                args = run.call_args.args[0]
+                self.assertEqual(args[-2:], [str(entrypoint), "https://iramkhan.com/command-centre/"])
+                self.assertIn("namespace['settings']", args[2])
+                self.assertEqual(len(output.getvalue().splitlines()), 1)
+                self.assertIn("failed" if error else "succeeded", output.getvalue())
+                self.assertNotIn("sensitive", output.getvalue())
+
+
 class ReleaseTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -77,6 +94,7 @@ class ReleaseTests(unittest.TestCase):
         self.selector = self.enterContext(patch.object(HOST, "selector", side_effect=self.selection))
         self.verify = self.enterContext(patch.object(HOST, "verify", side_effect=self.verification))
         self.vendor = self.enterContext(patch.object(HOST, "vendor", return_value=True))
+        self.telegram = self.enterContext(patch.object(HOST, "register_telegram_webhook"))
         self.registered = False
 
     def locked(self):
@@ -122,6 +140,7 @@ class ReleaseTests(unittest.TestCase):
 
     def test_isolated_release_holds_shared_lock_and_preserves_source(self):
         result = self.install()
+        self.telegram.assert_not_called()
         self.assertEqual(result["status"], "deployed")
         self.assertEqual(self.energy.read_bytes(), b"owner database must remain untouched")
         self.assertEqual(stat.S_IMODE(self.app.stat().st_mode), 0o711)
@@ -180,6 +199,7 @@ class ReleaseTests(unittest.TestCase):
         self.assertIn(f"COMMAND_CENTRE_NOTIFY_INGEST_TOKEN={token}\n", config)
         self.assertIn(f"COMMAND_CENTRE_TELEGRAM_BOT_TOKEN={bot}\n", config)
         self.assertIn("COMMAND_CENTRE_TELEGRAM_CHAT_ID=-1001\n", config)
+        self.telegram.assert_called_once_with(self.app / "passenger_wsgi.py")
         for bad in (
             {"notify_ingest_token": "short"},
             {"notify_ingest_token": token + "\nCOMMAND_CENTRE_PERMISSION=draft"},

@@ -2,14 +2,14 @@
 
 ## Telegram webhook configuration
 
-Deployment accepts `COMMAND_CENTRE_TELEGRAM_WEBHOOK_SECRET` alongside the existing
-`COMMAND_CENTRE_TELEGRAM_BOT_TOKEN` and `COMMAND_CENTRE_TELEGRAM_CHAT_ID` values.
-Generate the secret with `python3.12 -c 'import secrets; print(secrets.token_urlsafe(32))'`
-and add it to the private host environment (or deployment environment).
-After deploying and restarting Passenger, load the private host environment, set
-`COMMAND_CENTRE_URL=https://iramkhan.com/command-centre/`, and run
-`python3.12 -m command_centre telegram-webhook set` on the host.
-See operations.md for verification and removal commands. Never put secrets in command arguments.
+The existing workflow's `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` secrets are sufficient:
+after successful installation, the cPanel host automatically registers the deployed URL.
+It subscribes only to messages and preserves pending updates on redeploy. Registration
+failure prints a safe one-line outcome but does not roll back or fail deployment.
+The webhook secret is derived deterministically from the bot token unless an explicit
+`COMMAND_CENTRE_TELEGRAM_WEBHOOK_SECRET` is provided through deployment configuration.
+No new GitHub secret is required. See operations.md for manual management and overrides.
+Never put secrets in command arguments.
 
 ## Approved production change plan
 

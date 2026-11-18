@@ -528,7 +528,28 @@ def install(
             if created or started:
                 selector("stop", "--app-root", str(app.relative_to(home)))
             raise
+        if telegram_bot_token and telegram_chat_id:
+            register_telegram_webhook(entrypoint)
         return {"status": "deployed", "release": sha, **result}
+
+
+def register_telegram_webhook(entrypoint: Path) -> None:
+    try:
+        run(
+            [
+                sys.executable,
+                "-c",
+                "import runpy,sys; namespace=runpy.run_path(sys.argv[1]); "
+                "from command_centre.telegram import register_webhook; "
+                "register_webhook(namespace['settings'], sys.argv[2])",
+                str(entrypoint),
+                f"https://{DOMAIN}/{URI}/",
+            ]
+        )
+    except Exception:
+        print("Telegram webhook registration failed; deployment remains successful.")
+    else:
+        print("Telegram webhook registration succeeded.")
 
 
 def main():

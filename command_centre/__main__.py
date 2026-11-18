@@ -49,7 +49,7 @@ def main(argv: list[str] | None = None) -> int:
                 "url": base + "/api/v1/telegram/webhook",
                 "secret_token": settings.telegram_webhook_secret,
                 "allowed_updates": ["message"],
-                "drop_pending_updates": True,
+                "drop_pending_updates": False,
             }
         method = {"set": "setWebhook", "delete": "deleteWebhook", "info": "getWebhookInfo"}[args.action]
         request = Request(

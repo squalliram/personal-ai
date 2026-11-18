@@ -1,3 +1,5 @@
+import hashlib
+import hmac
 import io
 import json
 import tempfile
@@ -9,6 +11,7 @@ from command_centre_fixtures import Client, make_app, make_settings
 
 from command_centre.__main__ import main
 from command_centre.config import load_settings
+from command_centre.telegram import register_webhook
 from instagram_agent.openai_client import AIError
 
 
@@ -142,8 +145,39 @@ class TelegramTests(unittest.TestCase):
                             "url": "https://example.test/command-centre/api/v1/telegram/webhook",
                             "secret_token": "a" * 32,
                             "allowed_updates": ["message"],
-                            "drop_pending_updates": True,
+                            "drop_pending_updates": False,
                         },
                     )
             self.assertNotIn("test-token", output.getvalue())
             self.assertNotIn("a" * 32, output.getvalue())
+
+    def test_derived_secret_and_override(self):
+        env = {"COMMAND_CENTRE_TELEGRAM_BOT_TOKEN": "test-token"}
+        derived = load_settings(Path(self.tmp.name), env)
+        expected = hmac.new(b"test-token", b"command-centre-telegram-webhook", hashlib.sha256).hexdigest()
+        self.assertEqual(derived.telegram_webhook_secret, expected)
+        self.assertNotIn(expected, repr(derived))
+        self.assertIsNone(load_settings(Path(self.tmp.name), {}).telegram_webhook_secret)
+        env["COMMAND_CENTRE_TELEGRAM_WEBHOOK_SECRET"] = "explicit-secret-value"
+        self.assertEqual(load_settings(Path(self.tmp.name), env).telegram_webhook_secret, "explicit-secret-value")
+        env["COMMAND_CENTRE_TELEGRAM_WEBHOOK_SECRET"] = "invalid"
+        self.assertIsNone(load_settings(Path(self.tmp.name), env).telegram_webhook_secret)
+
+    def test_host_registration_payload_and_failure(self):
+        with patch("command_centre.telegram.build_opener") as factory:
+            response = factory.return_value.open.return_value.__enter__.return_value
+            response.read.return_value = b'{"ok":true}'
+            register_webhook(self.settings, "https://example.test/command-centre/")
+            request = factory.return_value.open.call_args.args[0]
+            self.assertEqual(
+                json.loads(request.data),
+                {
+                    "url": "https://example.test/command-centre/api/v1/telegram/webhook",
+                    "allowed_updates": ["message"],
+                    "secret_token": "a" * 32,
+                    "drop_pending_updates": False,
+                },
+            )
+            response.read.return_value = b'{"ok":false}'
+            with self.assertRaises(ValueError):
+                register_webhook(self.settings, "https://example.test/")

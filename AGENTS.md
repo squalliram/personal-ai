@@ -13,6 +13,10 @@
 - Approved write: `instagram_agent/publish.py` publishes the daily post (a carousel, a single photo, or a reel made from the owner's own clip or photos, via `media_type=REELS`) through Meta's official content publishing API, only for drafts not rejected and, for a reel the owner held for approval, only once approved, never retrying a `media_publish` call. No other Instagram writes (comments, follows, DMs).
 - Approved write: Telegram notifications to the owner's own chat (`TELEGRAM_CHAT_ID`), sent only through `notifications.notify`. Every notification is also stored for the Command Centre Inbox. The Command Centre ingest endpoint (`POST /api/v1/notifications`, bearer `NOTIFY_INGEST_TOKEN`) may relay authenticated Jarvis results through it. Receiving owner messages via the authenticated Telegram webhook and replying to the owner's own chat with read-only Ask Jarvis answers through `notifications.send_telegram` is also approved, as is managing that webhook with the Command Centre CLI. No other recipients or bots.
 
+Webhook registration on the cPanel host after a successful deployment is approved for
+the configured owner bot only. It preserves pending updates and uses a secret derived
+from the bot token unless explicitly configured; registration failure must not fail deployment.
+
 ## Verification
 
 Run `python3 -m unittest discover -s tests -v` before hand-off. Real connector validation must use read-only data and must not be reported as successful when no accessible source data exists.

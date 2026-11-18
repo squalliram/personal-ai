@@ -2,12 +2,14 @@
 
 ## Telegram Ask Jarvis replies
 
-Generate a secret with `python3.12 -c 'import secrets; print(secrets.token_urlsafe(32))'`.
-Add it to the host's private `command-centre.env` as
-`COMMAND_CENTRE_TELEGRAM_WEBHOOK_SECRET`, alongside
-`COMMAND_CENTRE_TELEGRAM_BOT_TOKEN` and `COMMAND_CENTRE_TELEGRAM_CHAT_ID`.
-Secrets use 16–256 letters, digits, underscores or hyphens. Restart Passenger after changes.
-With those variables loaded on the host, run:
+No additional owner setup is needed: when the deployment has `TELEGRAM_BOT_TOKEN`
+and `TELEGRAM_CHAT_ID` secrets, it registers the webhook on the cPanel host after
+a successful install. Registration failures are reported safely without failing deployment.
+The webhook secret defaults to a deterministic HMAC-SHA256 of the bot token.
+An optional `COMMAND_CENTRE_TELEGRAM_WEBHOOK_SECRET` in the private host environment
+overrides it (16–256 letters, digits, underscores or hyphens).
+Token rotation changes the derived secret; redeploy to register the new value.
+For manual management, load the host's private environment and run:
 
 ```sh
 export COMMAND_CENTRE_URL=https://iramkhan.com/command-centre/
@@ -15,7 +17,9 @@ python3.12 -m command_centre telegram-webhook set
 python3.12 -m command_centre telegram-webhook info
 ```
 
-`set` drops pending updates and subscribes only to messages. `delete` unregisters the webhook.
+`set` preserves pending updates and subscribes only to messages, as does automatic registration.
+`delete` unregisters the webhook. Webhooks disable Telegram's `getUpdates` polling API;
+this repository does not use it.
 Only private text messages sent by the configured owner receive read-only Ask Jarvis answers.
 Replies share the website's AI providers, context and hourly question limit.
 Update IDs are persisted in the audit database before answering: retries cannot send twice,

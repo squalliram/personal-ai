@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import os
 import re
 from collections.abc import Mapping
@@ -84,6 +86,9 @@ def load_settings(root: Path = ROOT, environ: Mapping[str, str] | None = None) -
 
     ingest = text("NOTIFY_INGEST_TOKEN")
     webhook_secret = text("TELEGRAM_WEBHOOK_SECRET")
+    bot_token = text("TELEGRAM_BOT_TOKEN")
+    if webhook_secret is None and bot_token:
+        webhook_secret = hmac.new(bot_token.encode(), b"command-centre-telegram-webhook", hashlib.sha256).hexdigest()
     return Settings(
         root=root,
         energy_db=path("ENERGY_DB", "data/octopus_energy.sqlite3"),
@@ -109,7 +114,7 @@ def load_settings(root: Path = ROOT, environ: Mapping[str, str] | None = None) -
         notifications_db=path("NOTIFICATIONS_DB", "data/notifications.sqlite3"),
         # A malformed token leaves the ingest endpoint off rather than accepting a weak credential.
         notify_ingest_token=ingest if NOTIFY_INGEST_TOKEN.fullmatch(ingest or "") else None,
-        telegram_bot_token=text("TELEGRAM_BOT_TOKEN"),
+        telegram_bot_token=bot_token,
         telegram_chat_id=text("TELEGRAM_CHAT_ID"),
         telegram_webhook_secret=webhook_secret
         if re.fullmatch(r"[A-Za-z0-9_-]{16,256}", webhook_secret or "")
