@@ -343,6 +343,7 @@ def install(
     notify_ingest_token: str = "",
     telegram_bot_token: str = "",
     telegram_chat_id: str = "",
+    telegram_webhook_secret: str = "",
     wheels: dict | None = None,
 ):
     home = (home or Path.home()).resolve()
@@ -371,6 +372,11 @@ def install(
         "Invalid notification ingest token format",
     )
     telegram_bot_token, telegram_chat_id = telegram_bot_token.strip(), telegram_chat_id.strip()
+    telegram_webhook_secret = telegram_webhook_secret.strip()
+    require(
+        not telegram_webhook_secret or bool(re.fullmatch(r"[A-Za-z0-9_-]{16,256}", telegram_webhook_secret)),
+        "Invalid Telegram webhook secret",
+    )
     require(
         bool(telegram_bot_token) == bool(telegram_chat_id)
         and (not telegram_bot_token or bool(re.fullmatch(r"[0-9]{1,20}:[A-Za-z0-9_-]{20,100}", telegram_bot_token)))
@@ -453,6 +459,8 @@ def install(
             # notify() runs inside this process for ingested results, so it needs the bot here too.
             values["TELEGRAM_BOT_TOKEN"] = telegram_bot_token
             values["TELEGRAM_CHAT_ID"] = telegram_chat_id
+        if telegram_webhook_secret:
+            values["TELEGRAM_WEBHOOK_SECRET"] = telegram_webhook_secret
         require(
             all("\n" not in value and "\r" not in value for value in values.values()), "Invalid configuration value"
         )
@@ -536,6 +544,7 @@ def main():
             notify_ingest_token=payload.get("notify_ingest_token") or "",
             telegram_bot_token=payload.get("telegram_bot_token") or "",
             telegram_chat_id=payload.get("telegram_chat_id") or "",
+            telegram_webhook_secret=payload.get("telegram_webhook_secret") or "",
             wheels=payload.get("wheels") or {},
         )
         print(json.dumps(result, sort_keys=True))

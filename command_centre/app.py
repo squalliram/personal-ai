@@ -336,6 +336,7 @@ class CommandCentreApp:
             ),
             ("GET", "/api/v1/notifications"): Route(self.notifications, Permission.READ),
             ("POST", "/api/v1/notifications"): Route(self.notification_ingest, None, bearer=True),
+            ("POST", "/api/v1/telegram/webhook"): Route(self.telegram_webhook, None, bearer=True),
         }
 
     # WSGI -------------------------------------------------------------------------------------
@@ -869,12 +870,20 @@ class CommandCentreApp:
         question = body.get("question") if isinstance(body, dict) else None
         if not isinstance(question, str) or set(body) != {"question"}:
             return _error(400, "invalid_request")
+        return self._answer_question(request, question, providers=providers)
+
+    def _answer_question(self, request: Request, question: str, *, actor: str = "owner", providers=None) -> Result:
+        providers = self._assistant_providers() if providers is None else providers
+        if not providers:
+            self.audit.record("assistant", "not_configured", actor=actor, client=request.client)
+            return _error(503, "assistant_not_configured")
         question = " ".join(question.split())
         if not 0 < len(question) <= assistant.MAX_QUESTION:
             return _error(400, "invalid_request")
         if not self.assistant_limiter.hit("all"):
-            self.audit.record("assistant", "rate_limited", actor="owner", client=request.client)
-            self._assistant_failed("rate_limited", "Website Jarvis hit its limit of 30 questions an hour")
+            self.audit.record("assistant", "rate_limited", actor=actor, client=request.client)
+            if actor == "owner":
+                self._assistant_failed("rate_limited", "Website Jarvis hit its limit of 30 questions an hour")
             return _error(429, "rate_limited", [("Retry-After", "600")])
         data = self._collect()
         context = assistant.build_context(
@@ -885,17 +894,76 @@ class CommandCentreApp:
             try:
                 answer = client.chat_text(assistant.SYSTEM_PROMPT, message, max_tokens=assistant.MAX_ANSWER_TOKENS)
             except openai_client.AIError:
-                self.audit.record("assistant", "failure", actor="owner", client=request.client, provider=name)
+                self.audit.record("assistant", "failure", actor=actor, client=request.client, provider=name)
                 continue
             # The question and answer are owner content, so only the outcome is audited.
-            self.audit.record("assistant", "success", actor="owner", client=request.client, provider=name)
+            self.audit.record("assistant", "success", actor=actor, client=request.client, provider=name)
             return (
                 200,
                 {"answer": answer[:2000], "model": client.text_model, "generated_at": self._iso(self.clock())},
                 [],
             )
-        self._assistant_failed("unavailable", "Website Jarvis couldn't answer: every AI provider failed")
+        if actor == "owner":
+            self._assistant_failed("unavailable", "Website Jarvis couldn't answer: every AI provider failed")
         return _error(502, "assistant_unavailable")
+
+    def telegram_webhook(self, request: Request) -> Result:
+        def audit(outcome: str) -> None:
+            self.audit.record("telegram_webhook", outcome, actor="telegram", client=request.client)
+
+        settings = self.settings
+        if not self.ingest_limiter.hit(request.client):
+            audit("rate_limited")
+            return _error(429, "rate_limited")
+        if not all((settings.telegram_webhook_secret, settings.telegram_bot_token, settings.telegram_chat_id)):
+            audit("not_configured")
+            return _error(503, "not_configured")
+        supplied = request.environ.get("HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN", "")
+        if not hmac.compare_digest(supplied.encode(), settings.telegram_webhook_secret.encode()):
+            audit("unauthorized")
+            return _error(401, "authentication_required")
+        body, error = _json_body(request.environ)
+        message = body.get("message") if isinstance(body, dict) else None
+        message = message if isinstance(message, dict) else {}
+        chat, sender = message.get("chat"), message.get("from")
+        update_id = body.get("update_id") if isinstance(body, dict) else None
+        if (
+            error
+            or type(update_id) is not int
+            or not isinstance(chat, dict)
+            or not isinstance(sender, dict)
+            or chat.get("type") != "private"
+            or str(chat.get("id")) != settings.telegram_chat_id
+            or str(sender.get("id")) != settings.telegram_chat_id
+            or sender.get("is_bot") is not False
+            or not isinstance(message.get("text"), str)
+        ):
+            audit("ignored")
+            return 200, {}, []
+        try:
+            with closing(sqlite3.connect(settings.audit_db)) as conn, conn:
+                conn.execute("CREATE TABLE IF NOT EXISTS telegram_updates (update_id INTEGER PRIMARY KEY)")
+                inserted = conn.execute("INSERT OR IGNORE INTO telegram_updates VALUES (?)", (update_id,)).rowcount
+        except sqlite3.Error:
+            audit("storage_failure")
+            return _error(503, "unavailable")
+        if not inserted:
+            audit("duplicate")
+            return 200, {}, []
+        apology = "Sorry, I can't answer right now. Please try again later."
+        try:
+            status, payload, _ = self._answer_question(request, message["text"], actor="telegram")
+            answer = payload["answer"] if status == 200 else apology
+        except Exception:
+            audit("answer_failure")
+            answer = apology
+        try:
+            notifications.send_telegram(settings.telegram_bot_token, settings.telegram_chat_id, answer)
+        except Exception:
+            audit("delivery_failure")
+        else:
+            audit("success")
+        return 200, {}, []
 
     def modules(self, request: Request) -> Result:
         data = self._collect()

@@ -1,5 +1,27 @@
 # Command Centre operations
 
+## Telegram Ask Jarvis replies
+
+Generate a secret with `python3.12 -c 'import secrets; print(secrets.token_urlsafe(32))'`.
+Add it to the host's private `command-centre.env` as
+`COMMAND_CENTRE_TELEGRAM_WEBHOOK_SECRET`, alongside
+`COMMAND_CENTRE_TELEGRAM_BOT_TOKEN` and `COMMAND_CENTRE_TELEGRAM_CHAT_ID`.
+Secrets use 16–256 letters, digits, underscores or hyphens. Restart Passenger after changes.
+With those variables loaded on the host, run:
+
+```sh
+export COMMAND_CENTRE_URL=https://iramkhan.com/command-centre/
+python3.12 -m command_centre telegram-webhook set
+python3.12 -m command_centre telegram-webhook info
+```
+
+`set` drops pending updates and subscribes only to messages. `delete` unregisters the webhook.
+Only private text messages sent by the configured owner receive read-only Ask Jarvis answers.
+Replies share the website's AI providers, context and hourly question limit.
+Update IDs are persisted in the audit database before answering: retries cannot send twice,
+but a crash or delivery failure may lose a reply; send a new message to try again.
+Do not delete this database while the webhook is active. No message text or IDs are audited.
+
 ## Run locally
 
 Requires Python 3.10 or newer. On this Mac `python3` is 3.9.6, so the launcher picks a supported interpreter through `scripts/find-python.sh`.

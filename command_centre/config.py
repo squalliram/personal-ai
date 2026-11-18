@@ -61,6 +61,7 @@ class Settings:
     notify_ingest_token: str | None = field(default=None, repr=False)
     telegram_bot_token: str | None = field(default=None, repr=False)
     telegram_chat_id: str | None = field(default=None, repr=False)
+    telegram_webhook_secret: str | None = field(default=None, repr=False)
 
 
 def load_settings(root: Path = ROOT, environ: Mapping[str, str] | None = None) -> Settings:
@@ -82,6 +83,7 @@ def load_settings(root: Path = ROOT, environ: Mapping[str, str] | None = None) -
         return candidate if candidate.is_absolute() else root / candidate
 
     ingest = text("NOTIFY_INGEST_TOKEN")
+    webhook_secret = text("TELEGRAM_WEBHOOK_SECRET")
     return Settings(
         root=root,
         energy_db=path("ENERGY_DB", "data/octopus_energy.sqlite3"),
@@ -109,4 +111,7 @@ def load_settings(root: Path = ROOT, environ: Mapping[str, str] | None = None) -
         notify_ingest_token=ingest if NOTIFY_INGEST_TOKEN.fullmatch(ingest or "") else None,
         telegram_bot_token=text("TELEGRAM_BOT_TOKEN"),
         telegram_chat_id=text("TELEGRAM_CHAT_ID"),
+        telegram_webhook_secret=webhook_secret
+        if re.fullmatch(r"[A-Za-z0-9_-]{16,256}", webhook_secret or "")
+        else None,
     )
