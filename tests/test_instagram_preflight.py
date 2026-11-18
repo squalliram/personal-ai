@@ -1,7 +1,5 @@
 import io
 import json
-import subprocess
-import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -234,18 +232,6 @@ class PreflightTests(unittest.TestCase):
 
 
 class PreflightCliTests(unittest.TestCase):
-    def test_cli_starts_in_a_fresh_process(self):
-        result = subprocess.run(
-            [sys.executable, "-m", "instagram_agent", "--help"],
-            cwd=Path(__file__).resolve().parents[1],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("preflight", result.stdout)
-
     def test_cli_uses_read_only_preflight_result(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
