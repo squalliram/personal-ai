@@ -503,7 +503,7 @@ class ReelPublishTests(Case):
         self.assertEqual(storage.hold_reel(self.conn, "b" * 16, True, version=seen + 1), "ok")
         # The delayed first copy of that release must not undo the newer hold.
         self.assertEqual(storage.hold_reel(self.conn, "b" * 16, False, version=seen), "hold_changed")
-        self.assertEqual(storage.hold_reel(self.conn, "b" * 16, True, version=seen), "ok")  # same value: no-op
+        self.assertEqual(storage.hold_reel(self.conn, "b" * 16, True, version=seen), "unchanged")  # same value: no-op
         self.assertEqual(version(), seen + 2)
         storage.decide_draft(self.conn, "b" * 16, "approved", MADE.isoformat())
         self.assertEqual(storage.hold_reel(self.conn, "b" * 16, False), "not_pending")
@@ -530,6 +530,16 @@ class ReelPublishTests(Case):
         [row] = self.conn.execute("SELECT * FROM drafts").fetchall()
         self.assertEqual(row["status"], "pending")
         self.assertTrue(publish.held(row))
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM publish_runs").fetchone()[0], 0)
+
+    def test_a_reject_then_a_failure_before_publishing_is_not_a_failed_post(self):
+        def reject_then_fail(*args, on_publish, **kwargs):
+            storage.decide_draft(self.conn, "b" * 16, "rejected", "2026-11-12T18:04:00+00:00")
+            raise publish.PublishError("container status ERROR")
+
+        with patch.object(publish, "publish_reel", reject_then_fail):
+            self.assertEqual(self.tick(ReelGraph()), "published 0, failed 0")
+        self.assertEqual(self.conn.execute("SELECT status FROM drafts").fetchone()[0], "rejected")
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM publish_runs").fetchone()[0], 0)
 
     def test_a_hold_set_while_rendering_survives_the_render(self):
