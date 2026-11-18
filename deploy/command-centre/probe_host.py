@@ -10,6 +10,7 @@ import shutil
 import stat
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -92,6 +93,17 @@ def app_diagnostics(app):
     return result
 
 
+def instagram_tick_started_at(checkout):
+    lock = checkout / "data" / "instagram" / "drafts" / ".daily.lock"
+    try:
+        metadata = lock.lstat()
+    except OSError:
+        return None
+    if not stat.S_ISREG(metadata.st_mode):
+        return None
+    return datetime.fromtimestamp(metadata.st_mtime, timezone.utc).isoformat(timespec="seconds")
+
+
 def main():
     checkout = Path(sys.argv[1])
     app = checkout.parent / "command-centre-app"
@@ -117,6 +129,7 @@ def main():
         "app_directory_exists": app.is_dir(),
         "entrypoint_exists": (app / "passenger_wsgi.py").is_file(),
         "energy_database_exists": (checkout / "data/octopus_energy.sqlite3").is_file(),
+        "instagram_tick_started_at": instagram_tick_started_at(checkout),
         "passenger_registry": "unavailable",
         "command_centre_registered": None,
         "selector_registry": "unavailable",
