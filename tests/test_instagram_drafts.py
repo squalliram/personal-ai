@@ -3,6 +3,8 @@ import io
 import json
 import sqlite3
 import stat
+import subprocess
+import sys
 import tempfile
 import unittest
 from datetime import datetime, timezone
@@ -34,7 +36,7 @@ class FakeAI(OpenAIClient):
         self.creates, self.scores, self.calls, self.images = list(creates), list(scores), [], 0
         self.fail_images_after = fail_images_after
 
-    def chat_json(self, system, user):
+    def chat_json(self, system, user, *, images=()):
         self.calls.append((system, json.loads(user)))
         if system.startswith("You are the Create agent"):
             return {"drafts": self.creates.pop(0)}
@@ -131,6 +133,20 @@ class DraftTests(unittest.TestCase):
         self.assertFalse(storage.decide_draft(self.conn, "a" * 16, "rejected", "t2"))
         example = self.conn.execute("SELECT decision, topic, hashtags FROM examples").fetchone()
         self.assertEqual(tuple(example), ("approved", "flat white", "#coffee"))
+
+
+class CliStartupTests(unittest.TestCase):
+    def test_daily_cli_starts_in_a_fresh_process(self):
+        result = subprocess.run(
+            [sys.executable, "-m", "instagram_agent", "daily", "--help"],
+            cwd=Path(__file__).resolve().parents[1],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--media", result.stdout)
 
 
 class DailyTickTests(unittest.TestCase):
@@ -318,6 +334,24 @@ class OpenAIClientTests(unittest.TestCase):
             client.chat_json("s", "u")
         self.assertEqual(str(caught.exception), "OpenAI request failed (HTTP 429)")
         self.assertEqual(call.call_count, 2)
+
+    def test_images_request_and_require_jpeg(self):
+        client = OpenAIClient("sk-test-secret")
+        jpeg = b"\xff\xd8\xff" + b"0" * 16
+        reply = {"data": [{"b64_json": base64.b64encode(jpeg).decode()}]}
+        with patch.object(client, "_post", return_value=reply) as post:
+            self.assertEqual(client.image("a flat white"), jpeg)
+        payload = post.call_args.args[1]
+        self.assertEqual(payload["output_format"], "jpeg")
+        self.assertEqual((payload["size"], payload["quality"]), ("1024x1280", "medium"))
+
+    def test_images_reject_png_instead_of_passing_it_to_publisher(self):
+        client = OpenAIClient("sk-test-secret")
+        png = b"\x89PNG\r\n\x1a\n" + b"0" * 16
+        reply = {"data": [{"b64_json": base64.b64encode(png).decode()}]}
+        with patch.object(client, "_post", return_value=reply), self.assertRaises(OpenAIError) as caught:
+            client.image("a flat white")
+        self.assertEqual(str(caught.exception), "OpenAI returned an image that is not a JPEG")
 
 
 class CloudflareClientTests(unittest.TestCase):

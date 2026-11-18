@@ -1,5 +1,32 @@
 # Command Centre operations
 
+## Telegram Ask Jarvis replies
+
+No additional owner setup is needed: when the deployment has `TELEGRAM_BOT_TOKEN`
+and `TELEGRAM_CHAT_ID` secrets, it registers the webhook on the cPanel host after
+a successful install. Registration outcomes are reported safely in the deployment JSON
+(`telegram_webhook` is `registered` or `failed`) without failing deployment.
+The webhook secret defaults to a deterministic HMAC-SHA256 of the bot token.
+An optional `COMMAND_CENTRE_TELEGRAM_WEBHOOK_SECRET` in the private host environment
+overrides it (16–256 letters, digits, underscores or hyphens).
+Token rotation changes the derived secret; redeploy to register the new value.
+For manual management, load the host's private environment and run:
+
+```sh
+export COMMAND_CENTRE_URL=https://iramkhan.com/command-centre/
+python3.12 -m command_centre telegram-webhook set
+python3.12 -m command_centre telegram-webhook info
+```
+
+`set` preserves pending updates and subscribes only to messages, as does automatic registration.
+`delete` unregisters the webhook. Webhooks disable Telegram's `getUpdates` polling API;
+this repository does not use it.
+Only private text messages sent by the configured owner receive read-only Ask Jarvis answers.
+Replies share the website's AI providers, context and hourly question limit.
+Update IDs are persisted in the audit database before answering: retries cannot send twice,
+but a crash or delivery failure may lose a reply; send a new message to try again.
+Do not delete this database while the webhook is active. No message text or IDs are audited.
+
 ## Run locally
 
 Requires Python 3.10 or newer. On this Mac `python3` is 3.9.6, so the launcher picks a supported interpreter through `scripts/find-python.sh`.

@@ -59,6 +59,7 @@ def main():
                 "notify_ingest_token": env.get("COMMAND_CENTRE_NOTIFY_INGEST_TOKEN", ""),
                 "telegram_bot_token": env.get("COMMAND_CENTRE_TELEGRAM_BOT_TOKEN", ""),
                 "telegram_chat_id": env.get("COMMAND_CENTRE_TELEGRAM_CHAT_ID", ""),
+                "telegram_webhook_secret": env.get("COMMAND_CENTRE_TELEGRAM_WEBHOOK_SECRET", ""),
                 "wheels": wheels(env.get("COMMAND_CENTRE_WHEELS_DIR", "")),
             }
         ).encode(),

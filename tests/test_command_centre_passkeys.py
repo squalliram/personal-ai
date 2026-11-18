@@ -2,10 +2,13 @@ import base64
 import hashlib
 import json
 import os
+import sqlite3
 import struct
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
+from unittest.mock import patch
 
 from command_centre_fixtures import PASSWORD, Client, Clock, make_app, make_settings
 
@@ -259,10 +262,66 @@ class PasskeyApiTests(unittest.TestCase):
         self.assertEqual(statuses[:20], [200] * 20)
         self.assertEqual(statuses[20], 429)
 
+    def test_recovery_during_registration_cannot_restore_access(self):
+        self.register()
+        options = self.post(self.owner, "/api/v1/passkeys/register/options", {"password": PASSWORD}).json()
+        attacker = Authenticator()
+        verify = passkeys.verify_registration
+        # A different worker resets after the challenge is consumed, before insertion.
+        recovery = passkeys.PasskeyStore(self.app.passkeys.path, clock=self.clock)
+
+        def reset_then_verify(*args):
+            recovery.remove_all()
+            return verify(*args)
+
+        with patch.object(passkeys, "verify_registration", side_effect=reset_then_verify):
+            response = self.post(self.owner, "/api/v1/passkeys/register", attacker.register(options["challenge"]))
+        self.assertEqual(response.status, 409)
+        self.assertEqual(recovery.count(), 0)
+        self.assertEqual(self.sign_in_status(attacker), 404)
+        # Registrations authorized after recovery still work.
+        self.register()
+
+    def test_recovery_during_password_confirmation_cannot_issue_challenge(self):
+        from command_centre import app
+
+        verify = app.verify_password
+        recovery = passkeys.PasskeyStore(self.app.passkeys.path, clock=self.clock)
+
+        def reset_then_verify(*args):
+            self.app.sessions.revoke_all()
+            recovery.remove_all()
+            return verify(*args)
+
+        with patch.object(app, "verify_password", side_effect=reset_then_verify):
+            response = self.post(self.owner, "/api/v1/passkeys/register/options", {"password": PASSWORD})
+        self.assertEqual(response.status, 409)
+        self.assertEqual(recovery.count(), 0)
+        with closing(sqlite3.connect(recovery.path)) as conn:
+            self.assertIsNone(
+                conn.execute("SELECT 1 FROM passkey_challenges WHERE purpose LIKE 'register:%'").fetchone()
+            )
+
+    def test_recovery_before_options_handler_rejects_cached_session(self):
+        generation = self.app.passkeys.generation
+
+        def reset_then_read():
+            self.app.sessions.revoke_all()
+            self.app.passkeys.remove_all()
+            return generation()
+
+        with (
+            patch.object(self.app.passkeys, "generation", side_effect=reset_then_read),
+            patch.object(self.app, "_reserve_attempt", wraps=self.app._reserve_attempt) as reserve_attempt,
+        ):
+            response = self.post(self.owner, "/api/v1/passkeys/register/options", {"password": PASSWORD})
+        self.assertEqual(response.status, 401)
+        reserve_attempt.assert_not_called()
+
     def test_the_passkey_limit_holds(self):
         store = self.app.passkeys
         for n in range(passkeys.MAX_PASSKEYS + 2):
-            store.add(os.urandom(32), Authenticator().cose, 0, f"key {n}")
+            store.add(os.urandom(32), Authenticator().cose, 0, f"key {n}", generation=store.generation())
         self.assertEqual(store.count(), passkeys.MAX_PASSKEYS)
 
     def test_passkeys_are_off_on_ip_literal_hosts(self):

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import csv
+import email.parser
+import email.policy
 import hashlib
 import hmac
 import io
@@ -26,8 +28,11 @@ from urllib.parse import parse_qs
 from zoneinfo import ZoneInfo
 
 import notifications
+from instagram_agent import clips as instagram_clips
 from instagram_agent import cloudflare_client, openai_client
+from instagram_agent import music as instagram_music
 from instagram_agent import storage as instagram_storage
+from instagram_agent import uploads as instagram_uploads
 
 from . import assistant, energy_refresh, insights, passkeys, sources
 from .audit import AuditLog
@@ -54,6 +59,7 @@ STATIC_FILES = {
     "/static/app.css": ("app.css", "text/css; charset=utf-8"),
 }
 MAX_BODY_BYTES = 4096
+MAX_TELEGRAM_BODY_BYTES = 64 * 1024
 # Overview, integrations, automations, modules and the assistant share one snapshot. It is reused until a
 # source file changes or this many seconds pass, so time-based health (stale, overdue) stays current.
 COLLECT_TTL_SECONDS = 30
@@ -118,6 +124,66 @@ def _json_body(environ: dict, limit: int = MAX_BODY_BYTES) -> tuple[object, Resu
         return json.loads(environ["wsgi.input"].read(length)), None
     except (ValueError, UnicodeDecodeError):
         return None, _error(400, "invalid_request")
+
+
+def _form_parts(environ: dict, limit: int) -> tuple[list[tuple[str, bool, bytes]] | None, Result | None]:
+    """(name, is_file, data) for each part of a multipart/form-data body of at most `limit` bytes."""
+    content_type = environ.get("CONTENT_TYPE", "")
+    if content_type.split(";")[0].strip().lower() != "multipart/form-data" or "boundary=" not in content_type:
+        return None, _error(415, "multipart_required")
+    try:
+        length = int(environ.get("CONTENT_LENGTH") or 0)
+    except ValueError:
+        return None, _error(400, "invalid_request")
+    if not 0 < length <= limit:
+        return None, _error(413 if length > 0 else 400, "upload_too_large" if length > 0 else "invalid_request")
+    body = environ["wsgi.input"].read(length)
+    if len(body) != length:
+        return None, _error(400, "invalid_request")
+    header = f"Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n".encode("latin-1", "replace")
+    message = email.parser.BytesParser(policy=email.policy.HTTP).parsebytes(header + body)
+    if not message.is_multipart() or message.defects:
+        return None, _error(400, "invalid_request")
+    parts = []
+    for part in message.iter_parts():
+        data = part.get_payload(decode=True)
+        if part.get_content_disposition() != "form-data" or not isinstance(data, bytes):
+            return None, _error(400, "invalid_request")
+        parts.append((part.get_param("name", header="content-disposition"), part.get_filename() is not None, data))
+    return parts, None
+
+
+def _fields(parts, files: str, texts: set[str]) -> tuple[dict[str, str], list[bytes]] | None:
+    """Each text field at most once and the `files` file parts; None if anything else is in the form."""
+    found: dict[str, str] = {}
+    data = []
+    for name, is_file, value in parts:
+        if is_file and name == files:
+            data.append(value)
+        elif not is_file and name in texts and name not in found:
+            try:
+                found[name] = value.decode("utf-8")
+            except UnicodeDecodeError:
+                return None
+        else:
+            return None
+    return found, data
+
+
+def _photo_form(environ: dict) -> tuple[tuple[str, list[bytes], dict] | None, Result | None]:
+    """The note, photo files and reel choices (`reel`, `music`, `mix`) from a photo upload, nothing else."""
+    parts, error = _form_parts(environ, instagram_uploads.MAX_UPLOAD_BYTES)
+    if error:
+        return None, error
+    if sum(1 for name, is_file, _ in parts if is_file and name == "photos") > instagram_uploads.MAX_PHOTOS:
+        return None, _error(400, "photo_count")
+    if sum(1 for name, is_file, _ in parts if not is_file and name == "note") != 1:
+        return None, _error(400, "invalid_note")
+    found = _fields(parts, "photos", {"note", "reel", "music", "mix"})
+    if found is None:
+        return None, _error(400, "invalid_note" if any(n == "note" for n, f, _ in parts) else "invalid_request")
+    fields, photos = found
+    return (fields.pop("note"), photos, fields), None
 
 
 def csv_cell(value: object) -> object:
@@ -251,8 +317,29 @@ class CommandCentreApp:
             ("GET", "/api/v1/instagram/drafts"): Route(self.instagram_drafts, Permission.READ),
             ("GET", "/api/v1/instagram/slide"): Route(self.instagram_slide, Permission.READ),
             ("POST", "/api/v1/instagram/decision"): Route(self.instagram_decision, Permission.RECOMMEND, csrf=True),
+            ("POST", "/api/v1/instagram/hold"): Route(self.instagram_hold, Permission.RECOMMEND, csrf=True),
+            ("POST", "/api/v1/instagram/uploads"): Route(self.instagram_upload, Permission.RECOMMEND, csrf=True),
+            ("POST", "/api/v1/instagram/uploads/delete"): Route(
+                self.instagram_upload_delete, Permission.RECOMMEND, csrf=True
+            ),
+            ("GET", "/api/v1/instagram/upload-photo"): Route(self.instagram_upload_photo, Permission.READ),
+            ("POST", "/api/v1/instagram/music"): Route(self.instagram_music_add, Permission.RECOMMEND, csrf=True),
+            ("POST", "/api/v1/instagram/music/delete"): Route(
+                self.instagram_music_delete, Permission.RECOMMEND, csrf=True
+            ),
+            ("POST", "/api/v1/instagram/clips"): Route(self.instagram_clip_start, Permission.RECOMMEND, csrf=True),
+            ("POST", "/api/v1/instagram/clips/chunk"): Route(
+                self.instagram_clip_chunk, Permission.RECOMMEND, csrf=True
+            ),
+            ("POST", "/api/v1/instagram/clips/finish"): Route(
+                self.instagram_clip_finish, Permission.RECOMMEND, csrf=True
+            ),
+            ("POST", "/api/v1/instagram/clips/delete"): Route(
+                self.instagram_clip_delete, Permission.RECOMMEND, csrf=True
+            ),
             ("GET", "/api/v1/notifications"): Route(self.notifications, Permission.READ),
             ("POST", "/api/v1/notifications"): Route(self.notification_ingest, None, bearer=True),
+            ("POST", "/api/v1/telegram/webhook"): Route(self.telegram_webhook, None, bearer=True),
         }
 
     # WSGI -------------------------------------------------------------------------------------
@@ -557,6 +644,9 @@ class CommandCentreApp:
             return error
         if not isinstance(body["password"], str):
             return _error(400, "invalid_request")
+        generation = self.passkeys.generation()
+        if self.sessions.get(request.token) is None:
+            return _error(401, "authentication_required")
         # Re-entering the passphrase stops a stolen session cookie from adding a lasting credential.
         reservation, error = self._reserve_attempt(request.client, "passkey_register")
         if error:
@@ -567,7 +657,10 @@ class CommandCentreApp:
         self.login_global.release("all", reservation)
         self.login_per_client.reset(request.client)
         _, rp_id = self._webauthn_party(request.environ)
-        challenge = self.passkeys.issue_challenge(f"register:{request.session.token_hash}")
+        try:
+            challenge = self.passkeys.issue_challenge(f"register:{request.session.token_hash}", generation=generation)
+        except passkeys.PasskeyError:
+            return _error(409, "passkey_not_added")
         return (
             200,
             {
@@ -598,6 +691,8 @@ class CommandCentreApp:
             return _error(400, "invalid_request")
         label = " ".join(label.split())[: passkeys.MAX_LABEL] or "Passkey"
         origin, rp_id = self._webauthn_party(request.environ)
+        # Capture before consuming the challenge: recovery deletes challenges and advances this fence.
+        generation = self.passkeys.generation()
         try:
             client_data = passkeys.b64url_decode(body["client_data_json"])
             challenge = passkeys.client_data_challenge(client_data, kind="webauthn.create", origin=origin)
@@ -608,7 +703,7 @@ class CommandCentreApp:
         except passkeys.PasskeyError as failure:
             self.audit.record("passkey_register", "failure", actor="owner", client=request.client, reason=str(failure))
             return _error(400, "invalid_passkey")
-        if not self.passkeys.add(credential_id, public_key, count, label):
+        if not self.passkeys.add(credential_id, public_key, count, label, generation=generation):
             return _error(409, "passkey_not_added")
         self.audit.record("passkey_register", "success", actor="owner", client=request.client)
         return self.passkey_list(request)
@@ -790,12 +885,20 @@ class CommandCentreApp:
         question = body.get("question") if isinstance(body, dict) else None
         if not isinstance(question, str) or set(body) != {"question"}:
             return _error(400, "invalid_request")
+        return self._answer_question(request, question, providers=providers)
+
+    def _answer_question(self, request: Request, question: str, *, actor: str = "owner", providers=None) -> Result:
+        providers = self._assistant_providers() if providers is None else providers
+        if not providers:
+            self.audit.record("assistant", "not_configured", actor=actor, client=request.client)
+            return _error(503, "assistant_not_configured")
         question = " ".join(question.split())
         if not 0 < len(question) <= assistant.MAX_QUESTION:
             return _error(400, "invalid_request")
         if not self.assistant_limiter.hit("all"):
-            self.audit.record("assistant", "rate_limited", actor="owner", client=request.client)
-            self._assistant_failed("rate_limited", "Website Jarvis hit its limit of 30 questions an hour")
+            self.audit.record("assistant", "rate_limited", actor=actor, client=request.client)
+            if actor == "owner":
+                self._assistant_failed("rate_limited", "Website Jarvis hit its limit of 30 questions an hour")
             return _error(429, "rate_limited", [("Retry-After", "600")])
         data = self._collect()
         context = assistant.build_context(
@@ -806,17 +909,76 @@ class CommandCentreApp:
             try:
                 answer = client.chat_text(assistant.SYSTEM_PROMPT, message, max_tokens=assistant.MAX_ANSWER_TOKENS)
             except openai_client.AIError:
-                self.audit.record("assistant", "failure", actor="owner", client=request.client, provider=name)
+                self.audit.record("assistant", "failure", actor=actor, client=request.client, provider=name)
                 continue
             # The question and answer are owner content, so only the outcome is audited.
-            self.audit.record("assistant", "success", actor="owner", client=request.client, provider=name)
+            self.audit.record("assistant", "success", actor=actor, client=request.client, provider=name)
             return (
                 200,
                 {"answer": answer[:2000], "model": client.text_model, "generated_at": self._iso(self.clock())},
                 [],
             )
-        self._assistant_failed("unavailable", "Website Jarvis couldn't answer: every AI provider failed")
+        if actor == "owner":
+            self._assistant_failed("unavailable", "Website Jarvis couldn't answer: every AI provider failed")
         return _error(502, "assistant_unavailable")
+
+    def telegram_webhook(self, request: Request) -> Result:
+        def audit(outcome: str) -> None:
+            self.audit.record("telegram_webhook", outcome, actor="telegram", client=request.client)
+
+        settings = self.settings
+        if not self.ingest_limiter.hit(request.client):
+            audit("rate_limited")
+            return _error(429, "rate_limited")
+        if not all((settings.telegram_webhook_secret, settings.telegram_bot_token, settings.telegram_chat_id)):
+            audit("not_configured")
+            return _error(503, "not_configured")
+        supplied = request.environ.get("HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN", "")
+        if not hmac.compare_digest(supplied.encode(), settings.telegram_webhook_secret.encode()):
+            audit("unauthorized")
+            return _error(401, "authentication_required")
+        body, error = _json_body(request.environ, limit=MAX_TELEGRAM_BODY_BYTES)
+        message = body.get("message") if isinstance(body, dict) else None
+        message = message if isinstance(message, dict) else {}
+        chat, sender = message.get("chat"), message.get("from")
+        update_id = body.get("update_id") if isinstance(body, dict) else None
+        if (
+            error
+            or type(update_id) is not int
+            or not isinstance(chat, dict)
+            or not isinstance(sender, dict)
+            or chat.get("type") != "private"
+            or str(chat.get("id")) != settings.telegram_chat_id
+            or str(sender.get("id")) != settings.telegram_chat_id
+            or sender.get("is_bot") is not False
+            or not isinstance(message.get("text"), str)
+        ):
+            audit("ignored")
+            return 200, {}, []
+        try:
+            with closing(sqlite3.connect(settings.audit_db)) as conn, conn:
+                conn.execute("CREATE TABLE IF NOT EXISTS telegram_updates (update_id INTEGER PRIMARY KEY)")
+                inserted = conn.execute("INSERT OR IGNORE INTO telegram_updates VALUES (?)", (update_id,)).rowcount
+        except sqlite3.Error:
+            audit("storage_failure")
+            return _error(503, "unavailable")
+        if not inserted:
+            audit("duplicate")
+            return 200, {}, []
+        apology = "Sorry, I can't answer right now. Please try again later."
+        try:
+            status, payload, _ = self._answer_question(request, message["text"], actor="telegram")
+            answer = payload["answer"] if status == 200 else apology
+        except Exception:
+            audit("answer_failure")
+            answer = apology
+        try:
+            notifications.send_telegram(settings.telegram_bot_token, settings.telegram_chat_id, answer)
+        except Exception:
+            audit("delivery_failure")
+        else:
+            audit("success")
+        return 200, {}, []
 
     def modules(self, request: Request) -> Result:
         data = self._collect()
@@ -1072,7 +1234,256 @@ class CommandCentreApp:
         return 201, {"id": stored}, []
 
     def instagram_drafts(self, request: Request) -> Result:
-        return 200, sources.instagram_drafts(self.settings), []
+        return 200, {**sources.instagram_drafts(self.settings), "uploads_on": instagram_uploads.available()}, []
+
+    def _instagram_ready(self) -> bool:
+        path, media = self.settings.instagram_db, self.settings.instagram_media
+        return bool(path and media and path.is_file() and not path.is_symlink() and not media.is_symlink())
+
+    def instagram_upload(self, request: Request) -> Result:
+        """Add the owner's photos and note to the queue; the daily run turns the oldest into a draft."""
+        if not self._instagram_ready():
+            return _error(404, "not_found")
+        if not instagram_uploads.available():
+            return _error(503, "uploads_unavailable")
+        form, error = _photo_form(request.environ)
+        if error:
+            return error
+        options = form[2]
+        if options.get("reel", "0") not in ("0", "1"):
+            return _error(400, "invalid_request")
+        as_reel = options.get("reel") == "1"
+        conn = sqlite3.connect(self.settings.instagram_db, timeout=5)
+        conn.row_factory = sqlite3.Row
+        try:
+            try:
+                note = instagram_uploads.clean_note(form[0])
+                picked = instagram_music.choice(options.get("music"), options.get("mix", "under"), conn)
+                prepared = instagram_uploads.prepare(form[1])
+            except (instagram_uploads.PhotoError, instagram_music.MusicError) as exc:
+                self.audit.record("instagram_upload", "refused", actor="owner", reason=exc.code, client=request.client)
+                return _error(413 if exc.code == "photo_too_large" else 400, exc.code)
+            upload_id = instagram_uploads.save(
+                conn, self.settings.instagram_media, note, prepared, self._now(), reel=as_reel, music=picked
+            )
+        finally:
+            conn.close()
+        with self._collect_lock:
+            self._collected = None
+        self.audit.record(
+            "instagram_upload",
+            "saved",
+            actor="owner",
+            upload=upload_id,
+            photos=len(prepared),
+            reel=as_reel,
+            music=(picked or {}).get("pick", "off") if as_reel else "off",
+            client=request.client,
+        )
+        return 200, {"upload_id": upload_id, "photos": len(prepared), "reel": as_reel}, []
+
+    def instagram_music_add(self, request: Request) -> Result:
+        """Add a track the owner has the rights to, with its licence and source, to the reel music library."""
+        if not self._instagram_ready():
+            return _error(404, "not_found")
+        parts, error = _form_parts(request.environ, instagram_music.MAX_TRACK_BYTES + 64 * 1024)
+        if error:
+            return error
+        found = _fields(parts, "track", {"title", "licence", "source"})
+        if found is None or len(found[1]) != 1:
+            return _error(400, "invalid_request")
+        fields, [data] = found
+        conn = sqlite3.connect(self.settings.instagram_db, timeout=5)
+        try:
+            track_id = instagram_music.save(
+                conn,
+                self.settings.instagram_media,
+                fields.get("title"),
+                fields.get("licence"),
+                fields.get("source", ""),
+                data,
+                self._now(),
+            )
+        except instagram_music.MusicError as exc:
+            self.audit.record("instagram_music", "refused", actor="owner", reason=exc.code, client=request.client)
+            return _error(413 if exc.code == "track_too_large" else 400, exc.code)
+        except OSError:
+            return _error(507, "storage_error")
+        finally:
+            conn.close()
+        with self._collect_lock:
+            self._collected = None
+        self.audit.record("instagram_music", "saved", actor="owner", track=track_id, client=request.client)
+        return 200, {"track_id": track_id}, []
+
+    def instagram_music_delete(self, request: Request) -> Result:
+        body, error = _json_body(request.environ)
+        if error:
+            return error
+        if not isinstance(body, dict) or set(body) != {"track_id"} or not isinstance(body["track_id"], str):
+            return _error(400, "invalid_request")
+        if not self._instagram_ready():
+            return _error(404, "not_found")
+        conn = sqlite3.connect(self.settings.instagram_db, timeout=5)
+        try:
+            deleted = instagram_music.delete(conn, self.settings.instagram_media, body["track_id"])
+        finally:
+            conn.close()
+        if not deleted:
+            return _error(404, "not_found")
+        with self._collect_lock:
+            self._collected = None
+        self.audit.record("instagram_music", "deleted", actor="owner", track=body["track_id"], client=request.client)
+        return 200, {"track_id": body["track_id"], "deleted": True}, []
+
+    def instagram_upload_delete(self, request: Request) -> Result:
+        body, error = _json_body(request.environ)
+        if error:
+            return error
+        if (
+            not isinstance(body, dict)
+            or set(body) != {"upload_id"}
+            or not isinstance(body["upload_id"], str)
+            or not instagram_uploads.UPLOAD_ID.fullmatch(body["upload_id"])
+        ):
+            return _error(400, "invalid_request")
+        if not self._instagram_ready():
+            return _error(404, "not_found")
+        conn = sqlite3.connect(self.settings.instagram_db, timeout=5)
+        try:
+            deleted = instagram_uploads.delete(conn, self.settings.instagram_media, body["upload_id"])
+        except sqlite3.OperationalError:
+            deleted = False  # no uploads table yet
+        finally:
+            conn.close()
+        if not deleted:
+            return _error(404, "not_found")
+        with self._collect_lock:
+            self._collected = None
+        self.audit.record("instagram_upload", "deleted", actor="owner", upload=body["upload_id"], client=request.client)
+        return 200, {"upload_id": body["upload_id"], "deleted": True}, []
+
+    def _clip_body(
+        self, request: Request, keys: set[str], optional: frozenset[str] = frozenset()
+    ) -> tuple[dict | None, Result | None]:
+        body, error = _json_body(request.environ)
+        if error:
+            return None, error
+        if not isinstance(body, dict) or not keys <= set(body) <= keys | optional:
+            return None, _error(400, "invalid_request")
+        if "clip_id" in keys and not (
+            isinstance(body["clip_id"], str) and instagram_uploads.UPLOAD_ID.fullmatch(body["clip_id"])
+        ):
+            return None, _error(400, "invalid_request")
+        if not self._instagram_ready():
+            return None, _error(404, "not_found")
+        return body, None
+
+    def _clip_call(self, call: Callable[[sqlite3.Connection], object]):
+        conn = sqlite3.connect(self.settings.instagram_db, timeout=5)
+        conn.row_factory = sqlite3.Row
+        try:
+            return call(conn)
+        finally:
+            conn.close()
+
+    def instagram_clip_start(self, request: Request) -> Result:
+        """Start a clip upload: the note and the size; the browser then sends the bytes in chunks."""
+        body, error = self._clip_body(request, {"note", "size"}, frozenset({"music", "mix"}))
+        if error:
+            return error
+        try:
+            note = instagram_uploads.clean_note(body["note"])
+            media, now = self.settings.instagram_media, self._now()
+
+            def start(conn):
+                picked = instagram_music.choice(body.get("music"), body.get("mix", "under"), conn)
+                return instagram_clips.start(conn, media, note, body["size"], now, picked)
+
+            clip_id = self._clip_call(start)
+        except (instagram_uploads.PhotoError, instagram_clips.ClipError, instagram_music.MusicError) as exc:
+            return _error(413 if exc.code == "clip_too_large" else 400, exc.code)
+        except OSError:
+            return _error(507, "storage_error")
+        return 200, {"clip_id": clip_id, "chunk_bytes": instagram_clips.CHUNK_BYTES}, []
+
+    def instagram_clip_chunk(self, request: Request) -> Result:
+        clip_id, offset = request.query("clip") or "", request.query("offset") or ""
+        if not instagram_uploads.UPLOAD_ID.fullmatch(clip_id) or not offset.isdigit() or len(offset) > 12:
+            return _error(400, "invalid_parameters")
+        if request.environ.get("CONTENT_TYPE", "").split(";")[0].strip() != "application/octet-stream":
+            return _error(415, "octet_stream_required")
+        try:
+            length = int(request.environ.get("CONTENT_LENGTH") or 0)
+        except ValueError:
+            return _error(400, "invalid_request")
+        if not self._instagram_ready():
+            return _error(404, "not_found")
+        stream, media = request.environ["wsgi.input"], self.settings.instagram_media
+        try:
+            received = self._clip_call(lambda c: instagram_clips.append(c, media, clip_id, int(offset), stream, length))
+        except instagram_clips.ClipError as exc:
+            return _error(404 if exc.code == "not_found" else 409 if exc.code == "wrong_offset" else 400, exc.code)
+        except FileNotFoundError:
+            return _error(404, "not_found")
+        except OSError:
+            return _error(507, "storage_error")
+        return 200, {"clip_id": clip_id, "received": received}, []
+
+    def instagram_clip_finish(self, request: Request) -> Result:
+        """Check the whole clip against Meta's spec; a clip that fails is dropped with the reasons."""
+        body, error = self._clip_body(request, {"clip_id"})
+        if error:
+            return error
+        media = self.settings.instagram_media
+        try:
+            facts = self._clip_call(lambda c: instagram_clips.finish(c, media, body["clip_id"]))
+        except instagram_clips.ClipError as exc:
+            if exc.code == "clip_rejected":
+                self.audit.record(
+                    "instagram_clip", "refused", actor="owner", clip=body["clip_id"], client=request.client
+                )
+                return 422, {"error": exc.code, "problems": exc.problems}, []
+            return _error(404 if exc.code == "not_found" else 409, exc.code)
+        except OSError:
+            return _error(507, "storage_error")
+        with self._collect_lock:
+            self._collected = None
+        self.audit.record(
+            "instagram_clip",
+            "saved",
+            actor="owner",
+            clip=body["clip_id"],
+            seconds=facts.get("seconds"),
+            client=request.client,
+        )
+        return 200, {"clip_id": body["clip_id"], "seconds": facts.get("seconds")}, []
+
+    def instagram_clip_delete(self, request: Request) -> Result:
+        body, error = self._clip_body(request, {"clip_id"})
+        if error:
+            return error
+        media = self.settings.instagram_media
+        if not self._clip_call(lambda c: instagram_clips.delete(c, media, body["clip_id"])):
+            return _error(404, "not_found")
+        with self._collect_lock:
+            self._collected = None
+        self.audit.record("instagram_clip", "deleted", actor="owner", clip=body["clip_id"], client=request.client)
+        return 200, {"clip_id": body["clip_id"], "deleted": True}, []
+
+    def instagram_upload_photo(self, request: Request) -> Result:
+        upload, number = request.query("upload") or "", request.query("n") or ""
+        if not instagram_uploads.UPLOAD_ID.fullmatch(upload) or not number.isdigit():
+            return _error(400, "invalid_parameters")
+        if not 1 <= int(number) <= instagram_uploads.MAX_PHOTOS:
+            return _error(400, "invalid_parameters")
+        media = self.settings.instagram_media
+        if media is None or media.is_symlink() or (media / instagram_uploads.FOLDER).is_symlink():
+            return _error(404, "not_found")
+        try:
+            return 200, (instagram_uploads.read_photo(media, upload, f"thumb-{int(number)}.jpg"), "image/jpeg"), []
+        except OSError:
+            return _error(404, "not_found")
 
     def instagram_slide(self, request: Request) -> Result:
         draft, number = request.query("draft") or "", request.query("n") or ""
@@ -1091,6 +1502,45 @@ class CommandCentreApp:
                 if stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
                     return 200, (stream.read(), content_type), []
         return _error(404, "not_found")
+
+    def instagram_hold(self, request: Request) -> Result:
+        """Hold a pending reel for the owner's approval, or let it post automatically if it passes review."""
+        body, error = _json_body(request.environ)
+        if error:
+            return error
+        if (
+            not isinstance(body, dict)
+            or set(body) != {"draft_id", "hold", "version"}
+            or type(body["version"]) is not int
+            or not 0 <= body["version"] < 2**31
+            or not isinstance(body["draft_id"], str)
+            or not sources.DRAFT_ID.fullmatch(body["draft_id"])
+            or not isinstance(body["hold"], bool)
+        ):
+            return _error(400, "invalid_request")
+        path = self.settings.instagram_db
+        if path is None or path.is_symlink() or not path.is_file():
+            return _error(404, "not_found")
+        draft_id = body["draft_id"]
+        conn = sqlite3.connect(path, timeout=5)
+        try:
+            outcome = instagram_storage.hold_reel(conn, draft_id, body["hold"], body["version"])
+        finally:
+            conn.close()
+        if outcome == "not_found":
+            return _error(404, "not_found")
+        if outcome == "hold_changed":
+            return _error(409, "hold_changed")
+        if outcome == "not_pending":
+            self.audit.record("instagram_hold", "not_pending", actor="owner", draft=draft_id)
+            return _error(409, "already_decided")
+        if outcome == "unchanged":
+            return 200, {"draft_id": draft_id, "hold": body["hold"]}, []
+        with self._collect_lock:
+            self._collected = None
+        state = "held" if body["hold"] else "released"
+        self.audit.record("instagram_hold", state, actor="owner", draft=draft_id, client=request.client)
+        return 200, {"draft_id": draft_id, "hold": body["hold"]}, []
 
     def instagram_decision(self, request: Request) -> Result:
         """Approve or reject a pending draft. Reject stops it posting; Approve lets a weaker draft post at its slot."""

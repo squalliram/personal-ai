@@ -11,8 +11,9 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 GRAPH_HOST = "https://graph.facebook.com/"
 INSTAGRAM_HOST = "https://graph.instagram.com/"
 GRAPH_VERSION = "v27.0"
-MEDIA_FIELDS = "id,caption,media_type,timestamp,permalink,like_count,comments_count"
+MEDIA_FIELDS = "id,caption,media_type,media_product_type,timestamp,permalink,like_count,comments_count"
 MEDIA_METRICS = "reach,likes,comments,saved,shares,views,total_interactions"
+REEL_METRICS = MEDIA_METRICS + ",ig_reels_avg_watch_time,ig_reels_video_view_total_time"  # in ms
 BENCHMARK_MEDIA_FIELDS = "id,caption,media_type,timestamp,permalink,like_count,comments_count,view_count"
 
 
@@ -110,6 +111,12 @@ class GraphClient:
             },
         )
         return self._send(request, self.retries if retry else 0)
+
+    def refresh_access_token(self) -> dict:
+        """Refresh an Instagram Login long-lived token at its fixed, unversioned endpoint."""
+        if urlsplit(self.base_url).hostname != urlsplit(INSTAGRAM_HOST).hostname:
+            raise GraphAPIError("Token refresh requires an Instagram Login token")
+        return self.get(f"{INSTAGRAM_HOST}refresh_access_token", {"grant_type": "ig_refresh_token"})
 
     def paginated(self, path: str, params: dict[str, str] | None = None, *, limit: int = 100) -> Iterator[dict]:
         page = self.get(path, params)

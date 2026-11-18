@@ -17,7 +17,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from instagram_agent import learnings as instagram_learnings
+from instagram_agent import music as instagram_music
 from instagram_agent import publish as instagram_publish
+from instagram_agent import render as instagram_render
 from octopus_energy.mcp_server import RefreshRequiredError, dispatch
 from octopus_energy.refresh import validate_status
 
@@ -540,16 +543,59 @@ def _publishing(conn) -> dict:
     }
 
 
-def instagram_drafts(settings: Settings, limit: int = 30) -> dict:
+def _token_snapshot(row, now: datetime) -> dict:
+    """Public-safe token lifecycle metadata; credential material is never read by this adapter."""
+    result = {
+        "state": "unknown",
+        "expires_at": None,
+        "last_refreshed_at": None,
+        "last_attempt_at": None,
+        "last_error": None,
+    }
+    if row is None:
+        return result
+    expires = _instant(row["expires_at"])
+    refreshed = _instant(row["last_refreshed_at"])
+    attempted = _instant(row["last_attempt_at"])
+    result.update(
+        expires_at=expires.isoformat(timespec="seconds") if expires else None,
+        last_refreshed_at=refreshed.isoformat(timespec="seconds") if refreshed else None,
+        last_attempt_at=attempted.isoformat(timespec="seconds") if attempted else None,
+        last_error=row["last_error"][:300] if isinstance(row["last_error"], str) else None,
+    )
+    outcome = row["last_outcome"]
+    if outcome in ("not_configured", "externally_managed", "unsupported"):
+        result["state"] = outcome
+    elif expires and expires <= now:
+        result["state"] = "expired"
+    elif outcome == "failed":
+        result["state"] = "refresh_failed"
+    elif expires is None:
+        result["state"] = "unknown"
+    elif expires <= now + timedelta(days=14):
+        result["state"] = "expiring"
+    else:
+        result["state"] = "valid"
+    return result
+
+
+def instagram_drafts(settings: Settings, limit: int = 30, now: datetime | None = None) -> dict:
     """Every draft awaiting review and the latest `limit` decisions. Scores and publish times are suggestions."""
+    now = now or datetime.now(timezone.utc)
     result = {
         "source": "instagram",
         "state": "not_configured",
         "basis": "inferred",
         "auto_publish": False,
+        "token": _token_snapshot(None, now) | {"state": "not_configured"},
         "drafts": [],
+        "uploads": [],
+        "clips": [],
+        "music": [],
+        "renders": {"clip": False, "photos": False},
         "runs": [],
         "latest_attempt": None,
+        "learnings": None,
     }
     path = settings.instagram_db
     if path is None or path.is_symlink() or not path.is_file():
@@ -557,8 +603,10 @@ def instagram_drafts(settings: Settings, limit: int = 30) -> dict:
     try:
         with closing(connect_read_only(path)) as conn:
             # Every pending draft stays reviewable; only decided ones are capped.
+            have = {row[1] for row in conn.execute("PRAGMA table_info(drafts)")}
+            columns = DRAFT_COLUMNS + "".join(f",{c}" for c in ("kind", "reel") if c in have)
             rows = conn.execute(
-                f"SELECT {DRAFT_COLUMNS} FROM drafts WHERE status='pending' OR draft_id IN "
+                f"SELECT {columns} FROM drafts WHERE status='pending' OR draft_id IN "
                 "(SELECT draft_id FROM drafts WHERE status!='pending' ORDER BY decided_at DESC, draft_id LIMIT ?) "
                 "ORDER BY created_at DESC",
                 (limit,),
@@ -568,11 +616,23 @@ def instagram_drafts(settings: Settings, limit: int = 30) -> dict:
                 "SELECT run_on,started_at,outcome,drafts,error FROM daily_runs ORDER BY id DESC LIMIT 10"
             ).fetchall()
             publishing = _publishing(conn)
+            waiting, notes = _uploads(conn)
+            clips, clip_notes = _clips(conn)
+            notes.update(clip_notes)
+            tracks = instagram_music.tracks(conn)
             # Ticks every 15 minutes mostly skip, so find the latest real attempt separately.
             attempt = conn.execute(
                 "SELECT run_on,started_at,outcome,drafts,error FROM daily_runs WHERE outcome!='skipped' "
                 "ORDER BY id DESC LIMIT 1"
             ).fetchone()
+            try:
+                token_row = conn.execute(
+                    "SELECT expires_at,last_refreshed_at,last_attempt_at,last_outcome,last_error "
+                    "FROM token_state WHERE id=1"
+                ).fetchone()
+            except sqlite3.OperationalError:
+                token_row = None  # Older databases have no token lifecycle table.
+            learned = instagram_learnings.summary(conn)
     except (OSError, sqlite3.Error):
         result["state"] = "unavailable"
         return result
@@ -583,6 +643,11 @@ def instagram_drafts(settings: Settings, limit: int = 30) -> dict:
             slides = []
         if not isinstance(slides, list):
             slides = []
+        draft_kind = instagram_publish.kind(row)
+        try:
+            reel = json.loads(row["reel"]) if draft_kind == "reel" else None
+        except (TypeError, ValueError):
+            reel = None
         result["drafts"].append(
             {
                 **dict(row),
@@ -596,16 +661,101 @@ def instagram_drafts(settings: Settings, limit: int = 30) -> dict:
                 ],
                 "hashtags": (row["hashtags"] or "").split(),
                 "posts_at": _posts_at(row),
-                "will_post": instagram_publish.will_post(row["status"], row["review_score"]),
+                "kind": draft_kind,
+                "reel": _reel(reel) if draft_kind == "reel" else None,
+                "will_post": instagram_publish.will_post(
+                    row["status"], row["review_score"], instagram_publish.held(row)
+                )
+                and instagram_publish.rendered(row),
                 "publish_error": publishing["errors"].get(row["draft_id"]),
                 "publishing": row["draft_id"] in publishing["started"],
             }
         )
+    for draft in result["drafts"]:
+        draft["note"] = notes.get(draft["draft_id"])
+    result["uploads"] = waiting
+    result["clips"] = clips
+    result["music"] = tracks
+    result["renders"] = {source: instagram_render.can_render(source) for source in ("clip", "photos")}
     result["auto_publish"] = publishing["on"]
     result["runs"] = [dict(run) for run in runs]
     result["latest_attempt"] = dict(attempt) if attempt else None
+    result["token"] = _token_snapshot(token_row, now)
+    result["learnings"] = learned
     result["state"] = "available"
     return result
+
+
+def _reel(reel) -> dict:
+    """The reel's script for the draft card: hook, timed on-screen text and cover moment."""
+    reel = reel if isinstance(reel, dict) else {}
+    beats = reel.get("on_screen") if isinstance(reel.get("on_screen"), list) else []
+    number = lambda v: v if isinstance(v, (int, float)) and not isinstance(v, bool) else 0  # noqa: E731
+    trim, song = reel.get("trim"), reel.get("music")
+    return {
+        "hook": str(reel.get("hook", "")),
+        "on_screen": [
+            {"start": number(b.get("start")), "end": number(b.get("end")), "text": str(b.get("text", ""))}
+            for b in beats
+            if isinstance(b, dict)
+        ],
+        "cover_seconds": number(reel.get("cover_ms")) / 1000,
+        "seconds": number(reel.get("seconds")),
+        "source": "photos" if reel.get("source") == "photos" else "clip",
+        "render": reel.get("render") if reel.get("render") in ("pending", "done", "failed") else None,
+        "render_error": str(reel.get("render_error", "")) or None,
+        "hold": reel.get("hold") is True,
+        "hold_version": reel["hold_version"] if type(reel.get("hold_version")) is int else 0,
+        "trim": {"in": number(trim.get("in")), "out": number(trim.get("out"))} if isinstance(trim, dict) else None,
+        "music": {k: str(song.get(k, "")) for k in ("title", "licence", "mix")} if isinstance(song, dict) else None,
+    }
+
+
+def _clips(conn) -> tuple[list[dict], dict[str, str]]:
+    """Clips waiting to become reels, oldest (next) first, and the owner's note for each drafted one."""
+    try:
+        rows = conn.execute("SELECT clip_id,created_at,note,status,facts,draft_id FROM clips").fetchall()
+    except sqlite3.OperationalError:
+        return [], {}  # the daily run hasn't added the table yet
+    waiting = []
+    for row in rows:
+        if row["status"] != "waiting":
+            continue
+        try:
+            facts = json.loads(row["facts"] or "{}")
+        except ValueError:
+            facts = {}
+        seconds = facts.get("seconds") if isinstance(facts, dict) else None
+        waiting.append(
+            {
+                "clip_id": row["clip_id"],
+                "created_at": row["created_at"],
+                "note": row["note"],
+                "seconds": seconds if isinstance(seconds, (int, float)) else None,
+            }
+        )
+    waiting.sort(key=lambda c: (c["created_at"], c["clip_id"]))
+    return waiting, {row["draft_id"]: row["note"] for row in rows if row["draft_id"]}
+
+
+def _uploads(conn) -> tuple[list[dict], dict[str, str]]:
+    """Photo uploads still waiting, oldest (next to post) first, and the owner's note for each drafted one."""
+    try:
+        rows = conn.execute("SELECT * FROM uploads").fetchall()
+    except sqlite3.OperationalError:
+        return [], {}  # the daily run hasn't added the table yet
+    waiting = sorted(
+        (
+            {
+                **{k: row[k] for k in ("upload_id", "created_at", "note", "photos")},
+                "reel": bool(row["reel"]) if "reel" in row.keys() else False,
+            }
+            for row in rows
+            if row["status"] == "waiting"
+        ),
+        key=lambda u: (u["created_at"], u["upload_id"]),
+    )
+    return waiting, {row["draft_id"]: row["note"] for row in rows if row["draft_id"]}
 
 
 def instagram_health(snapshot: dict, now: datetime) -> dict:
