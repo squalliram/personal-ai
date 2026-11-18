@@ -529,11 +529,11 @@ def install(
                 selector("stop", "--app-root", str(app.relative_to(home)))
             raise
         if telegram_bot_token and telegram_chat_id:
-            register_telegram_webhook(entrypoint)
+            result["telegram_webhook"] = register_telegram_webhook(entrypoint)
         return {"status": "deployed", "release": sha, **result}
 
 
-def register_telegram_webhook(entrypoint: Path) -> None:
+def register_telegram_webhook(entrypoint: Path) -> str:
     try:
         run(
             [
@@ -547,9 +547,8 @@ def register_telegram_webhook(entrypoint: Path) -> None:
             ]
         )
     except Exception:
-        print("Telegram webhook registration failed; deployment remains successful.")
-    else:
-        print("Telegram webhook registration succeeded.")
+        return "failed"
+    return "registered"
 
 
 def main():

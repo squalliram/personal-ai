@@ -4,7 +4,8 @@
 
 No additional owner setup is needed: when the deployment has `TELEGRAM_BOT_TOKEN`
 and `TELEGRAM_CHAT_ID` secrets, it registers the webhook on the cPanel host after
-a successful install. Registration failures are reported safely without failing deployment.
+a successful install. Registration outcomes are reported safely in the deployment JSON
+(`telegram_webhook` is `registered` or `failed`) without failing deployment.
 The webhook secret defaults to a deterministic HMAC-SHA256 of the bot token.
 An optional `COMMAND_CENTRE_TELEGRAM_WEBHOOK_SECRET` in the private host environment
 overrides it (16–256 letters, digits, underscores or hyphens).

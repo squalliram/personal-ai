@@ -56,13 +56,31 @@ class TelegramRegistrationTests(unittest.TestCase):
                 patch.object(HOST, "run", side_effect=error) as run,
                 patch("sys.stdout", new_callable=io.StringIO) as output,
             ):
-                HOST.register_telegram_webhook(entrypoint)
+                self.assertEqual(HOST.register_telegram_webhook(entrypoint), "failed" if error else "registered")
                 args = run.call_args.args[0]
+                self.assertEqual(args[0], sys.executable)
                 self.assertEqual(args[-2:], [str(entrypoint), "https://iramkhan.com/command-centre/"])
                 self.assertIn("namespace['settings']", args[2])
-                self.assertEqual(len(output.getvalue().splitlines()), 1)
-                self.assertIn("failed" if error else "succeeded", output.getvalue())
-                self.assertNotIn("sensitive", output.getvalue())
+                self.assertEqual(output.getvalue(), "")
+
+    def test_host_run_captures_output_without_echoing_errors(self):
+        for returncode in (0, 1):
+            with (
+                patch.object(HOST.subprocess, "run") as process,
+                patch("sys.stdout", new_callable=io.StringIO) as stdout,
+                patch("sys.stderr", new_callable=io.StringIO) as stderr,
+            ):
+                process.return_value = subprocess.CompletedProcess(
+                    ["python"], returncode, stdout=b"private token URL", stderr=b"private token URL"
+                )
+                if returncode:
+                    with self.assertRaises(HOST.ReleaseError) as error:
+                        HOST.run(["python"])
+                    self.assertNotIn("private", str(error.exception))
+                else:
+                    self.assertEqual(HOST.run(["python"]), b"private token URL")
+                self.assertTrue(process.call_args.kwargs["capture_output"])
+                self.assertEqual(stdout.getvalue() + stderr.getvalue(), "")
 
 
 class ReleaseTests(unittest.TestCase):
@@ -94,7 +112,7 @@ class ReleaseTests(unittest.TestCase):
         self.selector = self.enterContext(patch.object(HOST, "selector", side_effect=self.selection))
         self.verify = self.enterContext(patch.object(HOST, "verify", side_effect=self.verification))
         self.vendor = self.enterContext(patch.object(HOST, "vendor", return_value=True))
-        self.telegram = self.enterContext(patch.object(HOST, "register_telegram_webhook"))
+        self.telegram = self.enterContext(patch.object(HOST, "register_telegram_webhook", return_value="registered"))
         self.registered = False
 
     def locked(self):
@@ -186,7 +204,7 @@ class ReleaseTests(unittest.TestCase):
 
     def test_notification_ingest_settings_are_written_only_when_valid(self):
         token, bot = "0123456789abcdef" * 4, "123456:" + "A" * 30
-        HOST.install(
+        result = HOST.install(
             self.checkout,
             SHA,
             self.password_hash,
@@ -200,6 +218,7 @@ class ReleaseTests(unittest.TestCase):
         self.assertIn(f"COMMAND_CENTRE_TELEGRAM_BOT_TOKEN={bot}\n", config)
         self.assertIn("COMMAND_CENTRE_TELEGRAM_CHAT_ID=-1001\n", config)
         self.telegram.assert_called_once_with(self.app / "passenger_wsgi.py")
+        self.assertEqual(result["telegram_webhook"], "registered")
         for bad in (
             {"notify_ingest_token": "short"},
             {"notify_ingest_token": token + "\nCOMMAND_CENTRE_PERMISSION=draft"},

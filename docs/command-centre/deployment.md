@@ -5,7 +5,8 @@
 The existing workflow's `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` secrets are sufficient:
 after successful installation, the cPanel host automatically registers the deployed URL.
 It subscribes only to messages and preserves pending updates on redeploy. Registration
-failure prints a safe one-line outcome but does not roll back or fail deployment.
+failure records `telegram_webhook: failed` in the deployment JSON result but does not
+roll back or fail deployment; success records `telegram_webhook: registered`.
 The webhook secret is derived deterministically from the bot token unless an explicit
 `COMMAND_CENTRE_TELEGRAM_WEBHOOK_SECRET` is provided through deployment configuration.
 No new GitHub secret is required. See operations.md for manual management and overrides.
