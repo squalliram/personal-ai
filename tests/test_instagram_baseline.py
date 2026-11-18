@@ -1,6 +1,8 @@
 import csv
 import importlib.util
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from datetime import datetime, timezone
@@ -21,6 +23,31 @@ def response(value):
 
 def media(media_id="1", **kwargs):
     return {"id": media_id, "timestamp": "2026-07-01T23:30:00Z", "media_type": "IMAGE", **kwargs}
+
+
+class ConfigurationTests(unittest.TestCase):
+    def test_help_does_not_import_publishing_pipeline(self):
+        result = subprocess.run([sys.executable, str(SPEC.origin), "--help"], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--output", result.stdout)
+
+    def test_login_host_and_version_configuration(self):
+        for token, host in [
+            ("IG_test", "https://graph.instagram.com/"),
+            ("facebook_test", "https://graph.facebook.com/"),
+        ]:
+            with self.subTest(host=host):
+                env = {"INSTAGRAM_ACCESS_TOKEN": token, "INSTAGRAM_USER_ID": "123"}
+                self.assertEqual(BASELINE.graph_client(env).base_url, host + BASELINE.GRAPH_VERSION + "/")
+                env["META_GRAPH_VERSION"] = "v26.0"
+                self.assertEqual(BASELINE.graph_client(env).base_url, host + "v26.0/")
+
+    def test_missing_or_invalid_credentials_fail_locally(self):
+        with self.assertRaises(KeyError):
+            BASELINE.graph_client({})
+        for token, user in [("", "123"), ("test", "invalid")]:
+            with self.assertRaises(ValueError):
+                BASELINE.graph_client({"INSTAGRAM_ACCESS_TOKEN": token, "INSTAGRAM_USER_ID": user})
 
 
 class SummaryTests(unittest.TestCase):

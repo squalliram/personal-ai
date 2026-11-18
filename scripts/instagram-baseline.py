@@ -17,8 +17,14 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from instagram_agent.cli import graph_client  # noqa: E402
-from instagram_agent.graph import MEDIA_FIELDS, GraphAPIError  # noqa: E402
+from instagram_agent.graph import (  # noqa: E402
+    GRAPH_HOST,
+    GRAPH_VERSION,
+    INSTAGRAM_HOST,
+    MEDIA_FIELDS,
+    GraphAPIError,
+    GraphClient,
+)
 
 LONDON = ZoneInfo("Europe/London")
 COMMON_METRICS = ("reach", "views", "likes", "comments", "saved", "shares", "total_interactions")
@@ -43,6 +49,16 @@ POST_COLUMNS = (
     "caption_80",
     "permalink",
 )
+
+
+def graph_client(env):
+    token = env["INSTAGRAM_ACCESS_TOKEN"]
+    return GraphClient(
+        token,
+        env["INSTAGRAM_USER_ID"],
+        version=env.get("META_GRAPH_VERSION", GRAPH_VERSION),
+        host=INSTAGRAM_HOST if token.startswith("IG") else GRAPH_HOST,
+    )
 
 
 def redact(value, token):
