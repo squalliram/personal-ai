@@ -18,7 +18,7 @@ export default function Today() {
           <Text style={type.eyebrow}>SYSTEM STATUS</Text>
           <Text style={type.section}>{label(data.status.state)}</Text>
           <Text style={type.body}>{data.status.automations_healthy} of {data.status.automations_monitored} monitored automations healthy</Text>
-          <Text style={type.muted}>Updated {londonTime(data.generated_at)} · UK time</Text>
+          <Text style={type.muted}>{access.kind === "demo" ? "Sample snapshot" : "Updated"} · {londonTime(data.generated_at)} · UK time</Text>
         </Card>
         <Text accessibilityRole="header" style={type.section}>Needs attention</Text>
         {data.attention.length === 0 && <Text style={type.muted}>Nothing needs your attention.</Text>}

@@ -28,7 +28,9 @@ export default function Inbox() {
     <Page title="Inbox" refreshControl={access.kind === "live"
       ? <RefreshControl refreshing={loading && hasPage} onRefresh={reload} tintColor={color.accent} colors={[color.accent]} />
       : undefined}>
-      <Text style={type.muted}>Updates from your connected automations and assistants.</Text>
+      <Text style={type.muted}>{access.kind === "demo"
+        ? "Sample updates from Instagram, energy and the daily briefing."
+        : "Updates from your connected automations and assistants."}</Text>
       {(error || linkError) && <ErrorNote message={error ?? "Couldn’t open that link."} retry={error ? reload : undefined} />}
       {(loading || (!hasPage && !error)) && !hasPage &&
         <ActivityIndicator color={color.accent} accessibilityLabel="Loading inbox" />}

@@ -23,3 +23,18 @@ export const demoInbox: Inbox = {
     { id: 1, created_at: "2026-11-18T09:00:00+00:00", source: "briefing", outcome: "ok", title: "Sample daily briefing is ready", link: null },
   ],
 };
+
+export const demoQuestions = [
+  {
+    question: "What needs my attention today?",
+    answer: "In this demo, the Instagram draft needs review and the gas meter readings are a day behind. No changes were made.",
+  },
+  {
+    question: "What’s next on Instagram?",
+    answer: `The sample queue has ${demoOverview.instagram.pending_drafts} pending drafts. One needs review before the next scheduled slot; nothing was published.`,
+  },
+  {
+    question: "Did the energy sync run?",
+    answer: "Yes, the sample sync completed. The gas meter readings are still a day behind, so the sync and the reading date tell you different things.",
+  },
+];
