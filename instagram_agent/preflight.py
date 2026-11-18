@@ -6,7 +6,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-from . import drafts, publish, storage
+from . import drafts, publish, render, storage
 from .analysis import LONDON
 from .drafts import DRAFT_ID_RE
 from .graph import GraphAPIError
@@ -16,7 +16,7 @@ JPEG_MAGIC = b"\xff\xd8\xff"
 
 
 def _eligible_drafts(conn, now: datetime) -> list[str]:
-    """Non-stale pending/approved drafts, including future slots that the normal cron would post."""
+    """Drafts the normal cron could post, including future slots and reels waiting to render."""
     rows = conn.execute(
         "SELECT d.*, (SELECT COUNT(*) FROM publish_runs r WHERE r.draft_id=d.draft_id AND r.outcome='failed') "
         "AS fails FROM drafts d WHERE d.status IN ('approved','pending') AND d.scheduled_for IS NOT NULL "
@@ -25,8 +25,13 @@ def _eligible_drafts(conn, now: datetime) -> list[str]:
     eligible = []
     for row in rows:
         try:
-            when = publish.posts_at(row["scheduled_for"], row["created_at"])
-        except (TypeError, ValueError):
+            slot = row["scheduled_for"]
+            if not publish.rendered(row):
+                if json.loads(row["reel"] or "{}").get("render") != "pending":
+                    continue
+                slot = render.slot_after_render(row, now)
+            when = publish.posts_at(slot, row["created_at"])
+        except (AttributeError, TypeError, ValueError):
             continue
         if (
             when

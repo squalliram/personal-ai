@@ -304,7 +304,7 @@ def render(conn, media_dir: Path, draft_id: str, reel: dict, caps: dict | None =
     return {**reel, "file": OUT, "render": "done", "seconds": seconds, "cover_ms": cover, "bytes": facts["bytes"]}
 
 
-def _reschedule(row, now: datetime) -> str | None:
+def slot_after_render(row, now: datetime) -> str | None:
     """A reel rendered after its posting window posts now if it is still its London day, else not at all."""
     if not row["scheduled_for"]:
         return row["scheduled_for"]
@@ -340,7 +340,7 @@ def render_due(
             try:
                 reel = render(conn, media_dir, row["draft_id"], reel)
                 done += 1
-                slot = _reschedule(row, now or datetime.now(timezone.utc))  # the clock after a long render
+                slot = slot_after_render(row, now or datetime.now(timezone.utc))  # the clock after a long render
                 if slot is None:
                     notify_failure(row, "it was made after its posting day ended", True)
                 with conn:

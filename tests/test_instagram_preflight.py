@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
-from instagram_agent import cli, preflight, publish, storage
+from instagram_agent import cli, preflight, publish, render, storage
 from instagram_agent.graph import GraphAPIError
 
 NOW = datetime(2026, 11, 15, 12, 0, tzinfo=timezone.utc)
@@ -214,6 +214,38 @@ class PreflightTests(unittest.TestCase):
         report = self.preflight(draft_id=OTHER)
         self.assertEqual(report["eligible_drafts"], [DRAFT, OTHER])
         self.assertFalse(self.check(report, "draft_media")["ok"])
+
+    def test_stale_reel_that_can_be_rescheduled_blocks_preflight(self):
+        self.add()
+        self.add(OTHER, slot="2026-11-15T12:00+00:00")
+        now = NOW + timedelta(hours=6)
+        with self.conn:
+            self.conn.execute("UPDATE drafts SET kind='reel', reel=? WHERE draft_id=?", ('{"render":"pending"}', OTHER))
+
+        report = self.preflight(now=now)
+        self.assertFalse(report["ok"])
+        self.assertEqual(report["eligible_drafts"], [OTHER, DRAFT])
+        self.assertEqual([row["draft_id"] for row in publish.due(self.conn, now)], [DRAFT])
+
+        with patch.object(render, "render", return_value={"render": "done"}):
+            self.assertEqual(render.render_due(self.conn, self.media, now=now), "rendered 1, failed 0")
+        self.assertCountEqual([row["draft_id"] for row in publish.due(self.conn, now)], [DRAFT, OTHER])
+
+    def test_old_or_failed_reel_does_not_block_preflight(self):
+        self.add()
+        self.add(OTHER, slot="2026-11-14T18:00+00:00")
+        with self.conn:
+            self.conn.execute(
+                "UPDATE drafts SET kind='reel', reel=?, created_at=? WHERE draft_id=?",
+                ('{"render":"pending"}', "2026-11-14T10:00+00:00", OTHER),
+            )
+        self.assertEqual(self.preflight()["eligible_drafts"], [DRAFT])
+        with self.conn:
+            self.conn.execute(
+                "UPDATE drafts SET reel=?, scheduled_for=? WHERE draft_id=?",
+                ('{"render":"failed"}', "2026-11-15T18:30+00:00", OTHER),
+            )
+        self.assertEqual(self.preflight()["eligible_drafts"], [DRAFT])
 
     def test_graph_error_is_safe_and_never_retries_as_post(self):
         self.add()
