@@ -13,6 +13,7 @@ class OperationsBackupTests(unittest.TestCase):
         self.snippet = doc.split("## Back up your data", 1)[1].split("```sh\n", 1)[1].split("```", 1)[0]
 
     def destination(self, home, checkout):
+        checkout = checkout.resolve()
         checksum = subprocess.check_output(["cksum"], input=str(checkout).encode()).decode().split()[0]
         return home / "personal-ai-backups" / f"{checkout.name}-{checksum}"
 
@@ -28,7 +29,8 @@ class OperationsBackupTests(unittest.TestCase):
     def test_documented_backup_is_private_and_separate_per_checkout(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)
-            for name, value in (("main/same checkout", 1), ("feature/same checkout", 2)):
+            checkouts = (("main/same checkout", 1), ("feature/same checkout", 2), ("O'Brien", 3))
+            for name, value in checkouts:
                 checkout = home / name
                 (checkout / "data").mkdir(parents=True)
                 with sqlite3.connect(checkout / "data/command_centre.sqlite3") as conn:
@@ -43,7 +45,7 @@ class OperationsBackupTests(unittest.TestCase):
                     check=True,
                 )
                 self.assertEqual(result.stdout, "mask=0022")
-            for name, value in (("main/same checkout", 1), ("feature/same checkout", 2)):
+            for name, value in checkouts:
                 destination = self.destination(home, home / name)
                 backup = destination / "command_centre.sqlite3"
                 self.assertEqual(stat.S_IMODE(destination.stat().st_mode), 0o700)
@@ -54,6 +56,21 @@ class OperationsBackupTests(unittest.TestCase):
             empty.mkdir()
             self.assertEqual(self.run_backup(home, empty).returncode, 0)
             self.assertEqual(list(self.destination(home, empty).iterdir()), [])
+
+    def test_symlinked_checkout_uses_physical_path_for_destination(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            checkout = home / "physical" / "checkout"
+            (checkout / "data").mkdir(parents=True)
+            with sqlite3.connect(checkout / "data/command_centre.sqlite3") as conn:
+                conn.execute("CREATE TABLE sample (value INTEGER)")
+            link = home / "linked"
+            link.symlink_to(checkout.parent, target_is_directory=True)
+            linked_checkout = link / checkout.name
+            self.assertEqual(self.run_backup(home, linked_checkout).returncode, 0)
+            self.assertEqual(self.destination(home, linked_checkout), self.destination(home, checkout))
+            with sqlite3.connect(self.destination(home, linked_checkout) / "command_centre.sqlite3") as conn:
+                self.assertEqual(conn.execute("SELECT COUNT(*) FROM sample").fetchone(), (0,))
 
     def test_existing_directory_and_backups_are_made_private(self):
         with tempfile.TemporaryDirectory() as directory:

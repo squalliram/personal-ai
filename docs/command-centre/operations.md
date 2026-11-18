@@ -80,7 +80,8 @@ for backup in "$backup_dir"/*.sqlite3; do
 done
 for db in command_centre daily_briefing octopus_energy octopus_energy_live; do
   if [ -f "data/$db.sqlite3" ]; then
-    sqlite3 "data/$db.sqlite3" ".backup '$backup_dir/$db.sqlite3'" || exit 1
+    source_db="$PWD/data/$db.sqlite3"
+    (cd "$backup_dir" && sqlite3 "$source_db" ".backup $db.sqlite3") || exit 1
   fi
 done
 )
