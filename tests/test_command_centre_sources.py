@@ -143,8 +143,9 @@ class EnergyHealthTests(SourceTestCase):
         jobs = self.by_id(self.get(client, "/api/v1/automations")["automations"])
         self.assertNotIn("operational", {job["status"] for job in jobs.values()})
         overview = self.get(client, "/api/v1/overview")
-        self.assertEqual(len(overview["missing_integrations"]), 5)
         self.assertEqual(overview["energy"]["state"], "not_configured")
+        self.assertEqual((overview["energy"]["fuels"], overview["insights"]), ({}, []))
+        self.assertEqual(overview["status"]["state"], "standby")
 
     def test_recent_success_is_operational_with_labelled_measured_and_estimated_values(self):
         seed_energy(self.settings.energy_db)
@@ -165,6 +166,18 @@ class EnergyHealthTests(SourceTestCase):
         self.assertEqual(len(energy["daily"]), 10)
         self.assertEqual(energy["tariffs"][0]["tariff_code"], "E-1R-GO-VAR-22-10-14-A")
         self.assertEqual([row["consumption_kwh"] > row["threshold_kwh"] for row in energy["anomalies"]], [True])
+        # The exact stored date range behind each available-period total.
+        self.assertEqual(
+            energy["coverage"],
+            [
+                {
+                    "fuel": "electricity",
+                    "first_date": energy["daily"][0]["date"],
+                    "last_date": energy["daily"][-1]["date"],
+                    "days": 10,
+                }
+            ],
+        )
 
     def test_sync_outcomes_map_to_evidence_based_states(self):
         cases = [

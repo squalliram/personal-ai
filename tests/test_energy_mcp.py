@@ -1,5 +1,6 @@
 import hashlib
 import json
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -7,7 +8,7 @@ import unittest
 from pathlib import Path
 
 from octopus_energy.analytics import recompute_daily_costs
-from octopus_energy.mcp_server import PROTOCOL_VERSIONS, TOOLS
+from octopus_energy.mcp_server import PROTOCOL_VERSIONS, TOOLS, dispatch
 from octopus_energy.reports import write_reports
 from octopus_energy.storage import connect
 
@@ -304,6 +305,29 @@ class EnergyMCPTests(unittest.TestCase):
         self.assertEqual(baseline[0]["fuel"], "gas")
         self.assertEqual(hashlib.sha256(self.database.read_bytes()).digest(), before)
 
+    def test_daily_rows_report_completeness_and_older_tables_are_read_as_unchecked(self):
+        conn = connect(self.database)
+        conn.execute(
+            "INSERT INTO daily_costs(date,fuel,consumption_kwh,complete) VALUES('2026-11-01','electricity',2,0)"
+        )
+        conn.commit()
+        conn.close()
+        (row,) = dispatch("get_daily_consumption", {"start": "2026-11-01", "end": "2026-11-02"}, self.database)
+        self.assertIs(row["complete"], False)
+        self.database.unlink()
+        with sqlite3.connect(self.database) as legacy:
+            legacy.executescript(
+                (Path(__file__).resolve().parents[1] / "octopus_energy/schema.sql")
+                .read_text(encoding="utf-8")
+                .replace(" complete INTEGER,", "")
+            )
+            legacy.execute("INSERT INTO daily_costs(date,fuel,consumption_kwh) VALUES('2026-11-01','electricity',2)")
+        legacy.close()
+        before = hashlib.sha256(self.database.read_bytes()).digest()
+        (row,) = dispatch("get_daily_consumption", {"start": "2026-11-01", "end": "2026-11-02"}, self.database)
+        self.assertIsNone(row["complete"])
+        self.assertEqual(hashlib.sha256(self.database.read_bytes()).digest(), before)
+
     def test_missing_unit_metadata_table_or_row_is_unknown_and_read_only(self):
         for missing in ("table", "row"):
             with self.subTest(missing=missing):
@@ -312,7 +336,9 @@ class EnergyMCPTests(unittest.TestCase):
                 conn = connect(self.database)
                 conn.execute("INSERT INTO meters VALUES(1,'gas','synthetic','synthetic',NULL,NULL,NULL,'synthetic')")
                 conn.execute("INSERT INTO consumption VALUES(1,'2026-11-01T00:00:00Z','2026-11-01T00:30:00Z',2)")
-                conn.execute("INSERT INTO daily_costs VALUES('2026-11-01','gas',2,.2,.5,.7)")
+                conn.execute(
+                    "INSERT INTO daily_costs(date,fuel,consumption_kwh,unit_cost_gbp,standing_charge_gbp,total_cost_gbp) VALUES('2026-11-01','gas',2,.2,.5,.7)"
+                )
                 if missing == "row":
                     conn.execute("CREATE TABLE energy_settings(name TEXT PRIMARY KEY,value TEXT NOT NULL)")
                 conn.commit()
@@ -384,7 +410,9 @@ class EnergyMCPTests(unittest.TestCase):
             "consumption_kwh REAL NOT NULL,unit_cost_gbp REAL NOT NULL,"
             "standing_charge_gbp REAL NOT NULL,total_cost_gbp REAL NOT NULL,PRIMARY KEY(date,fuel))"
         )
-        conn.execute("INSERT INTO daily_costs VALUES('2026-11-01','electricity',2,0,0,0)")
+        conn.execute(
+            "INSERT INTO daily_costs(date,fuel,consumption_kwh,unit_cost_gbp,standing_charge_gbp,total_cost_gbp) VALUES('2026-11-01','electricity',2,0,0,0)"
+        )
         conn.commit()
         raw_before = conn.execute("SELECT * FROM consumption").fetchall()
         conn.close()

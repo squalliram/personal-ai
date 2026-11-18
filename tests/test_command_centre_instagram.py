@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest import mock
 
 from command_centre_fixtures import Client, Clock, make_app, make_settings
 
@@ -164,6 +165,14 @@ class InstagramQueueTests(unittest.TestCase):
         outcomes = [(e["action"], e["outcome"]) for e in self.app.audit.recent(10)]
         self.assertIn(("instagram_decision", "approved"), outcomes)
         self.assertIn(("instagram_decision", "already_decided"), outcomes)
+
+    def test_decision_shows_at_once_on_cached_sections(self):
+        client = self.client()
+        pending = lambda: client.request("GET", "/api/v1/overview").json()["instagram"]["pending_drafts"]  # noqa: E731
+        with mock.patch.object(self.app, "_source_signature", return_value=()):
+            self.assertEqual(pending(), 1)
+            self.assertEqual(self.decide(client, "approve").status, 200)
+            self.assertEqual(pending(), 0)
 
     def test_decision_is_refused_while_publishing(self):
         conn = storage.connect(self.db)

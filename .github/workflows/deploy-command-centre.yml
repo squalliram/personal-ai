@@ -52,11 +52,11 @@ jobs:
           successes=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/test.yml/runs?branch=main&event=push&head_sha=$DEPLOY_SHA&status=success" --jq '.workflow_runs | length')
           test "$successes" -gt 0 || { echo "Successful main push tests required."; exit 1; }
           echo "ready=true" >> "$GITHUB_OUTPUT"
-      - name: Download hash-pinned passkey wheels for the host
+      - name: Download hash-pinned Command Centre wheels (passkeys, Pillow) for the host
         if: steps.tested.outputs.ready == 'true'
         run: >-
           python -m pip download --no-deps --only-binary=":all:" --require-hashes
-          --platform manylinux2014_x86_64 --python-version 3.12 --implementation cp
+          --platform manylinux2014_x86_64 --platform manylinux_2_28_x86_64 --python-version 3.12 --implementation cp
           -d "$RUNNER_TEMP/wheels" -r deploy/command-centre/requirements.txt
       - name: Install and verify the isolated Passenger release
         if: steps.tested.outputs.ready == 'true'
@@ -68,8 +68,16 @@ jobs:
           CPANEL_SSH_KNOWN_HOSTS: ${{ secrets.CPANEL_SSH_KNOWN_HOSTS }}
           CPANEL_APP_PATH: ${{ secrets.CPANEL_APP_PATH }}
           COMMAND_CENTRE_PASSWORD_HASH: ${{ secrets.COMMAND_CENTRE_PASSWORD_HASH }}
-          # Optional: without it, Ask Jarvis stays off.
+          # Optional answer providers for Ask Jarvis (Workers AI first, OpenAI as fallback).
+          # Without either, Ask Jarvis stays off.
+          COMMAND_CENTRE_CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          COMMAND_CENTRE_CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           COMMAND_CENTRE_OPENAI_API_KEY: ${{ secrets.COMMAND_CENTRE_OPENAI_API_KEY }}
+          # Optional: lets Jarvis POST its results to /api/v1/notifications (Inbox + Telegram).
+          # Without NOTIFY_INGEST_TOKEN that endpoint answers 503 not_configured.
+          COMMAND_CENTRE_NOTIFY_INGEST_TOKEN: ${{ secrets.NOTIFY_INGEST_TOKEN }}
+          COMMAND_CENTRE_TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          COMMAND_CENTRE_TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           COMMAND_CENTRE_WHEELS_DIR: ${{ runner.temp }}/wheels
         shell: bash
         run: |

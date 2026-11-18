@@ -54,9 +54,13 @@ def connect(path: Path) -> sqlite3.Connection:
                 conn.execute("BEGIN")
                 conn.execute("DROP TABLE daily_costs")
                 conn.execute(
-                    "CREATE TABLE daily_costs (date TEXT NOT NULL, fuel TEXT NOT NULL, consumption_kwh REAL, unit_cost_gbp REAL, standing_charge_gbp REAL, total_cost_gbp REAL, PRIMARY KEY(date,fuel))"
+                    "CREATE TABLE daily_costs (date TEXT NOT NULL, fuel TEXT NOT NULL, consumption_kwh REAL, unit_cost_gbp REAL, standing_charge_gbp REAL, total_cost_gbp REAL, complete INTEGER, PRIMARY KEY(date,fuel))"
                 )
                 recompute_daily_costs(conn)
+        if "complete" not in {row["name"] for row in conn.execute("PRAGMA table_info(daily_costs)")}:
+            # Filled in by the next recompute; NULL means coverage was never checked.
+            conn.execute("ALTER TABLE daily_costs ADD COLUMN complete INTEGER")
+            conn.commit()
     except Exception:
         conn.close()
         raise

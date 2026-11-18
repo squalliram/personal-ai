@@ -6,6 +6,7 @@
 <meta name="referrer" content="no-referrer">
 <title>Jarvis · Personal AI</title>
 <link rel="stylesheet" href="static/app.css">
+<script src="static/energy-core.js" defer></script>
 <script src="static/app.js" defer></script>
 </head>
 <body>
@@ -48,7 +49,7 @@
       <div id="assistant-orb" class="orb idle" aria-hidden="true"><span></span><span></span><span></span></div>
       <div>
         <h2 id="assistant-title">Ask Jarvis</h2>
-        <p id="assistant-state" class="muted" role="status" aria-live="polite">Ask about your energy, automations, Instagram drafts or what needs attention.</p>
+        <p id="assistant-state" class="muted" role="status" aria-live="polite">Type, or tap Speak and ask about your energy, automations, Instagram drafts or what needs attention.</p>
       </div>
       <button id="assistant-close" type="button" aria-label="Close Ask Jarvis">Close</button>
     </header>
@@ -56,10 +57,10 @@
     <form id="assistant-form" class="assistant-form">
       <label for="assistant-input" class="sr-only">Your question</label>
       <input id="assistant-input" type="text" maxlength="500" autocomplete="off" placeholder="What needs my attention today?">
-      <button id="assistant-mic" type="button" class="mic" aria-pressed="false" aria-label="Ask by voice" hidden>Speak</button>
+      <button id="assistant-mic" type="button" class="mic" aria-pressed="false" aria-label="Ask by voice">Speak</button>
       <button type="submit" class="primary">Ask</button>
     </form>
-    <p class="muted assistant-note">Answers come from OpenAI using only your Jarvis data. Jarvis is read-only and cannot take actions.</p>
+    <p class="muted assistant-note">Answers come from Cloudflare Workers AI (or OpenAI) using only your Jarvis data. Jarvis is read-only and cannot take actions.</p>
   </section>
 </div>
 <div id="vault" class="vault" hidden aria-hidden="true">

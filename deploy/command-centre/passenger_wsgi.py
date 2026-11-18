@@ -36,7 +36,7 @@ checkout = values.get("COMMAND_CENTRE_CHECKOUT")
 if not checkout:
     raise RuntimeError("COMMAND_CENTRE_CHECKOUT is not set in command-centre.env")
 sys.path.insert(0, checkout)
-# Hash-pinned passkey dependencies the deploy installs per release; without them passkeys stay off.
+# Hash-pinned dependencies the deploy installs per release; without them passkeys and photo uploads stay off.
 if (Path(checkout) / "vendor").is_dir():
     sys.path.insert(1, str(Path(checkout) / "vendor"))
 

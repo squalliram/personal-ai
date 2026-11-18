@@ -103,6 +103,10 @@ jobs:
           INSTAGRAM_USER_ID: ${{ secrets.INSTAGRAM_USER_ID }}
           # Auto-posting turns on with the token and user ID; set the repository variable to 0 to stop it.
           INSTAGRAM_AUTO_PUBLISH: ${{ vars.INSTAGRAM_AUTO_PUBLISH || '1' }}
+          # Optional owner notifications (notifications/): Telegram bot and the Command Centre address for links.
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          COMMAND_CENTRE_URL: ${{ vars.COMMAND_CENTRE_URL }}
         run: |
           [[ "$CPANEL_APP_PATH" =~ ^/[a-zA-Z0-9_./-]+$ ]] || exit 1
           [[ "$DEPLOY_SHA" =~ ^[a-f0-9]{40}$ ]] || exit 1
@@ -114,6 +118,8 @@ jobs:
             printf 'INSTAGRAM_ACCESS_TOKEN=%s\nINSTAGRAM_USER_ID=%s\n' "$INSTAGRAM_ACCESS_TOKEN" "$INSTAGRAM_USER_ID"
             # Always sent, so the kill switch also reaches a token already on the server.
             printf 'INSTAGRAM_AUTO_PUBLISH=%s\n' "$INSTAGRAM_AUTO_PUBLISH"
+            printf 'TELEGRAM_BOT_TOKEN=%s\nTELEGRAM_CHAT_ID=%s\n' "$TELEGRAM_BOT_TOKEN" "$TELEGRAM_CHAT_ID"
+            printf 'COMMAND_CENTRE_URL=%s\n' "$COMMAND_CENTRE_URL"
             if [ -n "$INSTAGRAM_ACCESS_TOKEN" ]; then
               printf 'INSTAGRAM_PUBLIC_DIR=%s\n' "${CPANEL_APP_PATH%/*}/public_html/ig-media"
               printf 'INSTAGRAM_PUBLIC_URL=https://iramkhan.com/ig-media\n'
@@ -126,4 +132,6 @@ jobs:
             if [ \"\$(git rev-parse HEAD)\" != '$DEPLOY_SHA' ]; then \
             echo 'Checkout is not the tested commit; skipping Instagram setup.'; exit 0; fi && \
             . ./scripts/find-python.sh && \"\$PYTHON\" -m instagram_agent.env_install --env-file .env \
-            --preserve-existing INSTAGRAM_ACCESS_TOKEN && ./scripts/install-instagram-daily.sh"
+            --preserve-existing INSTAGRAM_ACCESS_TOKEN && \
+            ./scripts/install-instagram-daily.sh && \
+            { \"\$PYTHON\" -m instagram_agent.host_probe || echo 'video host: probe failed'; }"

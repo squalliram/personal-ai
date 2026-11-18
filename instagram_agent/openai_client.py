@@ -37,6 +37,10 @@ urlopen = build_opener(NoRedirects()).open
 IMAGE_TYPES = {b"\x89PNG\r\n\x1a\n": "png", b"\xff\xd8\xff": "jpg"}
 
 
+def jpeg_data_url(data: bytes) -> str:
+    return "data:image/jpeg;base64," + base64.b64encode(data).decode()
+
+
 def image_extension(data: bytes) -> str | None:
     return next((ext for magic, ext in IMAGE_TYPES.items() if data.startswith(magic)), None)
 
@@ -86,12 +90,18 @@ class OpenAIClient:
             time.sleep(min(30, 5 * 2**attempt))
         raise AssertionError("unreachable")
 
-    def chat_json(self, system: str, user: str) -> dict[str, Any]:
+    def chat_json(self, system: str, user: str, *, images: list[bytes] = ()) -> dict[str, Any]:
+        """A JSON reply; `images` are JPEGs the model looks at alongside the user message."""
+        content: Any = user
+        if images:
+            content = [{"type": "text", "text": user}] + [
+                {"type": "image_url", "image_url": {"url": jpeg_data_url(image), "detail": "low"}} for image in images
+            ]
         reply = self._post(
             "chat/completions",
             {
                 "model": self.text_model,
-                "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+                "messages": [{"role": "system", "content": system}, {"role": "user", "content": content}],
                 "response_format": {"type": "json_object"},
             },
         )

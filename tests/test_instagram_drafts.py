@@ -1,6 +1,7 @@
 import base64
 import io
 import json
+import sqlite3
 import stat
 import tempfile
 import unittest
@@ -33,7 +34,7 @@ class FakeAI(OpenAIClient):
         self.creates, self.scores, self.calls, self.images = list(creates), list(scores), [], 0
         self.fail_images_after = fail_images_after
 
-    def chat_json(self, system, user):
+    def chat_json(self, system, user, *, images=()):
         self.calls.append((system, json.loads(user)))
         if system.startswith("You are the Create agent"):
             return {"drafts": self.creates.pop(0)}
@@ -137,7 +138,12 @@ class DailyTickTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         self.conn = storage.connect(self.root / "instagram.sqlite3")
-        self.env = {"OPENAI_API_KEY": "sk-test-secret", "INSTAGRAM_VOICE_FILE": str(self.root / "voice.md")}
+        self.notes = self.root / "notifications.sqlite3"
+        self.env = {
+            "OPENAI_API_KEY": "sk-test-secret",
+            "INSTAGRAM_VOICE_FILE": str(self.root / "voice.md"),
+            "COMMAND_CENTRE_NOTIFICATIONS_DB": str(self.notes),
+        }
 
     def tearDown(self):
         self.conn.close()
@@ -151,8 +157,22 @@ class DailyTickTests(unittest.TestCase):
     def test_runs_once_a_day_from_nine(self):
         self.assertEqual(self.tick(datetime(2026, 11, 12, 8, 45, tzinfo=timezone.utc)), "skipped")
         self.assertEqual(self.tick(MORNING), "ok")
-        self.assertEqual(storage.drafts_on(self.conn, "2026-11-12"), 3)
+        self.assertEqual(storage.drafts_on(self.conn, "2026-11-12"), 1)
         self.assertEqual(self.tick(MORNING), "skipped")
+
+    def test_one_draft_a_day_at_the_best_audience_hour(self):
+        storage.replace_audience_hours(self.conn, {19: 500, 8: 400, 13: 300}, "now")
+        ai = FakeAI([[raw_draft("a"), raw_draft("b"), raw_draft("c")]], [[90, 80, 70]])
+        self.assertEqual(self.tick(MORNING, ai), "ok")
+        create = next(system for system, _ in ai.calls if system.startswith("You are the Create"))
+        self.assertIn("Write 1 carousel", create)
+        [row] = self.conn.execute("SELECT topic, scheduled_for FROM drafts").fetchall()
+        self.assertEqual(tuple(row), ("a", "2026-11-12T19:00+00:00"))
+
+    def test_a_failed_run_is_retried_before_noon(self):
+        self.assertEqual(self.tick(MORNING, FakeAI([[], [], []], [])), "failed")
+        self.assertEqual(self.tick(MORNING), "ok")
+        self.assertEqual(storage.drafts_on(self.conn, "2026-11-12"), 1)
 
     def test_british_summer_time_is_respected(self):
         self.assertEqual(self.tick(datetime(2026, 6, 1, 8, 30, tzinfo=timezone.utc)), "ok")  # 09:30 BST
@@ -183,6 +203,7 @@ class DailyTickTests(unittest.TestCase):
                 storage.record_run(self.conn, "2026-11-12", MORNING.isoformat(), "not_configured")
         self.assertEqual(storage.runs_on(self.conn, "2026-11-12"), 0)
 
+    @patch.object(cli, "DAILY_DRAFTS", 3)
     def test_a_dropped_draft_is_recorded_and_topped_up_before_noon(self):
         first = FakeAI([[raw_draft("a"), raw_draft("b"), raw_draft("c")]], [[90, 80, 70]], fail_images_after=9)
         self.assertEqual(self.tick(MORNING, first), "partial")
@@ -199,6 +220,7 @@ class DailyTickTests(unittest.TestCase):
         self.assertEqual(len({r["scheduled_for"] for r in rows}), 3)
         self.assertEqual(self.tick(MORNING), "skipped")
 
+    @patch.object(cli, "DAILY_DRAFTS", 3)
     def test_a_short_day_is_left_alone_after_noon(self):
         self.tick(MORNING, FakeAI([[raw_draft("a"), raw_draft("b")], [], []], [[90, 80]]))
         self.assertEqual(storage.drafts_on(self.conn, "2026-11-12"), 2)
@@ -247,6 +269,16 @@ class DailyTickTests(unittest.TestCase):
         ai = FakeAI([[raw_draft("a"), raw_draft("b"), raw_draft("c")]], [[90, 80, 70]])
         self.tick(MORNING, ai)
         self.assertIn("Manchester slang", ai.calls[0][0])
+
+    def test_create_and_review_forbid_invented_codes_and_prices(self):
+        ai = FakeAI([[raw_draft("a"), raw_draft("b"), raw_draft("c")]], [[90, 80, 70]])
+        self.tick(MORNING, ai)
+        prompts = {system.split(" agent")[0]: system for system, _ in ai.calls}
+        self.assertIn("promo codes", prompts["You are the Create"])
+        self.assertIn("promo code", prompts["You are the Review"])
+        self.assertIn("captions and slides are not data", prompts["You are the Review"])
+        review_payload = next(payload for system, payload in ai.calls if system.startswith("You are the Review"))
+        self.assertIn("approved_examples", review_payload)
 
 
 class SlidePromptTests(unittest.TestCase):
@@ -377,6 +409,106 @@ class CronInstallTests(unittest.TestCase):
             lines[2],
             "*/15 * * * * cd '/srv/my app' && ./scripts/instagram-daily.sh >/dev/null 2>&1 # personal-ai-instagram-daily",
         )
+
+
+class DailyNotificationTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.conn = storage.connect(self.root / "instagram.sqlite3")
+        self.addCleanup(self.conn.close)
+        self.db = self.root / "notifications.sqlite3"
+        self.env = {
+            "OPENAI_API_KEY": "sk-test-secret",
+            "INSTAGRAM_VOICE_FILE": str(self.root / "voice.md"),
+            "COMMAND_CENTRE_NOTIFICATIONS_DB": str(self.db),
+            "INSTAGRAM_AUTO_PUBLISH": "1",
+            "INSTAGRAM_ACCESS_TOKEN": "IGtoken-secret",
+            "INSTAGRAM_USER_ID": "17841408862128347",
+            "INSTAGRAM_PUBLIC_DIR": str(self.root / "public"),
+            "INSTAGRAM_PUBLIC_URL": "https://example.test/ig-media",
+        }
+
+    def tick(self, ai=None, now=MORNING, env=None):
+        ai = ai or FakeAI([[raw_draft("a"), raw_draft("b"), raw_draft("c")]], [[90, 80, 70]])
+        with patch.object(cli, "model_client", return_value=ai if ai != "none" else None):
+            return cli.daily(self.conn, env or self.env, self.root / "drafts", now=now)
+
+    def notes(self):
+        if not self.db.exists():
+            return []
+        with sqlite3.connect(self.db) as conn:
+            return conn.execute("SELECT outcome, title, link FROM notifications ORDER BY id").fetchall()
+
+    def test_drafts_ready_says_when_the_first_one_posts(self):
+        self.assertEqual(self.tick(), "ok")
+        [(outcome, title, link)] = self.notes()
+        self.assertEqual((outcome, link), ("ok", "https://iramkhan.com/command-centre/#instagram"))
+        self.assertRegex(title, r"^1 Instagram draft ready to review, posts at [0-2][0-9]:[0-5][0-9]$")
+        self.assertEqual(self.tick(), "skipped")
+        self.assertEqual(len(self.notes()), 1)
+
+    def test_drafts_ready_without_auto_posting(self):
+        for key in ("INSTAGRAM_AUTO_PUBLISH", "INSTAGRAM_ACCESS_TOKEN", "INSTAGRAM_PUBLIC_URL"):
+            with self.subTest(missing=key):
+                self.conn.execute("DELETE FROM drafts")
+                self.conn.execute("DELETE FROM daily_runs")
+                self.conn.commit()
+                self.db.unlink(missing_ok=True)
+                self.tick(env={k: v for k, v in self.env.items() if k != key})
+                self.assertEqual(self.notes()[0][1], "1 Instagram draft ready to review, posting is manual")
+
+    def test_first_post_time_is_london_time(self):
+        self.tick()
+        title = self.notes()[0][1]
+        rows = self.conn.execute("SELECT scheduled_for, created_at FROM drafts").fetchall()
+        from instagram_agent import publish
+
+        first = min(publish.posts_at(r["scheduled_for"], r["created_at"]) for r in rows)
+        self.assertTrue(title.endswith(first.astimezone(cli.LONDON).strftime("%H:%M")))
+
+    def test_failures_partial_and_gave_up_are_reported(self):
+        for _ in range(3):
+            self.assertEqual(self.tick(FakeAI([[], [], []], [])), "failed")
+        self.assertEqual(self.tick(), "gave_up")
+        self.assertEqual(self.tick(), "gave_up")
+        notes = self.notes()
+        self.assertEqual([n[0] for n in notes], ["failed"] * 4)
+        self.assertTrue(notes[0][1].startswith("Instagram drafts failed: "))
+        self.assertEqual(notes[3][1], "Instagram drafts gave up for today after repeated failures")
+
+    @patch.object(cli, "DAILY_DRAFTS", 3)
+    def test_a_partial_run_is_reported(self):
+        self.assertEqual(
+            self.tick(FakeAI([[raw_draft("a"), raw_draft("b"), raw_draft("c")]], [[90, 80, 70]], fail_images_after=9)),
+            "partial",
+        )
+        self.assertEqual(
+            self.notes()[0][:2],
+            (
+                "failed",
+                "Instagram drafts partial: 1 of 3 drafts not made: slide image failed (OpenAI request failed (HTTP 500))",
+            ),
+        )
+
+    def test_not_configured_is_reported_once_a_day(self):
+        for _ in range(2):
+            self.assertEqual(self.tick("none"), "not_configured")
+        self.assertEqual(
+            self.notes(),
+            [
+                (
+                    "failed",
+                    "Instagram drafts not made: no AI provider key is set",
+                    "https://iramkhan.com/command-centre/#instagram",
+                )
+            ],
+        )
+
+    def test_skipped_sends_nothing(self):
+        self.assertEqual(self.tick(now=datetime(2026, 11, 12, 8, 45, tzinfo=timezone.utc)), "skipped")
+        self.assertEqual(self.notes(), [])
 
 
 if __name__ == "__main__":

@@ -143,6 +143,71 @@ class ReleaseTests(unittest.TestCase):
         with (self.checkout / ".git/energy-dashboard.deploy.lock").open("r") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
+    def test_assistant_provider_keys_are_written_only_when_valid(self):
+        account, token = "0123456789abcdef" * 2, "cf-token_" + "0123456789abcdef"
+        HOST.install(
+            self.checkout,
+            SHA,
+            self.password_hash,
+            home=self.home,
+            cloudflare_account_id=account,
+            cloudflare_api_token=token,
+        )
+        config = (self.app / "command-centre.env").read_text()
+        self.assertIn(f"COMMAND_CENTRE_CLOUDFLARE_ACCOUNT_ID={account}\n", config)
+        self.assertIn(f"COMMAND_CENTRE_CLOUDFLARE_API_TOKEN={token}\n", config)
+        self.assertNotIn("COMMAND_CENTRE_OPENAI_API_KEY", config)
+        for bad in (
+            {"cloudflare_account_id": account},
+            {"cloudflare_account_id": "x" * 32, "cloudflare_api_token": token},
+            {"cloudflare_account_id": account, "cloudflare_api_token": "bad\ntoken-0123456789abcdef"},
+        ):
+            with self.subTest(bad=bad), self.assertRaises(HOST.ReleaseError):
+                HOST.install(self.checkout, SHA, self.password_hash, home=self.home, **bad)
+
+    def test_notification_ingest_settings_are_written_only_when_valid(self):
+        token, bot = "0123456789abcdef" * 4, "123456:" + "A" * 30
+        HOST.install(
+            self.checkout,
+            SHA,
+            self.password_hash,
+            home=self.home,
+            notify_ingest_token=token,
+            telegram_bot_token=bot,
+            telegram_chat_id="-1001",
+        )
+        config = (self.app / "command-centre.env").read_text()
+        self.assertIn(f"COMMAND_CENTRE_NOTIFY_INGEST_TOKEN={token}\n", config)
+        self.assertIn(f"COMMAND_CENTRE_TELEGRAM_BOT_TOKEN={bot}\n", config)
+        self.assertIn("COMMAND_CENTRE_TELEGRAM_CHAT_ID=-1001\n", config)
+        for bad in (
+            {"notify_ingest_token": "short"},
+            {"notify_ingest_token": token + "\nCOMMAND_CENTRE_PERMISSION=draft"},
+            {"telegram_bot_token": bot},
+            {"telegram_chat_id": "42"},
+            {"telegram_bot_token": "bad\ntoken", "telegram_chat_id": "42"},
+        ):
+            with self.subTest(bad=bad), self.assertRaises(HOST.ReleaseError):
+                HOST.install(self.checkout, SHA, self.password_hash, home=self.home, **bad)
+
+    def test_ingest_check_reports_without_failing_the_release(self):
+        calls = []
+
+        def fetch(url, *, headers=None, data=None):
+            calls.append((url, headers, data))
+            return status, {}, b"{}"
+
+        self.assertEqual(HOST.ingest_check("https://x", None), "not_configured")
+        for status, expected in ((400, "ready"), (401, "authorization_header_missing"), (503, "http_503")):
+            with self.subTest(status=status), patch.object(HOST, "fetch", side_effect=fetch):
+                self.assertEqual(HOST.ingest_check("https://x", "a" * 64), expected)
+        url, headers, data = calls[0]
+        self.assertEqual(
+            (url, headers["Authorization"], data), ("https://x/api/v1/notifications", "Bearer " + "a" * 64, b"{}")
+        )
+        with patch.object(HOST, "fetch", side_effect=OSError):
+            self.assertEqual(HOST.ingest_check("https://x", "a" * 64), "unreachable")
+
     def test_stale_run_cannot_write_app_env_entrypoint_or_restart(self):
         self.app.mkdir()
         sentinel = self.app / "command-centre.env"
@@ -304,13 +369,22 @@ class TransportTests(unittest.TestCase):
             "CPANEL_SSH_HOST": "hosting.example",
             "CPANEL_SSH_USERNAME": "owner",
             "COMMAND_CENTRE_PASSWORD_HASH": "private-test-sentinel",
+            "COMMAND_CENTRE_NOTIFY_INGEST_TOKEN": "ingest-test-sentinel",
+            "COMMAND_CENTRE_TELEGRAM_BOT_TOKEN": "telegram-test-sentinel",
+            "COMMAND_CENTRE_TELEGRAM_CHAT_ID": "42",
         }
         with patch.dict(os.environ, env, clear=True), patch.object(TRANSPORT.subprocess, "run") as run:
             run.return_value.returncode = 0
             self.assertEqual(TRANSPORT.main(), 0)
         argv = run.call_args.args[0]
-        self.assertNotIn("private-test-sentinel", " ".join(argv))
-        self.assertEqual(json.loads(run.call_args.kwargs["input"])["password_hash"], "private-test-sentinel")
+        for sentinel in ("private-test-sentinel", "ingest-test-sentinel", "telegram-test-sentinel"):
+            self.assertNotIn(sentinel, " ".join(argv))
+        payload = json.loads(run.call_args.kwargs["input"])
+        self.assertEqual(payload["password_hash"], "private-test-sentinel")
+        self.assertEqual(
+            (payload["notify_ingest_token"], payload["telegram_bot_token"], payload["telegram_chat_id"]),
+            ("ingest-test-sentinel", "telegram-test-sentinel", "42"),
+        )
         remote = shlex.split(argv[-1])
         self.assertEqual(remote[-2:], [env["CPANEL_APP_PATH"], SHA])
         self.assertEqual(remote[2], (DEPLOY / "deploy_host.py").read_text())
