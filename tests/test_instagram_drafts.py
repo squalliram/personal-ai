@@ -3,6 +3,8 @@ import io
 import json
 import sqlite3
 import stat
+import subprocess
+import sys
 import tempfile
 import unittest
 from datetime import datetime, timezone
@@ -131,6 +133,20 @@ class DraftTests(unittest.TestCase):
         self.assertFalse(storage.decide_draft(self.conn, "a" * 16, "rejected", "t2"))
         example = self.conn.execute("SELECT decision, topic, hashtags FROM examples").fetchone()
         self.assertEqual(tuple(example), ("approved", "flat white", "#coffee"))
+
+
+class CliStartupTests(unittest.TestCase):
+    def test_daily_cli_starts_in_a_fresh_process(self):
+        result = subprocess.run(
+            [sys.executable, "-m", "instagram_agent", "daily", "--help"],
+            cwd=Path(__file__).resolve().parents[1],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--media", result.stdout)
 
 
 class DailyTickTests(unittest.TestCase):
