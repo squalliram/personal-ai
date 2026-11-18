@@ -639,13 +639,19 @@ class CommandCentreApp:
         reservation, error = self._reserve_attempt(request.client, "passkey_register")
         if error:
             return error
+        generation = self.passkeys.generation()
+        if self.sessions.get(request.token) is None:
+            return _error(401, "authentication_required")
         if not verify_password(body["password"], self.settings.password_hash):
             self.audit.record("passkey_register", "failure", actor="owner", client=request.client)
             return _error(401, "invalid_credentials")
         self.login_global.release("all", reservation)
         self.login_per_client.reset(request.client)
         _, rp_id = self._webauthn_party(request.environ)
-        challenge = self.passkeys.issue_challenge(f"register:{request.session.token_hash}")
+        try:
+            challenge = self.passkeys.issue_challenge(f"register:{request.session.token_hash}", generation=generation)
+        except passkeys.PasskeyError:
+            return _error(409, "passkey_not_added")
         return (
             200,
             {
@@ -676,6 +682,8 @@ class CommandCentreApp:
             return _error(400, "invalid_request")
         label = " ".join(label.split())[: passkeys.MAX_LABEL] or "Passkey"
         origin, rp_id = self._webauthn_party(request.environ)
+        # Capture before consuming the challenge: recovery deletes challenges and advances this fence.
+        generation = self.passkeys.generation()
         try:
             client_data = passkeys.b64url_decode(body["client_data_json"])
             challenge = passkeys.client_data_challenge(client_data, kind="webauthn.create", origin=origin)
@@ -686,7 +694,7 @@ class CommandCentreApp:
         except passkeys.PasskeyError as failure:
             self.audit.record("passkey_register", "failure", actor="owner", client=request.client, reason=str(failure))
             return _error(400, "invalid_passkey")
-        if not self.passkeys.add(credential_id, public_key, count, label):
+        if not self.passkeys.add(credential_id, public_key, count, label, generation=generation):
             return _error(409, "passkey_not_added")
         self.audit.record("passkey_register", "success", actor="owner", client=request.client)
         return self.passkey_list(request)
