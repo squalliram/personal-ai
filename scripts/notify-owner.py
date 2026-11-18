@@ -7,6 +7,9 @@ workflow_dispatch inputs or repository_dispatch client_payload in GITHUB_EVENT_P
 link), so the text never appears in
 the step's env listing of this public repo's run log; NOTIFY_TITLE / NOTIFY_OUTCOME / NOTIFY_LINK serve local
 runs. Prints only the status and inbox ID, never the token or the message.
+
+iramkhan.com drops connections from GitHub's runners, so when CPANEL_SSH_HOST is set the script runs itself on
+the host over the deploy's SSH access (`--stdin`), passing the token and message on stdin, never in argv.
 """
 
 from __future__ import annotations
@@ -14,9 +17,12 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
+import subprocess
 import sys
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 DEFAULT_URL = "https://iramkhan.com/command-centre"
 SOURCE = "jarvis"
@@ -26,6 +32,9 @@ TOKEN = re.compile(r"[0-9a-fA-F]{64}")
 SAFE_LINK = re.compile(r"https://[A-Za-z0-9.-]+(?::[0-9]{1,5})?(?:/[A-Za-z0-9._~!$&'()*+,;=:@%/?#-]*)?")
 CONTROL = re.compile(r"[\x00-\x1f\x7f]+")
 TIMEOUT = 30
+MAX_STDIN = 65536
+HOST_PYTHON = "/opt/alt/python312/bin/python3"
+FORWARDED = ("NOTIFY_INGEST_TOKEN", "NOTIFY_TITLE", "NOTIFY_OUTCOME", "NOTIFY_LINK", "COMMAND_CENTRE_URL")
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -61,16 +70,20 @@ def endpoint(env: dict[str, str]) -> str:
     return base.split("#", 1)[0].rstrip("/") + "/api/v1/notifications"
 
 
-def send(env: dict[str, str], opener=None) -> int:
+def build_request(env: dict[str, str]) -> urllib.request.Request:
     token = env.get("NOTIFY_INGEST_TOKEN", "").strip()
     if not TOKEN.fullmatch(token):
         raise ValueError("NOTIFY_INGEST_TOKEN is missing or malformed")
-    request = urllib.request.Request(
+    return urllib.request.Request(
         endpoint(env),
         data=json.dumps(payload(env)).encode(),
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
         method="POST",
     )
+
+
+def send(env: dict[str, str], opener=None) -> int:
+    request = build_request(env)
     opener = opener or urllib.request.build_opener(NoRedirect)
     try:
         with opener.open(request, timeout=TIMEOUT) as response:
@@ -106,10 +119,76 @@ def with_event_inputs(env: dict[str, str]) -> dict[str, str]:
     return env | {var: str(inputs.get(name) or "") for name, var in names.items()}
 
 
-def main() -> int:
+def ssh_target(env: dict[str, str]) -> tuple[str, str, str] | None:
+    host = env.get("CPANEL_SSH_HOST", "").strip()
+    if not host:
+        return None
+    user = env.get("CPANEL_SSH_USERNAME", "").strip()
+    port = env.get("CPANEL_SSH_PORT", "").strip() or "22"
+    for value, pattern in (
+        (host, r"[a-zA-Z0-9][a-zA-Z0-9.-]*"),
+        (user, r"[a-zA-Z0-9_][a-zA-Z0-9_-]*"),
+        (port, r"[0-9]{1,5}"),
+    ):
+        if not re.fullmatch(pattern, value):
+            raise ValueError("CPANEL_SSH_HOST, CPANEL_SSH_USERNAME or CPANEL_SSH_PORT is malformed")
+    return host, user, port
+
+
+class Unconfirmed(RuntimeError):
+    """The host may have stored the notification before the SSH session failed."""
+
+
+def relay(env: dict[str, str], target: tuple[str, str, str], run=subprocess.run) -> int:
+    """Runs this script on the host, which can reach its own site; returns the host's exit code."""
+    build_request(env)
+    body = payload(env)
+    forwarded = {
+        "NOTIFY_INGEST_TOKEN": env["NOTIFY_INGEST_TOKEN"].strip(),
+        "NOTIFY_TITLE": body["title"],
+        "NOTIFY_OUTCOME": body["outcome"],
+        "NOTIFY_LINK": body.get("link", ""),
+        "COMMAND_CENTRE_URL": env.get("COMMAND_CENTRE_URL", "").strip().split("#", 1)[0],
+    }
+    raw = json.dumps(forwarded)
+    if len(raw) > MAX_STDIN:
+        raise ValueError("the notification is too large to relay")
+    host, user, port = target
+    command = shlex.join([HOST_PYTHON, "-c", Path(__file__).read_text(), "--stdin"])
+    ssh = ["ssh", "-i", str(Path.home() / ".ssh/id_ed25519"), "-o", "BatchMode=yes"]
+    ssh += ["-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=20", "-p", port, f"{user}@{host}", command]
     try:
-        stored = send(with_event_inputs(dict(os.environ)))
-    except (ValueError, RuntimeError, OSError) as exc:
+        result = run(ssh, input=raw.encode(), timeout=120)
+    except subprocess.TimeoutExpired:
+        raise Unconfirmed("the SSH relay timed out") from None
+    if result.returncode == 255:
+        raise Unconfirmed("SSH to the host failed")
+    return result.returncode
+
+
+def from_stdin(raw: bytes) -> dict[str, str]:
+    if len(raw) > MAX_STDIN:
+        raise ValueError("stdin is larger than 64 KiB")
+    data = json.loads(raw)
+    if not isinstance(data, dict) or not all(isinstance(value, str) for value in data.values()):
+        raise ValueError("stdin must be a JSON object of strings")
+    return {name: data[name] for name in FORWARDED if name in data}
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    try:
+        if argv == ["--stdin"]:
+            env = from_stdin(sys.stdin.buffer.read(MAX_STDIN + 1))
+        else:
+            env = with_event_inputs(dict(os.environ))
+            if target := ssh_target(env):
+                return relay(env, target)
+        stored = send(env)
+    except Unconfirmed as exc:
+        print(f"Delivery unconfirmed: {exc}; check the Inbox before retrying.", file=sys.stderr)
+        return 1
+    except (ValueError, RuntimeError, OSError, subprocess.TimeoutExpired) as exc:
         print(f"Notification not sent: {exc}", file=sys.stderr)
         return 1
     print(f"Notification stored (inbox ID {stored}).")
