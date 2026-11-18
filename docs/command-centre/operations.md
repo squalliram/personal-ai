@@ -72,10 +72,16 @@ Reports and databases under `reports/` and `data/` are deliberately not in Git, 
 ```sh
 (
 umask 077
-backup_dir="$HOME/personal-ai-backups/$(basename "$PWD")"
-mkdir -p -m 700 "$backup_dir"
+checkout_id=$(printf '%s' "$PWD" | cksum | awk '{print $1}')
+backup_dir="$HOME/personal-ai-backups/$(basename "$PWD")-$checkout_id"
+mkdir -p -m 700 "$backup_dir" && chmod 700 "$backup_dir" || exit 1
+for backup in "$backup_dir"/*.sqlite3; do
+  [ ! -e "$backup" ] || chmod 600 "$backup" || exit 1
+done
 for db in command_centre daily_briefing octopus_energy octopus_energy_live; do
-  [ ! -f "data/$db.sqlite3" ] || sqlite3 "data/$db.sqlite3" ".backup '$backup_dir/$db.sqlite3'"
+  if [ -f "data/$db.sqlite3" ]; then
+    sqlite3 "data/$db.sqlite3" ".backup '$backup_dir/$db.sqlite3'" || exit 1
+  fi
 done
 )
 ```

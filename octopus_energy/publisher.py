@@ -68,10 +68,10 @@ def _valid_instant(value):
     if not isinstance(value, str) or value[10:11] != "T":
         return False
     try:
-        datetime.fromisoformat(value.replace("Z", "+00:00"))
+        instant = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except (AttributeError, ValueError):
         return False
-    return True
+    return instant.utcoffset() is not None
 
 
 def validate_dashboard_data(data):
@@ -157,8 +157,8 @@ def validate_dashboard_data(data):
             first = datetime.fromisoformat(day["hours"][0]["start"].replace("Z", "+00:00")).astimezone(london)
             last = previous.astimezone(london)
             if (
-                first.strftime("%H:%M") != "00:00"
-                or last.strftime("%H:%M") != "00:00"
+                any((first.hour, first.minute, first.second, first.microsecond))
+                or any((last.hour, last.minute, last.second, last.microsecond))
                 or last.date() != day_date + timedelta(days=1)
             ):
                 raise ValueError("Incomplete dashboard latest day")

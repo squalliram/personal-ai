@@ -112,6 +112,27 @@ class LatestDayTests(unittest.TestCase):
         self.assertIsNotNone(validate_dashboard_data({**valid, "generated_at": "2026-11-02T00:00:00Z"}))
         self.assertIsNotNone(validate_dashboard_data({**valid, "latest_day": {"electricity": None, "gas": None}}))
 
+    def test_publisher_rejects_offsetless_timestamps(self):
+        self.fill("2026-11-01")
+        valid = self.data()
+        for field in ("generated_at", "start", "end"):
+            data = copy.deepcopy(valid)
+            target = data if field == "generated_at" else data["latest_day"]["electricity"]["hours"][0]
+            target[field] = datetime.fromisoformat(target[field]).replace(tzinfo=None).isoformat()
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                validate_dashboard_data(data)
+
+    def test_publisher_requires_exact_midnight_boundaries(self):
+        self.fill("2026-11-01")
+        valid = self.data()
+        for shift in (timedelta(seconds=1), timedelta(microseconds=1)):
+            data = copy.deepcopy(valid)
+            for hour in data["latest_day"]["electricity"]["hours"]:
+                for field in ("start", "end"):
+                    hour[field] = (datetime.fromisoformat(hour[field]) + shift).isoformat()
+            with self.subTest(shift=shift), self.assertRaises(ValueError):
+                validate_dashboard_data(data)
+
     def test_latest_complete_day_skips_gap_and_current_or_future_days(self):
         self.fill("2026-11-01")
         self.fill("2026-11-03", last=20)

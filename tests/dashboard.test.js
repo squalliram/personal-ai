@@ -183,6 +183,13 @@ for (const mutate of [
   const fixture = latestFixture(); mutate(fixture);
   assert.throws(() => call('validateData', fixture));
 }
+for (const fraction of ['01.000', '00.001', '00.000001']) {
+  const fixture = latestFixture();
+  for (const hour of fixture.latest_day.electricity.hours) {
+    for (const field of ['start', 'end']) hour[field] = hour[field].replace('00.000Z', fraction + 'Z');
+  }
+  assert.throws(() => call('validateData', fixture), /Incomplete latest day/);
+}
 assert.equal(call('validateRefreshStatus', refreshStatus()).result, 'success');
 for (const change of [{schema_version: 2}, {result: 'synthetic-private-diagnostic'}, {request_state: 'unknown'},
   {error_category: 'raw-error'}, {last_attempt_at: '2026-02-30T00:00:00Z'},
