@@ -18,6 +18,7 @@ from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 from notifications import command_centre_link, notify
@@ -310,10 +311,22 @@ def permalink(client: GraphClient, media_id: str) -> str | None:
     return value if isinstance(value, str) and value.startswith("https://") else None
 
 
+def valid_public_url(url: str) -> bool:
+    if not url.startswith("https://") or "?" in url or "#" in url:
+        return False
+    if any(ord(char) < 33 or ord(char) == 127 for char in url):
+        return False
+    try:
+        parts = urlsplit(url)
+        return bool(parts.hostname and parts.port != 0 and "@" not in parts.netloc)
+    except ValueError:
+        return False
+
+
 def ready(env: dict) -> bool:
     """The switch and the public folder are set. Posting also needs the token and user ID (`configured`)."""
     public_dir, public_url = env.get("INSTAGRAM_PUBLIC_DIR"), env.get("INSTAGRAM_PUBLIC_URL", "")
-    return bool(env.get("INSTAGRAM_AUTO_PUBLISH") == "1" and public_dir and public_url.startswith("https://"))
+    return bool(env.get("INSTAGRAM_AUTO_PUBLISH") == "1" and public_dir and valid_public_url(public_url))
 
 
 def configured(env: dict) -> bool:
