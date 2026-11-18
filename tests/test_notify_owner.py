@@ -106,7 +106,7 @@ class NotifyOwnerTests(unittest.TestCase):
         calls = []
 
         def run(argv, input, timeout):
-            calls.append((argv, json.loads(input)))
+            calls.append((argv, json.loads(input), input.decode()))
             return subprocess.CompletedProcess(argv, 0)
 
         ssh = {"CPANEL_SSH_HOST": "host.example", "CPANEL_SSH_USERNAME": "acct", "CPANEL_SSH_PRIVATE_KEY": "KEY"}
@@ -114,7 +114,7 @@ class NotifyOwnerTests(unittest.TestCase):
         target = SCRIPT["ssh_target"](env)
         self.assertEqual(target, ("host.example", "acct", "22"))
         self.assertEqual(SCRIPT["relay"](env, target, run), 0)
-        ((argv, forwarded),) = calls
+        ((argv, forwarded, _),) = calls
         self.assertEqual(argv[-2], "acct@host.example")
         self.assertTrue(argv[-1].startswith("/opt/alt/python312/bin/python3 -c "))
         self.assertTrue(argv[-1].endswith(" --stdin"))
@@ -122,11 +122,19 @@ class NotifyOwnerTests(unittest.TestCase):
         self.assertEqual(forwarded["NOTIFY_INGEST_TOKEN"], TOKEN)
         self.assertEqual(forwarded["NOTIFY_TITLE"], "Posted today's reel")
         self.assertNotIn("CPANEL_SSH_PRIVATE_KEY", forwarded)
-        for long_title in ("x" * 70000, "\u00e9" * 12000):
-            long_env = {**env, "NOTIFY_TITLE": long_title}
+        for long_input in (
+            {"NOTIFY_TITLE": "x" * 70000},
+            {"NOTIFY_TITLE": "\u00e9" * 12000},
+            {"NOTIFY_OUTCOME": " " * 70000 + "ok"},
+        ):
+            long_env = {**env, **long_input}
             SCRIPT["relay"](long_env, target, run)
-            host_env = SCRIPT["from_stdin"](json.dumps(calls.pop()[1]))
+            host_env = SCRIPT["from_stdin"](calls.pop()[2])
             self.assertEqual(SCRIPT["payload"](host_env), SCRIPT["payload"](long_env))
+        with self.assertRaises(ValueError):
+            SCRIPT["relay"]({**env, "COMMAND_CENTRE_URL": "https://a.example/" + "a" * 70000}, target, run)
+        with self.assertRaises(ValueError):
+            SCRIPT["from_stdin"](json.dumps({"NOTIFY_TITLE": "x" * 70000}))
 
         self.assertIsNone(SCRIPT["ssh_target"](ENV))
         with self.assertRaises(ValueError):

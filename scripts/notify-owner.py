@@ -32,6 +32,7 @@ TOKEN = re.compile(r"[0-9a-fA-F]{64}")
 SAFE_LINK = re.compile(r"https://[A-Za-z0-9.-]+(?::[0-9]{1,5})?(?:/[A-Za-z0-9._~!$&'()*+,;=:@%/?#-]*)?")
 CONTROL = re.compile(r"[\x00-\x1f\x7f]+")
 TIMEOUT = 30
+MAX_STDIN = 65536
 HOST_PYTHON = "/opt/alt/python312/bin/python3"
 FORWARDED = ("NOTIFY_INGEST_TOKEN", "NOTIFY_TITLE", "NOTIFY_OUTCOME", "NOTIFY_LINK", "COMMAND_CENTRE_URL")
 
@@ -141,14 +142,23 @@ class Unconfirmed(RuntimeError):
 def relay(env: dict[str, str], target: tuple[str, str, str], run=subprocess.run) -> int:
     """Runs this script on the host, which can reach its own site; returns the host's exit code."""
     build_request(env)
+    body = payload(env)
+    forwarded = {
+        "NOTIFY_INGEST_TOKEN": env["NOTIFY_INGEST_TOKEN"].strip(),
+        "NOTIFY_TITLE": body["title"],
+        "NOTIFY_OUTCOME": body["outcome"],
+        "NOTIFY_LINK": body.get("link", ""),
+        "COMMAND_CENTRE_URL": env.get("COMMAND_CENTRE_URL", "").strip(),
+    }
+    raw = json.dumps(forwarded)
+    if len(raw) > MAX_STDIN:
+        raise ValueError("the notification is too large to relay")
     host, user, port = target
     command = shlex.join([HOST_PYTHON, "-c", Path(__file__).read_text(), "--stdin"])
     ssh = ["ssh", "-i", str(Path.home() / ".ssh/id_ed25519"), "-o", "BatchMode=yes"]
     ssh += ["-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=20", "-p", port, f"{user}@{host}", command]
-    forwarded = {name: env.get(name, "") for name in FORWARDED}
-    forwarded["NOTIFY_TITLE"] = clean_title(forwarded["NOTIFY_TITLE"])
     try:
-        result = run(ssh, input=json.dumps(forwarded).encode(), timeout=120)
+        result = run(ssh, input=raw.encode(), timeout=120)
     except subprocess.TimeoutExpired:
         raise Unconfirmed("the SSH relay timed out") from None
     if result.returncode == 255:
@@ -157,6 +167,8 @@ def relay(env: dict[str, str], target: tuple[str, str, str], run=subprocess.run)
 
 
 def from_stdin(raw: str) -> dict[str, str]:
+    if len(raw) > MAX_STDIN:
+        raise ValueError("stdin is larger than 64 KiB")
     data = json.loads(raw)
     if not isinstance(data, dict) or not all(isinstance(value, str) for value in data.values()):
         raise ValueError("stdin must be a JSON object of strings")
@@ -167,7 +179,7 @@ def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     try:
         if argv == ["--stdin"]:
-            env = from_stdin(sys.stdin.read(65536))
+            env = from_stdin(sys.stdin.read(MAX_STDIN + 1))
         else:
             env = with_event_inputs(dict(os.environ))
             if target := ssh_target(env):
