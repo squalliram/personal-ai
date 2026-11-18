@@ -223,6 +223,11 @@ def verify_assertion(
 # Storage -----------------------------------------------------------------------------------
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS passkey_generation (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  generation INTEGER NOT NULL
+);
+INSERT OR IGNORE INTO passkey_generation VALUES (1, 0);
 CREATE TABLE IF NOT EXISTS passkeys (
   credential_id TEXT PRIMARY KEY,
   public_key BLOB NOT NULL,
@@ -257,9 +262,18 @@ class PasskeyStore:
         conn.execute("PRAGMA busy_timeout = 5000")
         return conn
 
-    def issue_challenge(self, purpose: str) -> bytes:
+    def generation(self) -> int:
+        with closing(self._connect()) as conn:
+            return conn.execute("SELECT generation FROM passkey_generation WHERE id = 1").fetchone()[0]
+
+    def issue_challenge(self, purpose: str, *, generation: int | None = None) -> bytes:
         challenge, now = secrets.token_bytes(32), self.clock()
         with closing(self._connect()) as conn, conn:
+            if generation is not None:
+                conn.execute("BEGIN IMMEDIATE")
+                current = conn.execute("SELECT generation FROM passkey_generation WHERE id = 1").fetchone()[0]
+                if current != generation:
+                    raise PasskeyError("registration_reset")
             conn.execute("DELETE FROM passkey_challenges WHERE created_at < ?", (now - CHALLENGE_SECONDS,))
             # Evict only within the same purpose, so a flood of sign-in challenges cannot
             # cancel a registration that is in progress (and vice versa).
@@ -283,12 +297,13 @@ class PasskeyStore:
         with closing(self._connect()) as conn:
             return conn.execute("SELECT COUNT(*) FROM passkeys").fetchone()[0]
 
-    def add(self, credential_id: bytes, public_key: bytes, sign_count: int, label: str) -> bool:
+    def add(self, credential_id: bytes, public_key: bytes, sign_count: int, label: str, *, generation: int) -> bool:
         with closing(self._connect()) as conn, conn:
             # One statement, so the limit check and the insert cannot interleave across workers.
             cursor = conn.execute(
-                "INSERT OR IGNORE INTO passkeys SELECT ?,?,?,?,?,NULL WHERE (SELECT COUNT(*) FROM passkeys) < ?",
-                (b64url_encode(credential_id), public_key, sign_count, label, self.clock(), MAX_PASSKEYS),
+                "INSERT OR IGNORE INTO passkeys SELECT ?,?,?,?,?,NULL WHERE (SELECT COUNT(*) FROM passkeys) < ? "
+                "AND (SELECT generation FROM passkey_generation WHERE id = 1) = ?",
+                (b64url_encode(credential_id), public_key, sign_count, label, self.clock(), MAX_PASSKEYS, generation),
             )
             return cursor.rowcount == 1
 
@@ -324,5 +339,6 @@ class PasskeyStore:
 
     def remove_all(self) -> int:
         with closing(self._connect()) as conn, conn:
+            conn.execute("UPDATE passkey_generation SET generation = generation + 1 WHERE id = 1")
             conn.execute("DELETE FROM passkey_challenges")
             return conn.execute("DELETE FROM passkeys").rowcount

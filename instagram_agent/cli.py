@@ -6,7 +6,9 @@ import argparse
 import fcntl
 import json
 import os
+import sqlite3
 import sys
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -21,6 +23,7 @@ from . import (
     following,
     learnings,
     post_report,
+    preflight,
     publish,
     render,
     storage,
@@ -333,9 +336,24 @@ def main(argv: list[str] | None = None) -> int:
     imported = commands.add_parser("import-following", help="Add accounts from Instagram's following.json export")
     imported.add_argument("path", type=Path)
     commands.add_parser("report", help="Print rankings, hashtags, best hours and learned examples as JSON")
+    check = commands.add_parser("preflight", help="Read-only account and draft checks for one controlled first post")
+    check.add_argument("--draft", required=True, help="Draft ID to check")
+    check.add_argument("--media", type=Path, default=DEFAULT_MEDIA)
     tick = commands.add_parser("daily", help="Cron tick: make today's drafts once, from 09:00 London")
     tick.add_argument("--media", type=Path, default=DEFAULT_MEDIA)
     args = parser.parse_args(argv)
+
+    if args.command == "preflight":
+        env = {**load_env(Path(args.env_file)), **os.environ}
+        try:
+            with closing(storage.connect(args.database, read_only=True)) as conn:
+                conn.execute("BEGIN")
+                result = preflight.run(conn, env, args.media, _now(), draft_id=args.draft)
+        except sqlite3.Error:
+            print("Preflight requires an existing, initialized Instagram database.", file=sys.stderr)
+            return 1
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return 0 if result["ok"] else 1
 
     conn = storage.connect(args.database)
     try:
