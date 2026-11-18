@@ -35,6 +35,8 @@ The scoring scripts (`hookscore.py`, `beats.py`, `caption.py`, `humanize.py`, `d
 ## Guardrails
 
 - The only Instagram write is the daily pipeline publishing its carousels through Meta's official API (`instagram_agent/publish.py`): drafts that passed review or were approved, at their slot, unless rejected first. Never comments, follows, likes or sends DMs, and never uses browser automation. The `/ig-*` skills end with copy-ready text for you to post.
+- Your own photos come first: add 1-10 photos and a short note under **Add your photos** on the Command Centre's Instagram page. The next daily run writes the caption and hashtags from them in your voice (`agents/instagram-voice.md`), using only what the note says for the place, dish, rating or price, and queues them as the day's draft with the usual veto hour. With nothing waiting, the day gets an AI draft. Photos are checked, stripped of EXIF/GPS and re-encoded before anything is stored ([details](../docs/instagram-pipeline.md#your-own-photos)).
+- The pipeline tells you, through `notifications.notify`, when the day's draft is ready (including when your photos have become it), when a post is live (with its Instagram link) and when drafting or a post attempt fails (linking to the Command Centre's Instagram page). Each one lands in the Command Centre Inbox and, if a bot is set up, in your own Telegram chat.
 - Never fabricates metrics, clients or outcomes; missing numbers come back as `{{your number}}` placeholders.
 - `/ig-viral` reads public posts at human speed in your own browser. No scraping, no logging in as you.
 - Shared state (`voice.md`, `swipe.md`, `plan.md`, `log.md`) lives in `~/.claude/instagram/` on your machine only.

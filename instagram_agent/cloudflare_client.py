@@ -10,7 +10,7 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, build_opener
 
-from .openai_client import AIError, NoRedirects, image_extension
+from .openai_client import AIError, NoRedirects, image_extension, jpeg_data_url
 
 API_BASE = "https://api.cloudflare.com/client/v4/accounts/{account}/ai/run/"
 TEXT_MODEL = "@cf/meta/llama-4-scout-17b-16e-instruct"
@@ -81,9 +81,15 @@ class CloudflareAI:
             time.sleep(min(30, 5 * 2**attempt))
         raise AssertionError("unreachable")
 
-    def chat_json(self, system: str, user: str) -> dict[str, Any]:
+    def chat_json(self, system: str, user: str, *, images: list[bytes] = ()) -> dict[str, Any]:
+        """A JSON reply; `images` are JPEGs the (vision) text model looks at alongside the user message."""
+        content: Any = user
+        if images:
+            content = [{"type": "text", "text": user}] + [
+                {"type": "image_url", "image_url": {"url": jpeg_data_url(image)}} for image in images
+            ]
         payload = {
-            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": content}],
             "max_tokens": 4096,
             "response_format": {"type": "json_object"},
         }

@@ -4,25 +4,55 @@ import json
 import sqlite3
 from pathlib import Path
 
+from . import clips, uploads
+
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 DEFAULT_DATABASE = Path("data/instagram.sqlite3")
 
 
-def connect(path: Path = DEFAULT_DATABASE) -> sqlite3.Connection:
+def connect(path: Path = DEFAULT_DATABASE, *, read_only: bool = False) -> sqlite3.Connection:
+    if read_only:
+        conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        return conn
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
+    conn.execute(uploads.TABLE)
+    conn.execute(clips.TABLE)
+    _add_columns(conn)
     return conn
+
+
+# Columns added after the first release, for databases made before them.
+LATER_COLUMNS = {
+    "posts": {"media_product_type": "TEXT"},
+    "post_metrics": {"avg_watch_ms": "INTEGER", "total_watch_ms": "INTEGER"},
+    "drafts": {
+        "kind": "TEXT NOT NULL DEFAULT 'carousel' CHECK (kind IN ('carousel', 'reel'))",
+        "reel": "TEXT",
+    },
+}
+
+
+def _add_columns(conn: sqlite3.Connection) -> None:
+    with conn:
+        for table, columns in LATER_COLUMNS.items():
+            have = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+            for name, spec in columns.items():
+                if name not in have:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {spec}")
 
 
 def upsert_post(conn: sqlite3.Connection, media: dict, synced_at: str) -> None:
     conn.execute(
-        "INSERT INTO posts(media_id,posted_at,media_type,permalink,caption,likes,comments,synced_at) "
-        "VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(media_id) DO UPDATE SET caption=excluded.caption, "
-        "likes=excluded.likes, comments=excluded.comments, synced_at=excluded.synced_at",
+        "INSERT INTO posts(media_id,posted_at,media_type,permalink,caption,likes,comments,synced_at,"
+        "media_product_type) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(media_id) DO UPDATE SET caption=excluded.caption, "
+        "likes=excluded.likes, comments=excluded.comments, synced_at=excluded.synced_at, "
+        "media_product_type=COALESCE(excluded.media_product_type, media_product_type)",
         (
             media["id"],
             media["timestamp"],
@@ -32,12 +62,23 @@ def upsert_post(conn: sqlite3.Connection, media: dict, synced_at: str) -> None:
             media.get("like_count"),
             media.get("comments_count"),
             synced_at,
+            media.get("media_product_type"),
         ),
     )
 
 
 def upsert_metrics(conn: sqlite3.Connection, media_id: str, captured_on: str, values: dict[str, int]) -> None:
-    columns = ("reach", "likes", "comments", "saved", "shares", "views", "total_interactions")
+    columns = (
+        "reach",
+        "likes",
+        "comments",
+        "saved",
+        "shares",
+        "views",
+        "total_interactions",
+        "avg_watch_ms",
+        "total_watch_ms",
+    )
     conn.execute(
         f"INSERT INTO post_metrics(media_id,captured_on,{','.join(columns)}) VALUES(?,?,{','.join('?' * len(columns))}) "
         f"ON CONFLICT(media_id,captured_on) DO UPDATE SET {','.join(f'{c}=COALESCE(excluded.{c},{c})' for c in columns)}",
@@ -135,7 +176,7 @@ def link_published(conn: sqlite3.Connection, draft_id: str, media_id: str) -> No
 def insert_draft(conn: sqlite3.Connection, draft: dict, created_on: str, created_at: str) -> None:
     conn.execute(
         "INSERT INTO drafts(draft_id,created_on,created_at,category,topic,angle,slides,caption,hashtags,"
-        "review_score,review_notes,scheduled_for) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+        "review_score,review_notes,scheduled_for,kind,reel) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             draft["draft_id"],
             created_on,
@@ -149,6 +190,8 @@ def insert_draft(conn: sqlite3.Connection, draft: dict, created_on: str, created
             draft.get("review_score"),
             draft.get("review_notes"),
             draft.get("scheduled_for"),
+            draft.get("kind", "carousel"),
+            json.dumps(draft["reel"], ensure_ascii=False) if draft.get("reel") else None,
         ),
     )
 
@@ -181,6 +224,36 @@ _LATEST_RUN_STARTED = (
 def publishing_started(conn: sqlite3.Connection, draft_id: str) -> bool:
     """True once the publisher has begun the final publish call for this draft."""
     return conn.execute(_LATEST_RUN_STARTED, (draft_id,)).fetchone() is not None
+
+
+def hold_reel(conn: sqlite3.Connection, draft_id: str, hold: bool, version: int | None = None) -> str:
+    """Hold a pending reel for approval, or release it: ok, unchanged, not_found, not_pending or hold_changed.
+
+    `version` is the hold version the page showed. Each change bumps it, so a delayed request from an
+    out-of-date page is refused unless it asks for the hold already stored."""
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT kind, status, reel FROM drafts WHERE draft_id=?", (draft_id,)).fetchone()
+        if row is None or row[0] != "reel":
+            return "not_found"
+        if row[1] != "pending" or publishing_started(conn, draft_id):
+            return "not_pending"
+        try:
+            reel = json.loads(row[2] or "{}")
+        except ValueError:
+            reel = {}
+        reel = reel if isinstance(reel, dict) else {}
+        current = reel.get("hold") is True
+        stored = reel.get("hold_version")
+        stored = stored if isinstance(stored, int) and not isinstance(stored, bool) else 0
+        if current == hold:
+            return "unchanged"
+        if version is not None and version != stored:
+            return "hold_changed"
+        reel["hold"] = bool(hold)
+        reel["hold_version"] = stored + 1
+        conn.execute("UPDATE drafts SET reel=? WHERE draft_id=?", (json.dumps(reel), draft_id))
+    return "ok"
 
 
 def decide_draft(conn: sqlite3.Connection, draft_id: str, decision: str, decided_at: str) -> bool:

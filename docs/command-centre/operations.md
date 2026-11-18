@@ -35,7 +35,8 @@ Requires Python 3.10 or newer. On this Mac `python3` is 3.9.6, so the launcher p
 | `COMMAND_CENTRE_PASSWORD_HASH` | none (server refuses to start) | PBKDF2 hash from `hash-password` |
 | `COMMAND_CENTRE_PERMISSION` | `recommend` | Session ceiling: `read`, `recommend` or `execute` |
 | `COMMAND_CENTRE_ENERGY_DB` | `data/octopus_energy.sqlite3` | Opened read-only |
-| `COMMAND_CENTRE_ENERGY_STATUS` | `reports/energy/dashboard/status.json` | Refresh status, validated |
+| `COMMAND_CENTRE_ENERGY_STATUS` | `reports/energy/dashboard/status.json` | Refresh status, validated. The Energy view also reads the published `data.json` beside it |
+| `COMMAND_CENTRE_ENERGY_REFRESH_DIR` | `data/energy-refresh` | Private (0700) runner directory; **Fetch latest data** only publishes `request.flag` here |
 | `COMMAND_CENTRE_BRIEFING_DB` | `data/daily_briefing.sqlite3` | Opened read-only |
 | `COMMAND_CENTRE_BRIEFING_REPORTS` | `reports/daily` | Only file names are read |
 | `COMMAND_CENTRE_AUDIT_DB` | `data/command_centre.sqlite3` | Audit log (mode 0600) |

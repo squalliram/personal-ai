@@ -6,22 +6,38 @@ import argparse
 import fcntl
 import json
 import os
+import sqlite3
 import sys
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from notifications import command_centre_link, notify
 from octopus_energy.cli import load_env
 
-from . import analysis, cloudflare_client, drafts, following, preflight, publish, storage
+from . import (
+    analysis,
+    clips,
+    cloudflare_client,
+    drafts,
+    following,
+    learnings,
+    post_report,
+    preflight,
+    publish,
+    render,
+    storage,
+    uploads,
+)
 from .analysis import LONDON
 from .cloudflare_client import CloudflareAI
-from .graph import GRAPH_HOST, GRAPH_VERSION, INSTAGRAM_HOST, GraphAPIError, GraphClient
+from .graph import GRAPH_HOST, GRAPH_VERSION, INSTAGRAM_HOST, REEL_METRICS, GraphAPIError, GraphClient
 from .openai_client import IMAGE_MODEL, IMAGE_SIZE, TEXT_MODEL, AIError, OpenAIClient
 
 DEFAULT_MEDIA = Path("data/instagram/drafts")
 DAILY_FROM_HOUR = 9
 DAILY_ATTEMPTS = 3
-DAILY_DRAFTS = 3
+DAILY_DRAFTS = 1
 
 INSIGHT_WINDOW = timedelta(days=30)
 
@@ -59,7 +75,7 @@ def sync(conn, client: GraphClient, *, benchmarks: int = 50, now: datetime | Non
             counts["posts"] += 1
             if analysis._instant(media["timestamp"]) >= now - INSIGHT_WINDOW:
                 try:
-                    values = client.media_insights(media["id"])
+                    values = _insights(client, media)
                 except GraphAPIError:
                     counts["metric_errors"] += 1
                     continue
@@ -97,6 +113,7 @@ def report(conn) -> dict:
         "own_posts": analysis.post_performance(conn)[:30],
         "best_hours_london": analysis.best_hours(conn),
         "examples": analysis.learned_examples(conn),
+        "learnings": learnings.summary(conn),
     }
 
 
@@ -130,7 +147,110 @@ def model_client(env: dict):
 
 
 def daily(conn, env: dict, media_dir: Path, now: datetime | None = None) -> str:
-    """One cron tick: from 09:00 London make today's drafts, topping up to DAILY_DRAFTS until 12:00.
+    """`make_drafts`, then tell the owner when a day's drafts are ready or a run went wrong."""
+    now = now or _now()
+    outcome = make_drafts(conn, env, media_dir, now)
+    if outcome != "skipped":
+        _notify_daily(conn, env, outcome, now)
+    return outcome
+
+
+def _short(note: str, limit: int = 60) -> str:
+    return note if len(note) <= limit else note[: limit - 1].rstrip() + "…"
+
+
+def _posting(env: dict, rows) -> str:
+    """When the first of these drafts posts, for the notification title."""
+    times = [
+        publish.posts_at(r["scheduled_for"], r["created_at"])
+        for r in rows
+        if r["scheduled_for"] and publish.will_post(r["status"], r["review_score"], publish.held(r))
+    ]
+    if not publish.configured(env):
+        return "posting is manual"
+    if times:
+        return ("posts at " if len(rows) == 1 else "first posts at ") + min(times).astimezone(LONDON).strftime("%H:%M")
+    return "it won't post unless you approve it" if len(rows) == 1 else "none will post unless you approve one"
+
+
+def _insights(client: GraphClient, media: dict) -> dict[str, int]:
+    """A post's metrics; reels add watch time, falling back to the common set if Meta refuses those."""
+    if media.get("media_product_type") == "REELS":
+        try:
+            values = client.media_insights(media["id"], REEL_METRICS)
+        except GraphAPIError:
+            return client.media_insights(media["id"])
+        values["avg_watch_ms"] = values.pop("ig_reels_avg_watch_time", None)
+        values["total_watch_ms"] = values.pop("ig_reels_video_view_total_time", None)
+        return values
+    return client.media_insights(media["id"])
+
+
+def _notify_render(env: dict, now: datetime):
+    """Tell the owner a reel didn't render; after the last try it is held rather than posted unedited."""
+    page = command_centre_link(env, "instagram")
+
+    def failed(row, error: str, final: bool) -> None:
+        then = "it won't post; delete it or send the media again" if final else "it will try again on the next run"
+        title = f"Reel for {_short(row['topic'])} didn't render ({error}): {then}"
+        key = f"instagram-render:{row['draft_id']}:{'final' if final else 'retry'}"
+        notify("instagram", "failed", title, page, key=key, env=env, now=now)
+
+    return failed
+
+
+def _notify_daily(conn, env: dict, outcome: str, now: datetime) -> None:
+    today = now.astimezone(LONDON).date().isoformat()
+    page = command_centre_link(env, "instagram")
+    if outcome in ("ok", "partial"):
+        with conn:
+            uploads.add_columns(conn)  # a clip can fill the day before uploads.oldest adds them
+        for row in conn.execute(
+            "SELECT u.upload_id, u.note, u.reel AS as_reel, d.kind, d.reel, d.status, d.review_score, d.scheduled_for, d.created_at "
+            "FROM uploads u JOIN drafts d ON d.draft_id=u.draft_id WHERE d.created_on=?",
+            (today,),
+        ).fetchall():
+            if row["kind"] == "reel":
+                title = f'Your photos ("{_short(row["note"])}") are now a reel draft, {_posting(env, [row])}'
+            else:
+                unrendered = " (this server can't render reels yet)" if row["as_reel"] else ""
+                title = f'Your photos ("{_short(row["note"])}") are now an Instagram draft{unrendered}, '
+                title += _posting(env, [row])
+            notify("instagram", "ok", title, page, key=f"instagram-upload-draft:{row['upload_id']}", env=env, now=now)
+        for row in conn.execute(
+            "SELECT c.clip_id, c.note, d.kind, d.reel, d.status, d.review_score, d.scheduled_for, d.created_at "
+            "FROM clips c "
+            "JOIN drafts d ON d.draft_id=c.draft_id WHERE d.created_on=?",
+            (today,),
+        ).fetchall():
+            title = f'Your clip ("{_short(row["note"])}") is now a reel draft, {_posting(env, [row])}'
+            notify("instagram", "ok", title, page, key=f"instagram-clip-draft:{row['clip_id']}", env=env, now=now)
+    if outcome == "ok":
+        rows = conn.execute(
+            "SELECT status, review_score, scheduled_for, created_at FROM drafts WHERE created_on=? AND draft_id NOT "
+            "IN (SELECT draft_id FROM uploads WHERE draft_id IS NOT NULL UNION "
+            "SELECT draft_id FROM clips WHERE draft_id IS NOT NULL)",
+            (today,),
+        ).fetchall()
+        if rows:
+            title = f"{len(rows)} Instagram draft{'' if len(rows) == 1 else 's'} ready to review, {_posting(env, rows)}"
+            notify("instagram", "ok", title, page, key=f"instagram-drafts-ready:{today}", env=env, now=now)
+        return
+    if outcome == "gave_up":
+        title = "Instagram drafts gave up for today after repeated failures"
+        notify("instagram", "failed", title, page, key=f"instagram-drafts-gave-up:{today}", env=env, now=now)
+        return
+    if outcome == "not_configured":
+        title = "Instagram drafts not made: no AI provider key is set"
+        notify("instagram", "failed", title, page, key=f"instagram-drafts-unconfigured:{today}", env=env, now=now)
+        return
+    run = conn.execute("SELECT error FROM daily_runs WHERE run_on=? ORDER BY id DESC LIMIT 1", (today,)).fetchone()
+    error = run["error"] if run and run["error"] else "no reason recorded"
+    notify("instagram", "failed", f"Instagram drafts {outcome}: {error}", page, env=env, now=now)
+
+
+def make_drafts(conn, env: dict, media_dir: Path, now: datetime | None = None) -> str:
+    """One cron tick: from 09:00 London make today's draft(s), topping up to DAILY_DRAFTS until 12:00.
 
     A day stops after DAILY_ATTEMPTS failed or partial tries.
     """
@@ -154,23 +274,40 @@ def daily(conn, env: dict, media_dir: Path, now: datetime | None = None) -> str:
         except GraphAPIError:
             pass  # Draft from yesterday's data rather than miss noon.
     skills = env.get("INSTAGRAM_SKILLS_DIR")
+    wanted, stored = DAILY_DRAFTS - have, 0
     try:
-        found = drafts.generate(
-            conn,
-            ai,
-            now,
-            count=DAILY_DRAFTS - have,
-            rules=drafts.load_rules(Path(skills).expanduser() if skills else None),
-            voice=_read(env.get("INSTAGRAM_VOICE_FILE", "agents/instagram-voice.md")),
-        )
+        rules = drafts.load_rules(Path(skills).expanduser() if skills else None)
+        voice = _read(env.get("INSTAGRAM_VOICE_FILE", "agents/instagram-voice.md"))
+        # The owner's oldest waiting clip comes first (a reel replaces the day's carousel), then their oldest
+        # photos; the AI carousel only fills what they don't.
+        clip = clips.oldest(conn)
+        while clip is not None and not clips.clip_file(media_dir, clip).is_file():
+            clips.delete(conn, media_dir, clip["clip_id"])  # its file was lost; don't let it block every day
+            clip = clips.oldest(conn)
+        if clip is not None:
+            rendered = render.can_render("clip")
+            draft = drafts.generate_from_clip(conn, ai, now, clip, rules=rules, voice=voice, rendered=rendered)
+            if draft is None:
+                raise AIError("the agents wrote no usable reel from your clip")
+            stored += drafts.store_clip_draft(conn, draft, clip, media_dir, now) is not None
+        upload = uploads.oldest(conn) if stored < wanted else None  # also when the clip was deleted meanwhile
+        if upload is not None:
+            as_reel = bool(upload["reel"]) and render.can_render("photos")
+            draft = drafts.generate_from_upload(
+                conn, ai, now, upload, media_dir, rules=rules, voice=voice, as_reel=as_reel
+            )
+            if draft is None:
+                raise AIError("the agents wrote no usable post from your photos")
+            stored += drafts.store_upload_draft(conn, draft, upload, media_dir, now) is not None
         dropped: list[str] = []
-        stored = drafts.render_and_store(conn, ai, found, media_dir, now, dropped)
+        if stored < wanted:
+            found = drafts.generate(conn, ai, now, count=wanted - stored, rules=rules, voice=voice)
+            stored += drafts.render_and_store(conn, ai, found, media_dir, now, dropped)
     except (AIError, OSError) as exc:
         error = str(exc) if isinstance(exc, AIError) else type(exc).__name__
         with conn:
-            storage.record_run(conn, today, stamp, "failed", error=error)
-        return "failed"
-    wanted = DAILY_DRAFTS - have
+            storage.record_run(conn, today, stamp, "partial" if stored else "failed", stored, error=error[:500])
+        return "partial" if stored else "failed"
     outcome = "ok" if stored >= wanted else "partial" if stored else "failed"
     error = None
     if stored < wanted:
@@ -178,6 +315,14 @@ def daily(conn, env: dict, media_dir: Path, now: datetime | None = None) -> str:
     with conn:
         storage.record_run(conn, today, stamp, outcome, stored, error[:500] if error else None)
     return outcome
+
+
+def _post_reports(conn, env: dict) -> str:
+    """24h/72h post reports after publishing; a problem here never fails the tick."""
+    try:
+        return post_report.tick(conn, env, _now())
+    except Exception as exc:  # noqa: BLE001
+        return f"reports failed ({type(exc).__name__})"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -197,6 +342,18 @@ def main(argv: list[str] | None = None) -> int:
     tick.add_argument("--media", type=Path, default=DEFAULT_MEDIA)
     args = parser.parse_args(argv)
 
+    if args.command == "preflight":
+        env = {**load_env(Path(args.env_file)), **os.environ}
+        try:
+            with closing(storage.connect(args.database, read_only=True)) as conn:
+                conn.execute("BEGIN")
+                result = preflight.run(conn, env, args.media, _now(), draft_id=args.draft)
+        except sqlite3.Error:
+            print("Preflight requires an existing, initialized Instagram database.", file=sys.stderr)
+            return 1
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return 0 if result["ok"] else 1
+
     conn = storage.connect(args.database)
     try:
         if args.command == "import-following":
@@ -209,10 +366,6 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(report(conn), indent=2, ensure_ascii=False))
             return 0
         env = {**load_env(Path(args.env_file)), **os.environ}
-        if args.command == "preflight":
-            result = preflight.run(conn, env, args.media, _now(), draft_id=args.draft)
-            print(json.dumps(result, indent=2, ensure_ascii=False))
-            return 0 if result["ok"] else 1
         if args.command == "daily":
             args.media.mkdir(mode=0o700, parents=True, exist_ok=True)
             with open(args.media / ".daily.lock", "w") as lock:
@@ -221,8 +374,10 @@ def main(argv: list[str] | None = None) -> int:
                 except BlockingIOError:
                     return 0  # The previous tick is still drafting.
                 outcome = daily(conn, env, args.media)
+                render.render_due(conn, args.media, _notify_render(env, _now()))
                 published = publish.tick(conn, env, args.media, _now())
-            print(outcome, published, sep="; ")
+                reports = _post_reports(conn, env)
+            print(outcome, published, reports, sep="; ")
             return 0 if outcome in ("ok", "partial", "skipped", "gave_up") else 1
         token, user_id = env.get("INSTAGRAM_ACCESS_TOKEN", ""), env.get("INSTAGRAM_USER_ID", "")
         if not token or not user_id:

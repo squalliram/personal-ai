@@ -1,0 +1,63 @@
+name: Notify owner
+
+# Sends one update to the owner's Command Centre Inbox and Telegram (@IramsJarvisBot) through
+# POST /api/v1/notifications, using the NOTIFY_INGEST_TOKEN Actions secret, so the caller
+# (the Jarvis Builder Bot) never holds the token. Trigger with either:
+#   gh api repos/squalliram/personal-ai/dispatches -f event_type=notify-owner \
+#     -f 'client_payload[title]=...' [-f 'client_payload[outcome]=failed'] [-f 'client_payload[link]=https://...']
+#   gh workflow run notify-owner.yml -R squalliram/personal-ai -f title="..." [-f outcome=failed] [-f link=https://...]
+# repository_dispatch needs only contents:write (Devin's GitHub app has it); workflow_dispatch needs actions:write.
+# The repo is public: the message never reaches the run log, but keep secrets out of it anyway.
+
+on:
+  repository_dispatch:
+    types: [notify-owner]
+  workflow_dispatch:
+    inputs:
+      title:
+        description: Message text (trimmed to 200 characters)
+        required: true
+        type: string
+      outcome:
+        description: ok or failed
+        required: false
+        default: ok
+        type: choice
+        options: [ok, failed]
+      link:
+        description: Optional https link shown with the message
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Send to Inbox and Telegram
+        env:
+          NOTIFY_INGEST_TOKEN: ${{ secrets.NOTIFY_INGEST_TOKEN }}
+          # iramkhan.com drops connections from GitHub's runners, so the script sends the request from the host
+          # over the deploy's SSH access.
+          CPANEL_SSH_HOST: ${{ secrets.CPANEL_SSH_HOST }}
+          CPANEL_SSH_USERNAME: ${{ secrets.CPANEL_SSH_USERNAME }}
+          CPANEL_SSH_PORT: ${{ secrets.CPANEL_SSH_PORT }}
+          CPANEL_SSH_PRIVATE_KEY: ${{ secrets.CPANEL_SSH_PRIVATE_KEY }}
+          CPANEL_SSH_KNOWN_HOSTS: ${{ secrets.CPANEL_SSH_KNOWN_HOSTS }}
+        shell: bash
+        # The script reads the inputs from the event file, so the text is not listed in this public log.
+        run: |
+          set -euo pipefail
+          umask 077
+          install -m 700 -d ~/.ssh
+          trap 'rm -f ~/.ssh/id_ed25519' EXIT
+          printf '%s\n' "$CPANEL_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          printf '%s\n' "$CPANEL_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          python3 scripts/notify-owner.py

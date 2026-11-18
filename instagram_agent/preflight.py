@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import urlsplit
 
 from . import drafts, publish, storage
 from .analysis import LONDON
@@ -32,7 +31,7 @@ def _eligible_drafts(conn, now: datetime) -> list[str]:
         if (
             when
             and now <= when + publish.STALE_AFTER
-            and publish.will_post(row["status"], row["review_score"])
+            and publish.will_post(row["status"], row["review_score"], publish.held(row))
             and row["fails"] < publish.MAX_ATTEMPTS
             and not storage.publishing_started(conn, row["draft_id"])
         ):
@@ -44,20 +43,8 @@ def _public_error(env: dict) -> str | None:
     directory, public_url = env.get("INSTAGRAM_PUBLIC_DIR"), env.get("INSTAGRAM_PUBLIC_URL", "")
     if not directory or not public_url:
         return "Set INSTAGRAM_PUBLIC_DIR and INSTAGRAM_PUBLIC_URL"
-    try:
-        parts = urlsplit(public_url)
-        if (
-            parts.scheme != "https"
-            or not parts.hostname
-            or parts.port == 0
-            or parts.username
-            or parts.password
-            or parts.query
-            or parts.fragment
-        ):
-            return "Public media URL must be HTTPS without credentials, query or fragment"
-    except ValueError:
-        return "Public media URL must be a valid HTTPS URL"
+    if not publish.valid_public_url(public_url):
+        return "Public media URL must start with https:// and have a valid host and port, without credentials, query or fragment"
     path = Path(directory)
     if path.is_symlink() or (path.exists() and not path.is_dir()):
         return "Public media folder is not a safe directory"
@@ -65,12 +52,14 @@ def _public_error(env: dict) -> str | None:
 
 
 def _media_error(row, media_dir: Path) -> str | None:
+    if publish.kind(row) == "reel":
+        return "Choose a photo or carousel for the controlled first post"
     try:
         slides = json.loads(row["slides"])
     except (TypeError, ValueError):
         return "Draft slide data is invalid"
-    if not isinstance(slides, list) or not 2 <= len(slides) <= 20:
-        return "A carousel needs 2-20 slides"
+    if not isinstance(slides, list) or not 1 <= len(slides) <= 20:
+        return "A photo post needs 1-20 images"
     caption, hashtags = row["caption"] or "", row["hashtags"] or ""
     caption_length = len(caption) + (2 + len(hashtags) if hashtags else 0)
     if caption_length > drafts.MAX_CAPTION:
@@ -139,13 +128,13 @@ def run(conn, env: dict, media_dir: Path, now: datetime, *, draft_id: str, clien
         row = conn.execute("SELECT * FROM drafts WHERE draft_id=?", (draft_id,)).fetchone()
     check("selected_draft", row is not None, "Selected draft exists" if row else "Selected draft was not found")
     if row:
-        eligible = publish.will_post(row["status"], row["review_score"])
+        eligible = publish.will_post(row["status"], row["review_score"], publish.held(row))
         check(
             "draft_eligibility",
             eligible,
             "Draft is approved or passed review"
             if eligible
-            else "Draft is rejected, decided, or below 70 without approval",
+            else "Draft is rejected, decided, held for approval, or below 70 without approval",
         )
         try:
             when = publish.posts_at(row["scheduled_for"], row["created_at"])

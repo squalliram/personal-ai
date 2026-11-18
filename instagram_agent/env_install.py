@@ -20,8 +20,17 @@ ALLOWED = (
     "INSTAGRAM_AUTO_PUBLISH",
     "INSTAGRAM_PUBLIC_DIR",
     "INSTAGRAM_PUBLIC_URL",
+    "TELEGRAM_BOT_TOKEN",
+    "TELEGRAM_CHAT_ID",
+    "COMMAND_CENTRE_URL",
 )
 SAFE_VALUE = re.compile(r"[A-Za-z0-9._~+/=-]+|https://[A-Za-z0-9._~/-]+")
+# Bot tokens contain ':' and group chat IDs start with '-'; only these keys allow them.
+KEY_VALUES = {
+    "TELEGRAM_BOT_TOKEN": re.compile(r"[0-9]{1,20}:[A-Za-z0-9_-]{20,100}"),
+    "TELEGRAM_CHAT_ID": re.compile(r"-?[0-9]{1,20}"),
+    "COMMAND_CENTRE_URL": re.compile(r"https://[A-Za-z0-9._~/-]+"),
+}
 
 
 def parse(text: str) -> dict[str, str]:
@@ -31,7 +40,7 @@ def parse(text: str) -> dict[str, str]:
         if not sep or key not in ALLOWED:
             raise ValueError("unexpected input line")
         if value:
-            if not SAFE_VALUE.fullmatch(value):
+            if not KEY_VALUES.get(key, SAFE_VALUE).fullmatch(value):
                 raise ValueError(f"{key} has unexpected characters")
             values[key] = value
     return values

@@ -57,7 +57,7 @@ def unpack_wheels(target: Path, wheels: dict, requirements: Path) -> None:
 
 
 def vendor(release: Path, wheels: dict | None = None) -> bool:
-    """Install the hash-pinned passkey dependencies into <release>/vendor; passkeys stay off on failure.
+    """Install the hash-pinned dependencies into <release>/vendor; passkeys and photo uploads stay off on failure.
 
     Wheels shipped by the deploy runner are preferred, because the host may have no pip or no PyPI access.
     """
@@ -208,9 +208,10 @@ class NoRedirect(HTTPRedirectHandler):
         return None
 
 
-def fetch(url, *, headers=None):
+def fetch(url, *, headers=None, data=None):
     try:
-        response = build_opener(NoRedirect()).open(Request(url, headers=headers or {}), timeout=15)
+        request = Request(url, headers=headers or {}, data=data, method="POST" if data is not None else "GET")
+        response = build_opener(NoRedirect()).open(request, timeout=15)
     except HTTPError as error:
         response = error
     with response:
@@ -220,6 +221,22 @@ def fetch(url, *, headers=None):
 def require(condition, message):
     if not condition:
         raise ReleaseError(message)
+
+
+def ingest_check(base: str, token: str | None) -> str:
+    """Whether the bearer header reaches the app, without storing anything: an empty body must be refused
+    after authentication (400). Reported, not enforced, so a host that strips the header never blocks a deploy."""
+    if not token:
+        return "not_configured"
+    try:
+        status, _, _ = fetch(
+            base + "/api/v1/notifications",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            data=b"{}",
+        )
+    except OSError:
+        return "unreachable"
+    return {400: "ready", 401: "authorization_header_missing", 429: "rate_limited"}.get(status, f"http_{status}")
 
 
 def verify(app: Path, sha: str, deployment_id: str, *, revoke_sessions=False):
@@ -300,6 +317,7 @@ def verify(app: Path, sha: str, deployment_id: str, *, revoke_sessions=False):
             status, _, _ = fetch(base + "/api/v1/session", headers=cookie)
             require(status == 401, "Credential reset did not invalidate existing sessions")
         return {
+            "notify_ingest": ingest_check(base, application.settings.notify_ingest_token),
             "energy_state": energy["state"],
             "energy_daily_rows": len(energy["daily"]),
             "briefing_state": application._collect()["briefing"]["state"],
@@ -322,6 +340,9 @@ def install(
     openai_api_key: str = "",
     cloudflare_account_id: str = "",
     cloudflare_api_token: str = "",
+    notify_ingest_token: str = "",
+    telegram_bot_token: str = "",
+    telegram_chat_id: str = "",
     wheels: dict | None = None,
 ):
     home = (home or Path.home()).resolve()
@@ -343,6 +364,18 @@ def install(
         and (not cloudflare_account_id or bool(re.fullmatch(r"[0-9a-f]{32}", cloudflare_account_id)))
         and (not cloudflare_api_token or bool(re.fullmatch(r"[A-Za-z0-9._~+/=-]{20,400}", cloudflare_api_token))),
         "Invalid Cloudflare Workers AI credentials",
+    )
+    notify_ingest_token = notify_ingest_token.strip()
+    require(
+        not notify_ingest_token or bool(re.fullmatch(r"[0-9a-fA-F]{64}", notify_ingest_token)),
+        "Invalid notification ingest token format",
+    )
+    telegram_bot_token, telegram_chat_id = telegram_bot_token.strip(), telegram_chat_id.strip()
+    require(
+        bool(telegram_bot_token) == bool(telegram_chat_id)
+        and (not telegram_bot_token or bool(re.fullmatch(r"[0-9]{1,20}:[A-Za-z0-9_-]{20,100}", telegram_bot_token)))
+        and (not telegram_chat_id or bool(re.fullmatch(r"-?[0-9]{1,20}", telegram_chat_id))),
+        "Invalid Telegram notification settings",
     )
     app = checkout.parent / "command-centre-app"
     require(app.is_relative_to(home) and "public_html" not in app.relative_to(home).parts, "App root is not private")
@@ -400,10 +433,12 @@ def install(
             "PASSKEYS_DB": str(app / "data/passkeys.sqlite3"),
             "ENERGY_DB": str(checkout / "data/octopus_energy.sqlite3"),
             "ENERGY_STATUS": str(checkout / "reports/energy/dashboard/status.json"),
+            "ENERGY_REFRESH_DIR": str(checkout / "data/energy-refresh"),
             "BRIEFING_DB": str(checkout / "data/daily_briefing.sqlite3"),
             "BRIEFING_REPORTS": str(checkout / "reports/daily"),
             "INSTAGRAM_DB": str(checkout / "data/instagram.sqlite3"),
             "INSTAGRAM_MEDIA": str(checkout / "data/instagram/drafts"),
+            "NOTIFICATIONS_DB": str(checkout / "data/notifications.sqlite3"),
             "PERMISSION": "recommend",
             "INSPECT_CRONTAB": "1",
         }
@@ -412,6 +447,12 @@ def install(
         if cloudflare_account_id:
             values["CLOUDFLARE_ACCOUNT_ID"] = cloudflare_account_id
             values["CLOUDFLARE_API_TOKEN"] = cloudflare_api_token
+        if notify_ingest_token:
+            values["NOTIFY_INGEST_TOKEN"] = notify_ingest_token
+        if telegram_bot_token:
+            # notify() runs inside this process for ingested results, so it needs the bot here too.
+            values["TELEGRAM_BOT_TOKEN"] = telegram_bot_token
+            values["TELEGRAM_CHAT_ID"] = telegram_chat_id
         require(
             all("\n" not in value and "\r" not in value for value in values.values()), "Invalid configuration value"
         )
@@ -492,6 +533,9 @@ def main():
             openai_api_key=payload.get("openai_api_key") or "",
             cloudflare_account_id=payload.get("cloudflare_account_id") or "",
             cloudflare_api_token=payload.get("cloudflare_api_token") or "",
+            notify_ingest_token=payload.get("notify_ingest_token") or "",
+            telegram_bot_token=payload.get("telegram_bot_token") or "",
+            telegram_chat_id=payload.get("telegram_chat_id") or "",
             wheels=payload.get("wheels") or {},
         )
         print(json.dumps(result, sort_keys=True))

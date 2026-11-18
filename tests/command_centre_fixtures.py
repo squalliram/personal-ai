@@ -208,7 +208,9 @@ def seed_legacy_energy(path: Path) -> None:
     )
     with closing(sqlite3.connect(path)) as conn, conn:
         conn.executescript(schema)
-        conn.execute("INSERT INTO daily_costs VALUES('2026-01-01','gas',0,0,0,0)")
+        conn.execute(
+            "INSERT INTO daily_costs(date,fuel,consumption_kwh,unit_cost_gbp,standing_charge_gbp,total_cost_gbp) VALUES('2026-01-01','gas',0,0,0,0)"
+        )
         conn.execute(
             "INSERT INTO sync_history(started_at,ended_at,status) VALUES('2026-01-01T00:00:00Z','2026-01-01T00:01:00Z','success')"
         )

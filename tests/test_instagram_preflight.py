@@ -1,13 +1,15 @@
 import io
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
-from instagram_agent import cli, preflight, storage
+from instagram_agent import cli, preflight, publish, storage
 from instagram_agent.graph import GraphAPIError
 
 NOW = datetime(2026, 11, 15, 12, 0, tzinfo=timezone.utc)
@@ -52,7 +54,7 @@ class PreflightTests(unittest.TestCase):
             "INSTAGRAM_PUBLIC_URL": "https://iramkhan.com/ig-media",
         }
 
-    def add(self, draft_id=DRAFT, *, score=80, slot="2026-11-15T18:00+00:00", caption="Save this."):
+    def add(self, draft_id=DRAFT, *, score=80, slot="2026-11-15T18:00+00:00", caption="Save this.", slides=3):
         with self.conn:
             storage.insert_draft(
                 self.conn,
@@ -60,7 +62,7 @@ class PreflightTests(unittest.TestCase):
                     "draft_id": draft_id,
                     "category": "coffee",
                     "topic": "Flat whites",
-                    "slides": [{"text": f"Slide {n}", "file": f"slide-{n}.jpg"} for n in range(1, 4)],
+                    "slides": [{"text": f"Slide {n}", "file": f"slide-{n}.jpg"} for n in range(1, slides + 1)],
                     "caption": caption,
                     "hashtags": ["#coffee"],
                     "review_score": score,
@@ -71,7 +73,7 @@ class PreflightTests(unittest.TestCase):
             )
         folder = self.media / draft_id
         folder.mkdir(parents=True, exist_ok=True)
-        for number in range(1, 4):
+        for number in range(1, slides + 1):
             (folder / f"slide-{number}.jpg").write_bytes(JPEG)
         return draft_id
 
@@ -155,17 +157,28 @@ class PreflightTests(unittest.TestCase):
         self.add()
         for url in (
             "http://iramkhan.com/ig-media",
+            "HTTPS://iramkhan.com/ig-media",
+            " https://iramkhan.com/ig-media",
+            "https://bad host/ig-media",
             "https://[bad",
+            "https://user@iramkhan.com/ig-media",
+            "https://iramkhan.com/ig-media?",
+            "https://iramkhan.com/ig-media#",
+            "https://iramkhan.com:0/ig-media",
             "https://iramkhan.com:bad/ig-media",
             "https://iramkhan.com:99999/ig-media",
         ):
             with self.subTest(url=url):
-                report = self.preflight(env={**self.env, "INSTAGRAM_PUBLIC_URL": url})
+                env = {**self.env, "INSTAGRAM_PUBLIC_URL": url}
+                report = self.preflight(env=env)
                 self.assertFalse(report["ok"])
                 self.assertFalse(self.check(report, "public_media")["ok"])
-        report = self.preflight(env={**self.env, "INSTAGRAM_PUBLIC_URL": "https://iramkhan.com:8443/ig-media"})
+                self.assertFalse(publish.ready({**env, "INSTAGRAM_AUTO_PUBLISH": "1"}))
+        env = {**self.env, "INSTAGRAM_PUBLIC_URL": "https://iramkhan.com:8443/ig-media"}
+        report = self.preflight(env=env)
         self.assertTrue(report["ok"], report)
         self.assertTrue(self.check(report, "public_media")["ok"])
+        self.assertTrue(publish.ready({**env, "INSTAGRAM_AUTO_PUBLISH": "1"}))
         target = self.root / "target"
         target.mkdir()
         self.public.symlink_to(target, target_is_directory=True)
@@ -187,6 +200,23 @@ class PreflightTests(unittest.TestCase):
         self.assertFalse(self.check(report, "single_candidate")["ok"])
         self.assertEqual(report["eligible_drafts"], [DRAFT, OTHER])
 
+    def test_photo_post_with_one_image_is_ready(self):
+        self.add(slides=1)
+        report = self.preflight()
+        self.assertTrue(report["ok"], report)
+
+    def test_reel_held_for_approval_is_not_a_candidate_until_approved(self):
+        self.add()
+        self.add(OTHER, slot="2026-11-15T19:00+00:00")
+        with self.conn:
+            self.conn.execute("UPDATE drafts SET kind='reel', reel=? WHERE draft_id=?", ('{"hold":true}', OTHER))
+        self.assertEqual(self.preflight()["eligible_drafts"], [DRAFT])
+        with self.conn:
+            storage.decide_draft(self.conn, OTHER, "approved", NOW.isoformat(timespec="seconds"))
+        report = self.preflight(draft_id=OTHER)
+        self.assertEqual(report["eligible_drafts"], [DRAFT, OTHER])
+        self.assertFalse(self.check(report, "draft_media")["ok"])
+
     def test_graph_error_is_safe_and_never_retries_as_post(self):
         self.add()
         graph = FakeGraph(error=GraphAPIError("Graph API request failed (HTTP 400, code 190)"))
@@ -204,12 +234,26 @@ class PreflightTests(unittest.TestCase):
 
 
 class PreflightCliTests(unittest.TestCase):
+    def test_cli_starts_in_a_fresh_process(self):
+        result = subprocess.run(
+            [sys.executable, "-m", "instagram_agent", "--help"],
+            cwd=Path(__file__).resolve().parents[1],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("preflight", result.stdout)
+
     def test_cli_uses_read_only_preflight_result(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            database = root / "instagram.sqlite3"
+            storage.connect(database).close()
             args = [
                 "--database",
-                str(root / "instagram.sqlite3"),
+                str(database),
                 "preflight",
                 "--draft",
                 DRAFT,
@@ -221,8 +265,17 @@ class PreflightCliTests(unittest.TestCase):
                 redirect_stdout(io.StringIO()) as output,
             ):
                 self.assertEqual(cli.main(args), 0)
-            self.assertEqual(run.call_args.kwargs["draft_id"], DRAFT)
-            self.assertEqual(json.loads(output.getvalue())["ok"], True)
+                self.assertEqual(run.call_args.kwargs["draft_id"], DRAFT)
+                self.assertEqual(json.loads(output.getvalue())["ok"], True)
+
+    def test_cli_does_not_create_a_missing_database(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "absent" / "instagram.sqlite3"
+            with patch.object(cli.preflight, "run") as run, redirect_stderr(io.StringIO()) as output:
+                self.assertEqual(cli.main(["--database", str(database), "preflight", "--draft", DRAFT]), 1)
+            self.assertFalse(database.parent.exists())
+            self.assertIn("existing, initialized Instagram database", output.getvalue())
+            run.assert_not_called()
 
 
 if __name__ == "__main__":

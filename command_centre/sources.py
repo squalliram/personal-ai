@@ -7,6 +7,7 @@ or CLI writers from here: on a legacy database they rebuild derived tables.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import sqlite3
@@ -16,7 +17,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from instagram_agent import learnings as instagram_learnings
+from instagram_agent import music as instagram_music
 from instagram_agent import publish as instagram_publish
+from instagram_agent import render as instagram_render
 from octopus_energy.mcp_server import RefreshRequiredError, dispatch
 from octopus_energy.refresh import validate_status
 
@@ -96,6 +100,7 @@ def energy_snapshot(settings: Settings, now: datetime) -> dict:
         "monthly": [],
         "tariffs": [],
         "anomalies": [],
+        "coverage": [],
         "sync_history": [],
         "last_successful_sync_at": None,
     }
@@ -125,17 +130,45 @@ def energy_snapshot(settings: Settings, now: datetime) -> dict:
             {"start": (today - timedelta(days=14)).isoformat(), "end": (today + timedelta(days=1)).isoformat()},
             path,
         )
-        result["monthly"] = dispatch("get_monthly_bill_comparison", {}, path)[:12]
+        monthly = dispatch("get_monthly_bill_comparison", {}, path)
+        # Cap each fuel separately so one fuel's newer months never crowd out the other's.
+        result["monthly"] = [
+            row for fuel in ("electricity", "gas") for row in [r for r in monthly if r["fuel"] == fuel][:12]
+        ]
         result["tariffs"] = dispatch("get_tariff_details", {}, path)
         result["anomalies"] = sorted(
             dispatch("detect_energy_anomalies", {}, path), key=lambda row: row["date"], reverse=True
         )[:10]
+        with closing(connect_read_only(path)) as conn:
+            # The exact dates behind the available-period totals (all stored daily rows).
+            result["coverage"] = [
+                dict(row)
+                for row in conn.execute(
+                    "SELECT fuel,MIN(date) first_date,MAX(date) last_date,COUNT(*) days "
+                    "FROM daily_costs GROUP BY fuel ORDER BY fuel"
+                )
+            ]
         result["state"] = "available"
     except RefreshRequiredError:
         result["state"] = "refresh_required"
     except (OSError, sqlite3.Error):
         result["state"] = "unavailable"
     return result
+
+
+def energy_history(settings: Settings, now: datetime, snapshot: dict, days: int) -> list[dict]:
+    """Daily rows for both fuels over the last `days` London days, through the read-only MCP tool."""
+    if snapshot["state"] != "available":
+        return []
+    today = now.astimezone(LONDON).date()
+    try:
+        return dispatch(
+            "get_daily_consumption",
+            {"start": (today - timedelta(days=days)).isoformat(), "end": today.isoformat()},
+            settings.energy_db,
+        )
+    except (RefreshRequiredError, OSError, sqlite3.Error):
+        return []
 
 
 def energy_health(snapshot: dict, settings: Settings, now: datetime) -> dict:
@@ -175,6 +208,66 @@ def energy_health(snapshot: dict, settings: Settings, now: datetime) -> dict:
         else:
             status, summary = "operational", "The latest Octopus sync succeeded recently."
     return _health("octopus_energy", "Octopus Energy", "energy", "local_sqlite", status, summary, now, **evidence)
+
+
+DASHBOARD_KEYS = (
+    "generated_at",
+    "latest_reading_at",
+    "last_successful_sync_at",
+    "daily",
+    "hourly",
+    "latest_day",
+    "notice",
+)
+DASHBOARD_MAX_BYTES = 8 * 1024 * 1024
+
+
+def _non_finite(token: str):
+    raise ValueError(f"non-finite number {token}")
+
+
+def _finite(token: str) -> float:
+    value = float(token)
+    if not math.isfinite(value):
+        raise ValueError("non-finite number")
+    return value
+
+
+def energy_dashboard(settings: Settings) -> dict:
+    """Read the snapshot the energy runner publishes for /energy-usage (``data.json`` beside the status).
+
+    This is the exact dataset the standalone dashboard renders, so the Energy view keeps parity with it.
+    The browser validates it with the dashboard's own ``validateData`` before drawing anything.
+    """
+    path = settings.energy_status.with_name("data.json")
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return {"state": "not_published", "dashboard": None}
+    except OSError:
+        return {"state": "unavailable", "dashboard": None}
+    if not stat.S_ISREG(info.st_mode) or info.st_size > DASHBOARD_MAX_BYTES:
+        return {"state": "invalid", "dashboard": None}
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd, "rb") as source:
+            raw = source.read(DASHBOARD_MAX_BYTES + 1)
+        data = (
+            json.loads(raw, parse_constant=_non_finite, parse_float=_finite)
+            if len(raw) <= DASHBOARD_MAX_BYTES
+            else None
+        )
+    except (OSError, ValueError):
+        return {"state": "invalid", "dashboard": None}
+    if (
+        not isinstance(data, dict)
+        or _instant(data.get("generated_at")) is None
+        or not isinstance(data.get("daily"), list)
+        or not isinstance(data.get("hourly"), list)
+        or not isinstance(data.get("latest_reading_at", {}), dict)
+    ):
+        return {"state": "invalid", "dashboard": None}
+    return {"state": "available", "dashboard": {key: data[key] for key in DASHBOARD_KEYS if key in data}}
 
 
 def energy_refresh_status(settings: Settings) -> tuple[str, dict | None]:
@@ -458,8 +551,13 @@ def instagram_drafts(settings: Settings, limit: int = 30) -> dict:
         "basis": "inferred",
         "auto_publish": False,
         "drafts": [],
+        "uploads": [],
+        "clips": [],
+        "music": [],
+        "renders": {"clip": False, "photos": False},
         "runs": [],
         "latest_attempt": None,
+        "learnings": None,
     }
     path = settings.instagram_db
     if path is None or path.is_symlink() or not path.is_file():
@@ -467,8 +565,10 @@ def instagram_drafts(settings: Settings, limit: int = 30) -> dict:
     try:
         with closing(connect_read_only(path)) as conn:
             # Every pending draft stays reviewable; only decided ones are capped.
+            have = {row[1] for row in conn.execute("PRAGMA table_info(drafts)")}
+            columns = DRAFT_COLUMNS + "".join(f",{c}" for c in ("kind", "reel") if c in have)
             rows = conn.execute(
-                f"SELECT {DRAFT_COLUMNS} FROM drafts WHERE status='pending' OR draft_id IN "
+                f"SELECT {columns} FROM drafts WHERE status='pending' OR draft_id IN "
                 "(SELECT draft_id FROM drafts WHERE status!='pending' ORDER BY decided_at DESC, draft_id LIMIT ?) "
                 "ORDER BY created_at DESC",
                 (limit,),
@@ -478,11 +578,16 @@ def instagram_drafts(settings: Settings, limit: int = 30) -> dict:
                 "SELECT run_on,started_at,outcome,drafts,error FROM daily_runs ORDER BY id DESC LIMIT 10"
             ).fetchall()
             publishing = _publishing(conn)
+            waiting, notes = _uploads(conn)
+            clips, clip_notes = _clips(conn)
+            notes.update(clip_notes)
+            tracks = instagram_music.tracks(conn)
             # Ticks every 15 minutes mostly skip, so find the latest real attempt separately.
             attempt = conn.execute(
                 "SELECT run_on,started_at,outcome,drafts,error FROM daily_runs WHERE outcome!='skipped' "
                 "ORDER BY id DESC LIMIT 1"
             ).fetchone()
+            learned = instagram_learnings.summary(conn)
     except (OSError, sqlite3.Error):
         result["state"] = "unavailable"
         return result
@@ -493,6 +598,11 @@ def instagram_drafts(settings: Settings, limit: int = 30) -> dict:
             slides = []
         if not isinstance(slides, list):
             slides = []
+        draft_kind = instagram_publish.kind(row)
+        try:
+            reel = json.loads(row["reel"]) if draft_kind == "reel" else None
+        except (TypeError, ValueError):
+            reel = None
         result["drafts"].append(
             {
                 **dict(row),
@@ -506,16 +616,100 @@ def instagram_drafts(settings: Settings, limit: int = 30) -> dict:
                 ],
                 "hashtags": (row["hashtags"] or "").split(),
                 "posts_at": _posts_at(row),
-                "will_post": instagram_publish.will_post(row["status"], row["review_score"]),
+                "kind": draft_kind,
+                "reel": _reel(reel) if draft_kind == "reel" else None,
+                "will_post": instagram_publish.will_post(
+                    row["status"], row["review_score"], instagram_publish.held(row)
+                )
+                and instagram_publish.rendered(row),
                 "publish_error": publishing["errors"].get(row["draft_id"]),
                 "publishing": row["draft_id"] in publishing["started"],
             }
         )
+    for draft in result["drafts"]:
+        draft["note"] = notes.get(draft["draft_id"])
+    result["uploads"] = waiting
+    result["clips"] = clips
+    result["music"] = tracks
+    result["renders"] = {source: instagram_render.can_render(source) for source in ("clip", "photos")}
     result["auto_publish"] = publishing["on"]
     result["runs"] = [dict(run) for run in runs]
     result["latest_attempt"] = dict(attempt) if attempt else None
+    result["learnings"] = learned
     result["state"] = "available"
     return result
+
+
+def _reel(reel) -> dict:
+    """The reel's script for the draft card: hook, timed on-screen text and cover moment."""
+    reel = reel if isinstance(reel, dict) else {}
+    beats = reel.get("on_screen") if isinstance(reel.get("on_screen"), list) else []
+    number = lambda v: v if isinstance(v, (int, float)) and not isinstance(v, bool) else 0  # noqa: E731
+    trim, song = reel.get("trim"), reel.get("music")
+    return {
+        "hook": str(reel.get("hook", "")),
+        "on_screen": [
+            {"start": number(b.get("start")), "end": number(b.get("end")), "text": str(b.get("text", ""))}
+            for b in beats
+            if isinstance(b, dict)
+        ],
+        "cover_seconds": number(reel.get("cover_ms")) / 1000,
+        "seconds": number(reel.get("seconds")),
+        "source": "photos" if reel.get("source") == "photos" else "clip",
+        "render": reel.get("render") if reel.get("render") in ("pending", "done", "failed") else None,
+        "render_error": str(reel.get("render_error", "")) or None,
+        "hold": reel.get("hold") is True,
+        "hold_version": reel["hold_version"] if type(reel.get("hold_version")) is int else 0,
+        "trim": {"in": number(trim.get("in")), "out": number(trim.get("out"))} if isinstance(trim, dict) else None,
+        "music": {k: str(song.get(k, "")) for k in ("title", "licence", "mix")} if isinstance(song, dict) else None,
+    }
+
+
+def _clips(conn) -> tuple[list[dict], dict[str, str]]:
+    """Clips waiting to become reels, oldest (next) first, and the owner's note for each drafted one."""
+    try:
+        rows = conn.execute("SELECT clip_id,created_at,note,status,facts,draft_id FROM clips").fetchall()
+    except sqlite3.OperationalError:
+        return [], {}  # the daily run hasn't added the table yet
+    waiting = []
+    for row in rows:
+        if row["status"] != "waiting":
+            continue
+        try:
+            facts = json.loads(row["facts"] or "{}")
+        except ValueError:
+            facts = {}
+        seconds = facts.get("seconds") if isinstance(facts, dict) else None
+        waiting.append(
+            {
+                "clip_id": row["clip_id"],
+                "created_at": row["created_at"],
+                "note": row["note"],
+                "seconds": seconds if isinstance(seconds, (int, float)) else None,
+            }
+        )
+    waiting.sort(key=lambda c: (c["created_at"], c["clip_id"]))
+    return waiting, {row["draft_id"]: row["note"] for row in rows if row["draft_id"]}
+
+
+def _uploads(conn) -> tuple[list[dict], dict[str, str]]:
+    """Photo uploads still waiting, oldest (next to post) first, and the owner's note for each drafted one."""
+    try:
+        rows = conn.execute("SELECT * FROM uploads").fetchall()
+    except sqlite3.OperationalError:
+        return [], {}  # the daily run hasn't added the table yet
+    waiting = sorted(
+        (
+            {
+                **{k: row[k] for k in ("upload_id", "created_at", "note", "photos")},
+                "reel": bool(row["reel"]) if "reel" in row.keys() else False,
+            }
+            for row in rows
+            if row["status"] == "waiting"
+        ),
+        key=lambda u: (u["created_at"], u["upload_id"]),
+    )
+    return waiting, {row["draft_id"]: row["note"] for row in rows if row["draft_id"]}
 
 
 def instagram_health(snapshot: dict, now: datetime) -> dict:
