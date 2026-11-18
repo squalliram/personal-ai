@@ -70,10 +70,14 @@ cPanel hosting is planned for Phase 6 and needs approval.
 Reports and databases under `reports/` and `data/` are deliberately not in Git, so a lost disk means lost history. To back up a SQLite database safely while it may be in use, use the online backup API rather than copying the file:
 
 ```sh
-mkdir -p ~/personal-ai-backups
+(
+umask 077
+backup_dir="$HOME/personal-ai-backups/$(basename "$PWD")"
+mkdir -p -m 700 "$backup_dir"
 for db in command_centre daily_briefing octopus_energy octopus_energy_live; do
-  [ -f "data/$db.sqlite3" ] && sqlite3 "data/$db.sqlite3" ".backup '$HOME/personal-ai-backups/$db.sqlite3'"
+  [ ! -f "data/$db.sqlite3" ] || sqlite3 "data/$db.sqlite3" ".backup '$backup_dir/$db.sqlite3'"
 done
+)
 ```
 
 Run it from each checkout that holds data you care about (this branch and the main checkout). Copy `~/personal-ai-backups` somewhere off the machine. Restore by stopping the app, replacing the file and restarting.

@@ -35,6 +35,13 @@ def status(**changes):
 
 
 class PublishDashboardTests(unittest.TestCase):
+    def test_dashboard_instants_require_a_string_with_t_separator(self):
+        for value in (None, True, 1, [], {}, "", "2026-11-05", "2026-11-05 12:00:00Z", "2026-11-05X12:00:00Z"):
+            with self.subTest(value=value):
+                self.assertFalse(publisher._valid_instant(value))
+        self.assertTrue(publisher._valid_instant("2026-11-05T12:00:00Z"))
+        self.assertTrue(publisher._valid_instant("2026-11-05T12:00:00+00:00"))
+
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)

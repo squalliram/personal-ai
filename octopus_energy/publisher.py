@@ -13,8 +13,9 @@ import sys
 import tempfile
 import threading
 from contextlib import contextmanager
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from .refresh import validate_status as validate_public_status
 
@@ -64,6 +65,8 @@ def _valid_date(value):
 
 
 def _valid_instant(value):
+    if not isinstance(value, str) or value[10:11] != "T":
+        return False
     try:
         datetime.fromisoformat(value.replace("Z", "+00:00"))
     except (AttributeError, ValueError):
@@ -127,6 +130,12 @@ def validate_dashboard_data(data):
                 or len(day["hours"]) not in (23, 24, 25)
             ):
                 raise ValueError("Invalid dashboard latest day")
+            london = ZoneInfo("Europe/London")
+            day_date = date.fromisoformat(day["date"])
+            generated = datetime.fromisoformat(data["generated_at"].replace("Z", "+00:00"))
+            if day_date >= generated.astimezone(london).date():
+                raise ValueError("Invalid dashboard latest day")
+            previous = None
             for hour in day["hours"]:
                 if (
                     not isinstance(hour, dict)
@@ -136,6 +145,23 @@ def validate_dashboard_data(data):
                     or not _nullable_number(hour, "cost")
                 ):
                     raise ValueError("Invalid dashboard latest hour")
+                start = datetime.fromisoformat(hour["start"].replace("Z", "+00:00")).astimezone(timezone.utc)
+                end = datetime.fromisoformat(hour["end"].replace("Z", "+00:00")).astimezone(timezone.utc)
+                if (
+                    end - start != timedelta(hours=1)
+                    or (previous is not None and start != previous)
+                    or start.astimezone(london).date() != day_date
+                ):
+                    raise ValueError("Invalid dashboard latest hour")
+                previous = end
+            first = datetime.fromisoformat(day["hours"][0]["start"].replace("Z", "+00:00")).astimezone(london)
+            last = previous.astimezone(london)
+            if (
+                first.strftime("%H:%M") != "00:00"
+                or last.strftime("%H:%M") != "00:00"
+                or last.date() != day_date + timedelta(days=1)
+            ):
+                raise ValueError("Incomplete dashboard latest day")
     return data
 
 
