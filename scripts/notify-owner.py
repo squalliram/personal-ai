@@ -142,6 +142,7 @@ def relay(env: dict[str, str], target: tuple[str, str, str], run=subprocess.run)
     ssh = ["ssh", "-i", str(Path.home() / ".ssh/id_ed25519"), "-o", "BatchMode=yes"]
     ssh += ["-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=20", "-p", port, f"{user}@{host}", command]
     forwarded = {name: env.get(name, "") for name in FORWARDED}
+    forwarded["NOTIFY_TITLE"] = clean_title(forwarded["NOTIFY_TITLE"])
     result = run(ssh, input=json.dumps(forwarded).encode(), timeout=120)
     if result.returncode == 255:
         raise RuntimeError("SSH to the host failed")

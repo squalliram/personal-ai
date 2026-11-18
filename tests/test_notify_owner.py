@@ -122,6 +122,9 @@ class NotifyOwnerTests(unittest.TestCase):
         self.assertEqual(forwarded["NOTIFY_INGEST_TOKEN"], TOKEN)
         self.assertEqual(forwarded["NOTIFY_TITLE"], "Posted today's reel")
         self.assertNotIn("CPANEL_SSH_PRIVATE_KEY", forwarded)
+        SCRIPT["relay"]({**env, "NOTIFY_TITLE": "x" * 70000}, target, run)
+        self.assertEqual(len(calls[-1][1]["NOTIFY_TITLE"]), 200)
+        del calls[-1]
 
         self.assertIsNone(SCRIPT["ssh_target"](ENV))
         with self.assertRaises(ValueError):
