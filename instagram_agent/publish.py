@@ -1,8 +1,8 @@
 """Publish due drafts to @instafoodielove as carousels, single photos or reels: the one Instagram write this project makes.
 
 A draft is due at max(scheduled_for, created_at + VETO_LEAD) when it was approved, or is still
-pending and passed review (reels from the owner's clips need Approve). Rejecting it in the Command
-Centre before then stops it. Meta fetches each slide or video from a public URL, so they are copied
+pending and passed review (unless it's a reel the owner held for approval). Rejecting it in the
+Command Centre before then stops it. Meta fetches each slide or video from a public URL, so they are copied
 to an unguessable folder under INSTAGRAM_PUBLIC_DIR for the length of the call and removed afterwards.
 """
 
@@ -38,6 +38,10 @@ class PublishError(RuntimeError):
     """A safe publishing error: no tokens, URLs or response bodies."""
 
 
+class Withdrawn(PublishError):
+    """Rejected or held between being picked and the final publish call: skipped, not failed."""
+
+
 def _instant(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
@@ -52,8 +56,19 @@ def kind(row) -> str:
     return row["kind"] if "kind" in row.keys() and row["kind"] else "carousel"
 
 
-def will_post(status: str, review_score: int | None, draft_kind: str = "carousel") -> bool:
-    if draft_kind == "reel":  # the owner's own clips post only once approved
+def held(row) -> bool:
+    """True for a reel the owner held for their approval."""
+    keys = row.keys()
+    if "kind" not in keys or "reel" not in keys or kind(row) != "reel":
+        return False
+    try:
+        return json.loads(row["reel"] or "{}").get("hold") is True
+    except (TypeError, ValueError, AttributeError):
+        return False
+
+
+def will_post(status: str, review_score: int | None, is_held: bool = False) -> bool:
+    if is_held:
         return status == "approved"
     return status == "approved" or (status == "pending" and (review_score or 0) >= PASS_SCORE)
 
@@ -113,7 +128,7 @@ def due(conn, now: datetime) -> list:
         when = posts_at(row["scheduled_for"], row["created_at"])
         if not rendered(row):
             continue  # a reel still rendering, or whose render failed, never posts unedited
-        if will_post(row["status"], row["review_score"], kind(row)) and when <= now <= when + STALE_AFTER:
+        if will_post(row["status"], row["review_score"], held(row)) and when <= now <= when + STALE_AFTER:
             if row["fails"] < MAX_ATTEMPTS:
                 found.append(row)
     return found
@@ -331,10 +346,10 @@ def tick(conn, env: dict, media_dir: Path, now: datetime, client: GraphClient | 
             conn.execute("BEGIN IMMEDIATE")
             try:
                 now_row = conn.execute(
-                    "SELECT status, review_score, kind FROM drafts WHERE draft_id=?", (draft_id,)
+                    "SELECT status, review_score, kind, reel FROM drafts WHERE draft_id=?", (draft_id,)
                 ).fetchone()
-                if not will_post(now_row["status"], now_row["review_score"], kind(now_row)):
-                    raise PublishError("rejected before posting")
+                if not will_post(now_row["status"], now_row["review_score"], held(now_row)):
+                    raise Withdrawn("rejected or held before posting")
                 _record(conn, draft_id, stamp, "started")
             except BaseException:
                 conn.rollback()
@@ -345,9 +360,19 @@ def tick(conn, env: dict, media_dir: Path, now: datetime, client: GraphClient | 
         try:
             send = publish_reel if kind(row) == "reel" else publish_draft
             media_id = send(client, row, media_dir, Path(public_dir), public_url, on_publish=started, **kwargs)
+        except Withdrawn:
+            continue
         except (PublishError, GraphAPIError, OSError, ValueError) as exc:
             error = str(exc) if isinstance(exc, (PublishError, GraphAPIError)) else type(exc).__name__
             with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                now_row = conn.execute("SELECT status, kind, reel FROM drafts WHERE draft_id=?", (row["draft_id"],))
+                now_row = now_row.fetchone()
+                withdrawn = now_row and (
+                    now_row["status"] == "rejected" or now_row["status"] == "pending" and held(now_row)
+                )
+                if not sent and withdrawn:
+                    continue  # rejected or held during preparation: the owner decided, not a failure
                 if sent:
                     error = f"{error}; outcome unknown, check Instagram"
                 _record(conn, row["draft_id"], stamp, "failed", error=error)

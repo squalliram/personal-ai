@@ -355,6 +355,15 @@ def render_due(
                 failed += 1
                 notify_failure(row, error, final)
             with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                latest = conn.execute("SELECT reel FROM drafts WHERE draft_id=?", (row["draft_id"],)).fetchone()
+                try:
+                    stored = json.loads(latest[0] or "{}") if latest else {}
+                except (TypeError, ValueError):
+                    stored = {}
+                for key in ("hold", "hold_version"):  # set by the owner while this rendered
+                    if isinstance(stored, dict) and key in stored:
+                        reel[key] = stored[key]
                 conn.execute(
                     "UPDATE drafts SET reel=? WHERE draft_id=? AND kind='reel'",
                     (json.dumps(reel, ensure_ascii=False), row["draft_id"]),

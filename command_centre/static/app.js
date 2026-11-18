@@ -1694,6 +1694,7 @@
 
   const DECISION_ERRORS = {
     publishing: "It's being posted to Instagram now, so it can no longer be approved or rejected.",
+    hold_changed: "The hold was changed elsewhere. Refresh to see it.",
     already_decided: "It was already approved or rejected. Refresh to see its status.",
   };
 
@@ -1710,6 +1711,79 @@
     }
     clearCache();
     render();
+  }
+
+  // A hold change the server never confirmed: resent on every render until it is, so a delayed copy is fenced.
+  const unconfirmedHold = (id) => { try { return JSON.parse(sessionStorage.getItem(`ig-hold:${id}`)); } catch { return null; } };
+  const rememberHold = (id, saved) => {
+    try { sessionStorage.setItem(`ig-hold:${id}`, JSON.stringify(saved)); return true; } catch { return false; }
+  };
+  const forgetHold = (id, token) => { // only the change this request saved, never a newer one
+    try { const saved = unconfirmedHold(id); if (saved && saved.token === token) sessionStorage.removeItem(`ig-hold:${id}`); } catch { /* best effort */ }
+  };
+
+  function holdToggle(draft, status, auto) {
+    const box = el("input", {
+      type: "checkbox", id: `ig-hold-${draft.draft_id}`, "data-hold": String(draft.reel.hold), "data-hold-version": String(draft.reel.hold_version),
+    });
+    box.checked = draft.reel.hold;
+    const definite = (r) => r.ok || [400, 401, 404, 409].includes(r.status);
+    // A request that hangs counts as unanswered, so the retries and the unknown-state warning still happen.
+    const deadline = () => {
+      if (typeof AbortSignal !== "undefined" && AbortSignal.timeout) return AbortSignal.timeout(15000);
+      if (typeof AbortController === "undefined") return undefined;
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(), 15000);
+      return controller.signal;
+    };
+    async function send(body, token = `${Date.now()}-${Math.random()}`) {
+      box.disabled = true;
+      // Saved before sending, so a reload while this is in flight resends it rather than trusting the old state.
+      const saved = rememberHold(draft.draft_id, { token, body });
+      const signIn = signInCount;
+      let result = await api("api/v1/instagram/hold", { method: "POST", body, signal: deadline() });
+      // Resending the same versioned hold is harmless, so resend until the server gives a definite answer.
+      for (let tries = 0; !definite(result) && tries < 3 && signIn === signInCount; tries++) {
+        status.textContent = "Couldn't confirm the hold change. Trying again…";
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        if (signIn !== signInCount) break;
+        result = await api("api/v1/instagram/hold", { method: "POST", body, signal: deadline() });
+      }
+      if (signIn !== signInCount) { if (result.ok) clearCache(); return; } // an older sign-in's reply
+      if (result.status === 401) { showLogin("Your session has ended. Sign in again."); return; }
+      if (!definite(result)) {
+        box.indeterminate = true;
+        status.textContent = saved
+          ? "The hold state is unknown: the server didn't answer. It will be resent when this page reloads."
+          : "The hold state is unknown: the server didn't answer and this browser can't remember the change. Set it again before relying on it.";
+        return;
+      }
+      forgetHold(draft.draft_id, token);
+      if (!result.ok) {
+        const code = (result.data && result.data.error) || result.status;
+        status.textContent = `Could not change the hold. ${DECISION_ERRORS[code] || `(${code})`}`;
+        box.indeterminate = false;
+        box.checked = draft.reel.hold;
+        if (code === "hold_changed") { clearCache(); render(); } // rebuild with the current hold and version
+        else box.disabled = false;
+        return;
+      }
+      clearCache();
+      render();
+    }
+    box.addEventListener("change", () => send({ draft_id: draft.draft_id, hold: box.checked, version: draft.reel.hold_version }));
+    const pending = unconfirmedHold(draft.draft_id);
+    const body = pending && pending.body;
+    if (body && body.draft_id === draft.draft_id && typeof body.hold === "boolean" && typeof pending.token === "string") {
+      box.indeterminate = true;
+      queueMicrotask(() => {
+        status.textContent = "Confirming an earlier hold change…";
+        send(body, pending.token);
+      });
+    }
+    return el("p", {}, box, " ", el("label", { for: box.id }, auto
+      ? "Hold for my approval (otherwise it posts automatically if it scores 70 or more)"
+      : "Hold for my approval (automatic posting is off right now, so nothing posts on its own)"));
   }
 
   const slideUrl = (draft, n) => `api/v1/instagram/slide?draft=${encodeURIComponent(draft.draft_id)}&n=${n}`;
@@ -1738,7 +1812,7 @@
     if (draft.kind === "reel" && draft.reel && draft.reel.render === "failed") return muted(`The reel couldn't be made (${draft.reel.render_error || "unknown error"}), so it won't post. Delete it or send the media again.`);
     if (!auto) return null;
     if (draft.will_post && draft.posts_at) return muted(`Posts to Instagram automatically at ${when(draft.posts_at)} unless you reject it before then.`);
-    if (draft.kind === "reel" && draft.status === "pending") return muted("A reel from your own media only posts once you approve it.");
+    if (draft.kind === "reel" && draft.reel && draft.reel.hold && draft.status === "pending") return muted("Held for your approval: it only posts once you approve it.");
     if (draft.status === "pending") return muted("Scored under 70, so it only posts if you approve it.");
     return null;
   }
@@ -1791,6 +1865,7 @@
       approve.addEventListener("click", () => decide(draft, "approve", [approve, reject], status));
       reject.addEventListener("click", () => decide(draft, "reject", [approve, reject], status));
       children.push(el("div", { class: "ig-actions" }, approve, reject), status);
+      if (draft.kind === "reel" && draft.reel) children.push(holdToggle(draft, status, auto));
     } else if (draft.status === "pending") {
       children.push(muted("Approving or rejecting needs RECOMMEND permission."));
     } else if (draft.status === "approved" && !auto) {
@@ -1954,7 +2029,7 @@
 
   function clipCard(data, canDecide) {
     const renders = Boolean(data.renders && data.renders.clip);
-    const intro = muted(`Add one of your own clips (3-90 seconds, raw or edited) and a short note. The next daily run turns the oldest waiting clip into the day's reel instead of a carousel; ${renders ? "the agents trim it and burn in the on-screen text" : "it posts as filmed"}, and it posts only once you approve the draft. The note is the only source for the place, dish, rating or price.`);
+    const intro = muted(`Add one of your own clips (3-90 seconds, raw or edited) and a short note. The next daily run turns the oldest waiting clip into the day's reel instead of a carousel; ${renders ? "the agents trim it and burn in the on-screen text" : "it posts as filmed"}. ${data.auto_publish ? "Like a carousel it posts automatically if it scores 70 or more, unless you reject it or hold it for your approval." : "Automatic posting is off, so it won't post on its own."} The note is the only source for the place, dish, rating or price.`);
     if (!canDecide) return card("Add a reel clip", intro, muted("Adding clips needs RECOMMEND permission."));
     if (data.state !== "available") return card("Add a reel clip", intro, muted("Not available until the Instagram agent has run on this server."));
     const clip = el("input", { id: "ig-clip", type: "file", name: "clip", accept: "video/mp4,video/quicktime", required: "" });

@@ -314,6 +314,7 @@ class CommandCentreApp:
             ("GET", "/api/v1/instagram/drafts"): Route(self.instagram_drafts, Permission.READ),
             ("GET", "/api/v1/instagram/slide"): Route(self.instagram_slide, Permission.READ),
             ("POST", "/api/v1/instagram/decision"): Route(self.instagram_decision, Permission.RECOMMEND, csrf=True),
+            ("POST", "/api/v1/instagram/hold"): Route(self.instagram_hold, Permission.RECOMMEND, csrf=True),
             ("POST", "/api/v1/instagram/uploads"): Route(self.instagram_upload, Permission.RECOMMEND, csrf=True),
             ("POST", "/api/v1/instagram/uploads/delete"): Route(
                 self.instagram_upload_delete, Permission.RECOMMEND, csrf=True
@@ -1418,6 +1419,45 @@ class CommandCentreApp:
                 if stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
                     return 200, (stream.read(), content_type), []
         return _error(404, "not_found")
+
+    def instagram_hold(self, request: Request) -> Result:
+        """Hold a pending reel for the owner's approval, or let it post automatically if it passes review."""
+        body, error = _json_body(request.environ)
+        if error:
+            return error
+        if (
+            not isinstance(body, dict)
+            or set(body) != {"draft_id", "hold", "version"}
+            or type(body["version"]) is not int
+            or not 0 <= body["version"] < 2**31
+            or not isinstance(body["draft_id"], str)
+            or not sources.DRAFT_ID.fullmatch(body["draft_id"])
+            or not isinstance(body["hold"], bool)
+        ):
+            return _error(400, "invalid_request")
+        path = self.settings.instagram_db
+        if path is None or path.is_symlink() or not path.is_file():
+            return _error(404, "not_found")
+        draft_id = body["draft_id"]
+        conn = sqlite3.connect(path, timeout=5)
+        try:
+            outcome = instagram_storage.hold_reel(conn, draft_id, body["hold"], body["version"])
+        finally:
+            conn.close()
+        if outcome == "not_found":
+            return _error(404, "not_found")
+        if outcome == "hold_changed":
+            return _error(409, "hold_changed")
+        if outcome == "not_pending":
+            self.audit.record("instagram_hold", "not_pending", actor="owner", draft=draft_id)
+            return _error(409, "already_decided")
+        if outcome == "unchanged":
+            return 200, {"draft_id": draft_id, "hold": body["hold"]}, []
+        with self._collect_lock:
+            self._collected = None
+        state = "held" if body["hold"] else "released"
+        self.audit.record("instagram_hold", state, actor="owner", draft=draft_id, client=request.client)
+        return 200, {"draft_id": draft_id, "hold": body["hold"]}, []
 
     def instagram_decision(self, request: Request) -> Result:
         """Approve or reject a pending draft. Reject stops it posting; Approve lets a weaker draft post at its slot."""

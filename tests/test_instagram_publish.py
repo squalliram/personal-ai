@@ -188,7 +188,7 @@ class PublishTests(PublishCase):
         result = publish.tick(
             self.conn, self.env, self.media, DUE, graph, check=reject_while_checking, sleep=lambda s: None
         )
-        self.assertEqual(result, "published 0, failed 1")
+        self.assertEqual(result, "published 0, failed 0")  # withdrawn, not a failed attempt
         self.assertEqual(self.status()["status"], "rejected")
         self.assertFalse(any(p[0].endswith("media_publish") for p in graph.posts))
 

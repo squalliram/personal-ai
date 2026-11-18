@@ -486,9 +486,91 @@ class ReelPublishTests(Case):
         check = lambda url, size: self.checked.append((url, size))  # noqa: E731
         return publish.tick(self.conn, self.env, self.media, DUE, graph, check=check, sleep=lambda s: None)
 
-    def test_a_reel_needs_approve_even_with_a_high_score(self):
+    def test_a_reel_held_for_approval_waits_for_approve(self):
+        self.assertEqual(storage.hold_reel(self.conn, "b" * 16, True), "ok")
         graph = ReelGraph()
         self.assertEqual(self.tick(graph), "published 0, failed 0")
+        self.assertEqual(graph.posts, [])
+        self.assertEqual(storage.hold_reel(self.conn, "f" * 16, True), "not_found")
+
+        # A delayed release sent from a page that saw it unheld, after a later hold-then-release-then-hold:
+        def version():
+            return json.loads(self.conn.execute("SELECT reel FROM drafts").fetchone()[0])["hold_version"]
+
+        # A release whose reply is lost is resent and lands; the owner then holds it again.
+        seen = version()
+        self.assertEqual(storage.hold_reel(self.conn, "b" * 16, False, version=seen), "ok")
+        self.assertEqual(storage.hold_reel(self.conn, "b" * 16, True, version=seen + 1), "ok")
+        # The delayed first copy of that release must not undo the newer hold.
+        self.assertEqual(storage.hold_reel(self.conn, "b" * 16, False, version=seen), "hold_changed")
+        self.assertEqual(storage.hold_reel(self.conn, "b" * 16, True, version=seen), "unchanged")  # same value: no-op
+        self.assertEqual(version(), seen + 2)
+        # Asking for the hold already stored, even with the current version, changes nothing.
+        self.assertEqual(storage.hold_reel(self.conn, "b" * 16, True, version=seen + 2), "unchanged")
+        self.assertEqual(version(), seen + 2)
+        storage.decide_draft(self.conn, "b" * 16, "approved", MADE.isoformat())
+        self.assertEqual(storage.hold_reel(self.conn, "b" * 16, False), "not_pending")
+        self.assertEqual(self.tick(ReelGraph(statuses=("FINISHED",))), "published 1, failed 0")
+
+    def test_a_hold_during_the_last_attempt_skips_instead_of_failing(self):
+        def hold_then_publish(*args, on_publish, **kwargs):
+            storage.hold_reel(self.conn, "b" * 16, True)
+            on_publish()
+
+        with patch.object(publish, "MAX_ATTEMPTS", 1), patch.object(publish, "publish_reel", hold_then_publish):
+            self.assertEqual(self.tick(ReelGraph()), "published 0, failed 0")
+        row = self.conn.execute("SELECT status FROM drafts").fetchone()
+        self.assertEqual(row[0], "pending")
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM publish_runs").fetchone()[0], 0)
+
+    def test_a_hold_then_a_failure_before_publishing_keeps_the_hold(self):
+        def hold_then_fail(*args, on_publish, **kwargs):
+            storage.hold_reel(self.conn, "b" * 16, True)
+            raise publish.PublishError("container status ERROR")
+
+        with patch.object(publish, "MAX_ATTEMPTS", 1), patch.object(publish, "publish_reel", hold_then_fail):
+            self.assertEqual(self.tick(ReelGraph()), "published 0, failed 0")
+        [row] = self.conn.execute("SELECT * FROM drafts").fetchall()
+        self.assertEqual(row["status"], "pending")
+        self.assertTrue(publish.held(row))
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM publish_runs").fetchone()[0], 0)
+
+    def test_a_reject_then_a_failure_before_publishing_is_not_a_failed_post(self):
+        def reject_then_fail(*args, on_publish, **kwargs):
+            storage.decide_draft(self.conn, "b" * 16, "rejected", "2026-11-12T18:04:00+00:00")
+            raise publish.PublishError("container status ERROR")
+
+        with patch.object(publish, "publish_reel", reject_then_fail):
+            self.assertEqual(self.tick(ReelGraph()), "published 0, failed 0")
+        self.assertEqual(self.conn.execute("SELECT status FROM drafts").fetchone()[0], "rejected")
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM publish_runs").fetchone()[0], 0)
+
+    def test_a_hold_set_while_rendering_survives_the_render(self):
+        with self.conn:
+            self.conn.execute("UPDATE drafts SET reel=json_set(reel, '$.render', 'pending')")
+
+        def held_meanwhile(conn, media_dir, draft_id, reel):
+            storage.hold_reel(self.conn, draft_id, True)
+            return {**reel, "render": "done"}
+
+        with patch.object(render, "render", held_meanwhile):
+            render.render_due(self.conn, self.media, now=MADE)
+        [row] = self.conn.execute("SELECT * FROM drafts").fetchall()
+        self.assertTrue(publish.held(row))
+        self.assertTrue(publish.rendered(row))
+
+    def test_a_passing_reel_auto_posts_once_and_notifies(self):
+        graph = ReelGraph(statuses=("FINISHED",))
+        with patch.object(publish, "notify") as told:
+            self.assertEqual(self.tick(graph), "published 1, failed 0")
+        self.assertEqual(sum(p.endswith("media_publish") for p, _, _ in graph.posts), 1)
+        self.assertEqual(told.call_args.args[1], "ok")
+        self.assertIn("is live", told.call_args.args[2])
+
+    def test_auto_posting_reels_respects_the_kill_switch(self):
+        self.env["INSTAGRAM_AUTO_PUBLISH"] = "0"
+        graph = ReelGraph()
+        self.assertEqual(self.tick(graph), "publish_off")
         self.assertEqual(graph.posts, [])
 
     def test_approved_reel_posts_through_the_reels_api_once(self):
@@ -594,7 +676,7 @@ class ReelCommandCentreTests(Case):
             anonymous.request("POST", "/api/v1/instagram/clips", body={"note": NOTE, "size": 10}).status, 401
         )
 
-    def test_reel_draft_shows_its_script_and_needs_approve(self):
+    def test_reel_draft_shows_its_script_and_auto_posts_unless_held(self):
         draft = drafts.normalise_reel_draft(REEL, 10.0)
         draft.update(draft_id="c" * 16, review_score=95, scheduled_for=SLOT, hashtags=[])
         with self.conn:
@@ -602,9 +684,30 @@ class ReelCommandCentreTests(Case):
         settings = make_settings(self.root, instagram_db=self.db, instagram_media=self.media)
         [shown] = sources.instagram_drafts(settings)["drafts"]
         self.assertEqual(shown["kind"], "reel")
-        self.assertFalse(shown["will_post"])
+        self.assertTrue(shown["will_post"])
+        self.assertFalse(shown["reel"]["hold"])
         self.assertEqual(shown["reel"]["hook"], REEL["hook"])
         self.assertEqual(shown["reel"]["cover_seconds"], 9.9)
+        client = self.client()
+        held = client.request("POST", "/api/v1/instagram/hold", body={"draft_id": "c" * 16, "hold": True, "version": 0})
+        self.assertEqual(held.json(), {"draft_id": "c" * 16, "hold": True})
+        [shown] = sources.instagram_drafts(settings)["drafts"]
+        self.assertFalse(shown["will_post"])
+        self.assertTrue(shown["reel"]["hold"])
+        stale = client.request(
+            "POST", "/api/v1/instagram/hold", body={"draft_id": "c" * 16, "hold": False, "version": 0}
+        )
+        self.assertEqual((stale.status, stale.json()), (409, {"error": "hold_changed"}))
+        unversioned = client.request("POST", "/api/v1/instagram/hold", body={"draft_id": "c" * 16, "hold": False})
+        self.assertEqual(unversioned.status, 400)  # every request is fenced by the version its page showed
+        bad = client.request("POST", "/api/v1/instagram/hold", body={"draft_id": "c" * 16, "hold": "yes", "version": 1})
+        self.assertEqual(bad.status, 400)
+        self.assertEqual(
+            client.request(
+                "POST", "/api/v1/instagram/hold", body={"draft_id": "d" * 16, "hold": True, "version": 0}
+            ).status,
+            404,
+        )
 
 
 if __name__ == "__main__":
