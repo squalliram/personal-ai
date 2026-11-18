@@ -69,7 +69,7 @@ def redact(value, token):
             return "[REDACTED_URL]"
         if (
             parts.scheme == "https"
-            and parts.netloc in ("www.instagram.com", "instagram.com")
+            and parts.netloc.lower() in ("www.instagram.com", "instagram.com")
             and re.fullmatch(r"/(?:p|reel|tv)/[A-Za-z0-9_-]+/?", parts.path)
             and not parts.query
             and not parts.fragment
@@ -77,7 +77,7 @@ def redact(value, token):
             return url
         return "[REDACTED_URL]"
 
-    value = re.sub(r"https?://[^\s<>\"']+", safe_url, value)
+    value = re.sub(r"https?://[^\s<>\"']+", safe_url, value, flags=re.I)
     return re.sub(r"(?i)(access_token|authorization|bearer)\s*[:= ]\s*[^\s&,]+", r"\1=[REDACTED]", value)
 
 
@@ -197,6 +197,8 @@ def summarize(media, insights, profile):
 
 
 def export(client, output, token, now=None):
+    if output.exists() and any(output.iterdir()):
+        raise FileExistsError("Output directory must be empty; choose a new output directory")
     now = now or datetime.now(timezone.utc)
     until = now.astimezone(LONDON).replace(hour=0, minute=0, second=0, microsecond=0)
     since = until - timedelta(days=28)
@@ -242,7 +244,7 @@ def export(client, output, token, now=None):
         metrics = COMMON_METRICS
         if item.get("media_product_type") == "REELS":
             metrics += REEL_METRICS
-        elif item.get("media_type") == "VIDEO":
+        if item.get("media_type") == "VIDEO":
             metrics += ("plays",)
         values = {}
         for metric in metrics:
@@ -315,6 +317,9 @@ def main():
     args = parser.parse_args()
     try:
         export(graph_client(os.environ), args.output, os.environ.get("INSTAGRAM_ACCESS_TOKEN", ""))
+    except FileExistsError:
+        print("Output directory must be empty; choose a new output directory.", file=sys.stderr)
+        return 1
     except Exception:
         print("Baseline export failed; no credentials or response details logged.", file=sys.stderr)
         return 1

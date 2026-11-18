@@ -67,6 +67,14 @@ class SummaryTests(unittest.TestCase):
 
 
 class RedactionTests(unittest.TestCase):
+    def test_mixed_case_url_schemes_and_public_permalink(self):
+        for scheme in ("HTTPS", "hTtPs", "HTTP", "hTtP"):
+            with self.subTest(scheme=scheme):
+                self.assertEqual(BASELINE.redact(f"{scheme}://example.com/private", ""), "[REDACTED_URL]")
+        permalink = "HtTpS://WWW.Instagram.COM/reel/AbC_123/"
+        self.assertEqual(BASELINE.redact(permalink, ""), permalink)
+        self.assertEqual(BASELINE.redact(permalink + "?access_token=private", "private"), "[REDACTED_URL]")
+
     def test_malformed_caption_url_is_redacted(self):
         self.assertEqual(
             BASELINE.redact({"caption": "Try https://[example.com today"}, "private"),
@@ -98,6 +106,71 @@ class RedactionTests(unittest.TestCase):
 
 
 class ExportTests(unittest.TestCase):
+    def test_reel_requests_plays_and_exports_it_when_views_are_null(self):
+        class Client:
+            user_id = "123"
+
+            def __init__(self):
+                self.metrics = []
+
+            def get(self, path, params):
+                if path == "123":
+                    return {"username": "instafoodielove"}
+                if path == "123/media":
+                    return {"data": [media(media_type="VIDEO", media_product_type="REELS")]}
+                if path == "123/insights":
+                    return {"data": []}
+                self.metrics.append(params["metric"])
+                return response(None if params["metric"] == "views" else 42)
+
+        with tempfile.TemporaryDirectory() as directory:
+            client = Client()
+            output = Path(directory)
+            BASELINE.export(client, output, "")
+            self.assertIn("plays", client.metrics)
+            self.assertIn("ig_reels_avg_watch_time", client.metrics)
+            with (output / "posts.csv").open() as handle:
+                self.assertEqual(list(csv.DictReader(handle))[0]["views"], "42")
+            summary = json.loads((output / "summary.json").read_text())
+            self.assertEqual(summary["by_type"]["reel"]["medians"]["views"], 42)
+
+    def test_second_export_requires_fresh_directory_to_avoid_stale_files(self):
+        class Client:
+            user_id = "123"
+
+            def __init__(self, old=False):
+                self.old = old
+                self.calls = 0
+
+            def get(self, path, params):
+                self.calls += 1
+                if path == "123":
+                    return {"username": "instafoodielove"}
+                if path == "123/media":
+                    return {"data": [media("1")], **({"paging": {"next": "next"}} if self.old else {})}
+                if path == "next":
+                    return {"data": [media("2")]}
+                return response(1)
+
+        with tempfile.TemporaryDirectory() as directory:
+            old_output = Path(directory) / "old"
+            BASELINE.export(Client(old=True), old_output, "")
+            self.assertTrue((old_output / "raw/media_page_00002.json").exists())
+            self.assertTrue((old_output / "raw/insights_2.json").exists())
+            original = {p.relative_to(old_output): p.read_bytes() for p in old_output.rglob("*") if p.is_file()}
+            client = Client()
+            with self.assertRaisesRegex(FileExistsError, "Output directory must be empty"):
+                BASELINE.export(client, old_output, "")
+            self.assertEqual(client.calls, 0)
+            self.assertEqual(
+                original, {p.relative_to(old_output): p.read_bytes() for p in old_output.rglob("*") if p.is_file()}
+            )
+            new_output = Path(directory) / "new"
+            BASELINE.export(client, new_output, "")
+            self.assertFalse((new_output / "raw/media_page_00002.json").exists())
+            self.assertFalse((new_output / "raw/insights_2.json").exists())
+            self.assertEqual(json.loads((new_output / "summary.json").read_text())["post_count"], 1)
+
     def test_full_pagination_and_independent_metric_errors(self):
         class Client:
             user_id = "123"
