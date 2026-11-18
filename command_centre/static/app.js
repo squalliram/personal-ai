@@ -1722,22 +1722,26 @@
     try { const saved = unconfirmedHold(id); if (saved && saved.token === token) sessionStorage.removeItem(`ig-hold:${id}`); } catch { /* best effort */ }
   };
 
-  function holdToggle(draft, status) {
-    const box = el("input", { type: "checkbox", id: `ig-hold-${draft.draft_id}`, "data-hold": String(draft.reel.hold) });
+  function holdToggle(draft, status, auto) {
+    const box = el("input", {
+      type: "checkbox", id: `ig-hold-${draft.draft_id}`, "data-hold": String(draft.reel.hold), "data-hold-version": String(draft.reel.hold_version),
+    });
     box.checked = draft.reel.hold;
     const definite = (r) => r.ok || [400, 401, 404, 409].includes(r.status);
+    // A request that hangs counts as unanswered, so the retries and the unknown-state warning still happen.
+    const deadline = () => (typeof AbortSignal !== "undefined" && AbortSignal.timeout ? AbortSignal.timeout(15000) : undefined);
     async function send(body, token = `${Date.now()}-${Math.random()}`) {
       box.disabled = true;
       // Saved before sending, so a reload while this is in flight resends it rather than trusting the old state.
       const saved = rememberHold(draft.draft_id, { token, body });
       const signIn = signInCount;
-      let result = await api("api/v1/instagram/hold", { method: "POST", body });
+      let result = await api("api/v1/instagram/hold", { method: "POST", body, signal: deadline() });
       // Resending the same versioned hold is harmless, so resend until the server gives a definite answer.
       for (let tries = 0; !definite(result) && tries < 3 && signIn === signInCount; tries++) {
         status.textContent = "Couldn't confirm the hold change. Trying again…";
         await new Promise((resolve) => setTimeout(resolve, 2000));
         if (signIn !== signInCount) break;
-        result = await api("api/v1/instagram/hold", { method: "POST", body });
+        result = await api("api/v1/instagram/hold", { method: "POST", body, signal: deadline() });
       }
       if (signIn !== signInCount) { if (result.ok) clearCache(); return; } // an older sign-in's reply
       if (result.status === 401) { showLogin("Your session has ended. Sign in again."); return; }
@@ -1771,7 +1775,9 @@
         send(body, pending.token);
       });
     }
-    return el("p", {}, box, " ", el("label", { for: box.id }, "Hold for my approval (otherwise it posts automatically if it scores 70 or more)"));
+    return el("p", {}, box, " ", el("label", { for: box.id }, auto
+      ? "Hold for my approval (otherwise it posts automatically if it scores 70 or more)"
+      : "Hold for my approval (automatic posting is off right now, so nothing posts on its own)"));
   }
 
   const slideUrl = (draft, n) => `api/v1/instagram/slide?draft=${encodeURIComponent(draft.draft_id)}&n=${n}`;
@@ -1853,7 +1859,7 @@
       approve.addEventListener("click", () => decide(draft, "approve", [approve, reject], status));
       reject.addEventListener("click", () => decide(draft, "reject", [approve, reject], status));
       children.push(el("div", { class: "ig-actions" }, approve, reject), status);
-      if (draft.kind === "reel" && draft.reel) children.push(holdToggle(draft, status));
+      if (draft.kind === "reel" && draft.reel) children.push(holdToggle(draft, status, auto));
     } else if (draft.status === "pending") {
       children.push(muted("Approving or rejecting needs RECOMMEND permission."));
     } else if (draft.status === "approved" && !auto) {
@@ -2017,7 +2023,7 @@
 
   function clipCard(data, canDecide) {
     const renders = Boolean(data.renders && data.renders.clip);
-    const intro = muted(`Add one of your own clips (3-90 seconds, raw or edited) and a short note. The next daily run turns the oldest waiting clip into the day's reel instead of a carousel; ${renders ? "the agents trim it and burn in the on-screen text" : "it posts as filmed"}. Like a carousel it posts automatically if it scores 70 or more, unless you reject it or hold it for your approval. The note is the only source for the place, dish, rating or price.`);
+    const intro = muted(`Add one of your own clips (3-90 seconds, raw or edited) and a short note. The next daily run turns the oldest waiting clip into the day's reel instead of a carousel; ${renders ? "the agents trim it and burn in the on-screen text" : "it posts as filmed"}. ${data.auto_publish ? "Like a carousel it posts automatically if it scores 70 or more, unless you reject it or hold it for your approval." : "Automatic posting is off, so it won't post on its own."} The note is the only source for the place, dish, rating or price.`);
     if (!canDecide) return card("Add a reel clip", intro, muted("Adding clips needs RECOMMEND permission."));
     if (data.state !== "available") return card("Add a reel clip", intro, muted("Not available until the Instagram agent has run on this server."));
     const clip = el("input", { id: "ig-clip", type: "file", name: "clip", accept: "video/mp4,video/quicktime", required: "" });
