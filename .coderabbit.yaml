@@ -14,6 +14,9 @@ reviews:
     - "!data/**"
     - "!reports/**"
     - "!**/*.sqlite3"
+  finishing_touches:
+    autofix:
+      enabled: true
   tools:
     # Ruff is configured in pyproject.toml; there is no Pylint configuration.
     ruff:
