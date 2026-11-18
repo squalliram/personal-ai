@@ -74,6 +74,13 @@ def tick(conn, env: dict, env_file: Path, now: datetime | None = None, *, enviro
     """Refresh when due inside the caller's daily lock. Only the `.env` token is replaced."""
     now = now or datetime.now(timezone.utc)
     environ = os.environ if environ is None else environ
+    try:
+        return _tick(conn, env, env_file, now, environ, client)
+    except sqlite3.Error:
+        return "metadata_failed"
+
+
+def _tick(conn, env: dict, env_file: Path, now: datetime, environ, client) -> str:
     state = storage.token_state(conn)
     if TOKEN_KEY in environ:
         return _terminal(conn, state, "externally_managed")
@@ -103,10 +110,7 @@ def tick(conn, env: dict, env_file: Path, now: datetime | None = None, *, enviro
     else:
         # The current tick must use the persisted replacement even if its metadata write fails.
         env[TOKEN_KEY] = token
-        try:
-            storage.record_token_success(conn, expires_at, stamp, fingerprint=sha256(token.encode()).hexdigest())
-        except sqlite3.Error:
-            return "metadata_failed"
+        storage.record_token_success(conn, expires_at, stamp, fingerprint=sha256(token.encode()).hexdigest())
         return "refreshed"
 
     storage.record_token_failure(conn, stamp, error, fingerprint=fingerprint)

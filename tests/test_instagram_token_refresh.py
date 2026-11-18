@@ -220,6 +220,16 @@ class TokenRefreshTests(unittest.TestCase):
         self.assertIn(f"INSTAGRAM_ACCESS_TOKEN={NEW_TOKEN}\n", self.env_file.read_text())
         self.assertIsNone(storage.token_state(self.conn)["last_outcome"])
 
+    def test_failed_refresh_with_unwritable_metadata_keeps_current_token(self):
+        with patch.object(storage, "record_token_failure", side_effect=sqlite3.OperationalError("locked")):
+            self.assertEqual(self.tick(GraphAPIError("Graph API request failed")), "metadata_failed")
+        self.assertEqual(self.env[TOKEN_KEY], OLD_TOKEN)
+        self.assertIn(f"{TOKEN_KEY}={OLD_TOKEN}\n", self.env_file.read_text())
+
+    def test_unreadable_metadata_skips_the_api_attempt(self):
+        with patch.object(storage, "token_state", side_effect=sqlite3.OperationalError("locked")):
+            self.assertEqual(self.tick(AssertionError("unexpected Meta call")), "metadata_failed")
+
 
 class RefreshTransportTests(unittest.TestCase):
     def test_instagram_login_uses_fixed_unversioned_refresh_endpoint(self):
