@@ -30,6 +30,7 @@ from zoneinfo import ZoneInfo
 import notifications
 from instagram_agent import clips as instagram_clips
 from instagram_agent import cloudflare_client, openai_client
+from instagram_agent import music as instagram_music
 from instagram_agent import storage as instagram_storage
 from instagram_agent import uploads as instagram_uploads
 
@@ -124,8 +125,8 @@ def _json_body(environ: dict, limit: int = MAX_BODY_BYTES) -> tuple[object, Resu
         return None, _error(400, "invalid_request")
 
 
-def _photo_form(environ: dict) -> tuple[tuple[str, list[bytes]] | None, Result | None]:
-    """The note and photo files from a multipart/form-data upload, with nothing else allowed."""
+def _form_parts(environ: dict, limit: int) -> tuple[list[tuple[str, bool, bytes]] | None, Result | None]:
+    """(name, is_file, data) for each part of a multipart/form-data body of at most `limit` bytes."""
     content_type = environ.get("CONTENT_TYPE", "")
     if content_type.split(";")[0].strip().lower() != "multipart/form-data" or "boundary=" not in content_type:
         return None, _error(415, "multipart_required")
@@ -133,7 +134,7 @@ def _photo_form(environ: dict) -> tuple[tuple[str, list[bytes]] | None, Result |
         length = int(environ.get("CONTENT_LENGTH") or 0)
     except ValueError:
         return None, _error(400, "invalid_request")
-    if not 0 < length <= instagram_uploads.MAX_UPLOAD_BYTES:
+    if not 0 < length <= limit:
         return None, _error(413 if length > 0 else 400, "upload_too_large" if length > 0 else "invalid_request")
     body = environ["wsgi.input"].read(length)
     if len(body) != length:
@@ -142,26 +143,46 @@ def _photo_form(environ: dict) -> tuple[tuple[str, list[bytes]] | None, Result |
     message = email.parser.BytesParser(policy=email.policy.HTTP).parsebytes(header + body)
     if not message.is_multipart() or message.defects:
         return None, _error(400, "invalid_request")
-    notes, photos = [], []
+    parts = []
     for part in message.iter_parts():
-        name = part.get_param("name", header="content-disposition")
         data = part.get_payload(decode=True)
         if part.get_content_disposition() != "form-data" or not isinstance(data, bytes):
             return None, _error(400, "invalid_request")
-        if name == "note" and part.get_filename() is None:
-            notes.append(data)
-        elif name == "photos" and part.get_filename() is not None:
-            photos.append(data)
+        parts.append((part.get_param("name", header="content-disposition"), part.get_filename() is not None, data))
+    return parts, None
+
+
+def _fields(parts, files: str, texts: set[str]) -> tuple[dict[str, str], list[bytes]] | None:
+    """Each text field at most once and the `files` file parts; None if anything else is in the form."""
+    found: dict[str, str] = {}
+    data = []
+    for name, is_file, value in parts:
+        if is_file and name == files:
+            data.append(value)
+        elif not is_file and name in texts and name not in found:
+            try:
+                found[name] = value.decode("utf-8")
+            except UnicodeDecodeError:
+                return None
         else:
-            return None, _error(400, "invalid_request")
-        if len(photos) > instagram_uploads.MAX_PHOTOS:
-            return None, _error(400, "photo_count")
-    if len(notes) != 1:
+            return None
+    return found, data
+
+
+def _photo_form(environ: dict) -> tuple[tuple[str, list[bytes], dict] | None, Result | None]:
+    """The note, photo files and reel choices (`reel`, `music`, `mix`) from a photo upload, nothing else."""
+    parts, error = _form_parts(environ, instagram_uploads.MAX_UPLOAD_BYTES)
+    if error:
+        return None, error
+    if sum(1 for name, is_file, _ in parts if is_file and name == "photos") > instagram_uploads.MAX_PHOTOS:
+        return None, _error(400, "photo_count")
+    if sum(1 for name, is_file, _ in parts if not is_file and name == "note") != 1:
         return None, _error(400, "invalid_note")
-    try:
-        return (notes[0].decode("utf-8"), photos), None
-    except UnicodeDecodeError:
-        return None, _error(400, "invalid_note")
+    found = _fields(parts, "photos", {"note", "reel", "music", "mix"})
+    if found is None:
+        return None, _error(400, "invalid_note" if any(n == "note" for n, f, _ in parts) else "invalid_request")
+    fields, photos = found
+    return (fields.pop("note"), photos, fields), None
 
 
 def csv_cell(value: object) -> object:
@@ -298,6 +319,10 @@ class CommandCentreApp:
                 self.instagram_upload_delete, Permission.RECOMMEND, csrf=True
             ),
             ("GET", "/api/v1/instagram/upload-photo"): Route(self.instagram_upload_photo, Permission.READ),
+            ("POST", "/api/v1/instagram/music"): Route(self.instagram_music_add, Permission.RECOMMEND, csrf=True),
+            ("POST", "/api/v1/instagram/music/delete"): Route(
+                self.instagram_music_delete, Permission.RECOMMEND, csrf=True
+            ),
             ("POST", "/api/v1/instagram/clips"): Route(self.instagram_clip_start, Permission.RECOMMEND, csrf=True),
             ("POST", "/api/v1/instagram/clips/chunk"): Route(
                 self.instagram_clip_chunk, Permission.RECOMMEND, csrf=True
@@ -1140,23 +1165,92 @@ class CommandCentreApp:
         form, error = _photo_form(request.environ)
         if error:
             return error
-        try:
-            note = instagram_uploads.clean_note(form[0])
-            prepared = instagram_uploads.prepare(form[1])
-        except instagram_uploads.PhotoError as exc:
-            self.audit.record("instagram_upload", "refused", actor="owner", reason=exc.code, client=request.client)
-            return _error(413 if exc.code == "photo_too_large" else 400, exc.code)
+        options = form[2]
+        if options.get("reel", "0") not in ("0", "1"):
+            return _error(400, "invalid_request")
+        as_reel = options.get("reel") == "1"
         conn = sqlite3.connect(self.settings.instagram_db, timeout=5)
+        conn.row_factory = sqlite3.Row
         try:
-            upload_id = instagram_uploads.save(conn, self.settings.instagram_media, note, prepared, self._now())
+            try:
+                note = instagram_uploads.clean_note(form[0])
+                picked = instagram_music.choice(options.get("music"), options.get("mix", "under"), conn)
+                prepared = instagram_uploads.prepare(form[1])
+            except (instagram_uploads.PhotoError, instagram_music.MusicError) as exc:
+                self.audit.record("instagram_upload", "refused", actor="owner", reason=exc.code, client=request.client)
+                return _error(413 if exc.code == "photo_too_large" else 400, exc.code)
+            upload_id = instagram_uploads.save(
+                conn, self.settings.instagram_media, note, prepared, self._now(), reel=as_reel, music=picked
+            )
         finally:
             conn.close()
         with self._collect_lock:
             self._collected = None
         self.audit.record(
-            "instagram_upload", "saved", actor="owner", upload=upload_id, photos=len(prepared), client=request.client
+            "instagram_upload",
+            "saved",
+            actor="owner",
+            upload=upload_id,
+            photos=len(prepared),
+            reel=as_reel,
+            music=(picked or {}).get("pick", "off") if as_reel else "off",
+            client=request.client,
         )
-        return 200, {"upload_id": upload_id, "photos": len(prepared)}, []
+        return 200, {"upload_id": upload_id, "photos": len(prepared), "reel": as_reel}, []
+
+    def instagram_music_add(self, request: Request) -> Result:
+        """Add a track the owner has the rights to, with its licence and source, to the reel music library."""
+        if not self._instagram_ready():
+            return _error(404, "not_found")
+        parts, error = _form_parts(request.environ, instagram_music.MAX_TRACK_BYTES + 64 * 1024)
+        if error:
+            return error
+        found = _fields(parts, "track", {"title", "licence", "source"})
+        if found is None or len(found[1]) != 1:
+            return _error(400, "invalid_request")
+        fields, [data] = found
+        conn = sqlite3.connect(self.settings.instagram_db, timeout=5)
+        try:
+            track_id = instagram_music.save(
+                conn,
+                self.settings.instagram_media,
+                fields.get("title"),
+                fields.get("licence"),
+                fields.get("source", ""),
+                data,
+                self._now(),
+            )
+        except instagram_music.MusicError as exc:
+            self.audit.record("instagram_music", "refused", actor="owner", reason=exc.code, client=request.client)
+            return _error(413 if exc.code == "track_too_large" else 400, exc.code)
+        except OSError:
+            return _error(507, "storage_error")
+        finally:
+            conn.close()
+        with self._collect_lock:
+            self._collected = None
+        self.audit.record("instagram_music", "saved", actor="owner", track=track_id, client=request.client)
+        return 200, {"track_id": track_id}, []
+
+    def instagram_music_delete(self, request: Request) -> Result:
+        body, error = _json_body(request.environ)
+        if error:
+            return error
+        if not isinstance(body, dict) or set(body) != {"track_id"} or not isinstance(body["track_id"], str):
+            return _error(400, "invalid_request")
+        if not self._instagram_ready():
+            return _error(404, "not_found")
+        conn = sqlite3.connect(self.settings.instagram_db, timeout=5)
+        try:
+            deleted = instagram_music.delete(conn, self.settings.instagram_media, body["track_id"])
+        finally:
+            conn.close()
+        if not deleted:
+            return _error(404, "not_found")
+        with self._collect_lock:
+            self._collected = None
+        self.audit.record("instagram_music", "deleted", actor="owner", track=body["track_id"], client=request.client)
+        return 200, {"track_id": body["track_id"], "deleted": True}, []
 
     def instagram_upload_delete(self, request: Request) -> Result:
         body, error = _json_body(request.environ)
@@ -1185,11 +1279,13 @@ class CommandCentreApp:
         self.audit.record("instagram_upload", "deleted", actor="owner", upload=body["upload_id"], client=request.client)
         return 200, {"upload_id": body["upload_id"], "deleted": True}, []
 
-    def _clip_body(self, request: Request, keys: set[str]) -> tuple[dict | None, Result | None]:
+    def _clip_body(
+        self, request: Request, keys: set[str], optional: frozenset[str] = frozenset()
+    ) -> tuple[dict | None, Result | None]:
         body, error = _json_body(request.environ)
         if error:
             return None, error
-        if not isinstance(body, dict) or set(body) != keys:
+        if not isinstance(body, dict) or not keys <= set(body) <= keys | optional:
             return None, _error(400, "invalid_request")
         if "clip_id" in keys and not (
             isinstance(body["clip_id"], str) and instagram_uploads.UPLOAD_ID.fullmatch(body["clip_id"])
@@ -1209,14 +1305,19 @@ class CommandCentreApp:
 
     def instagram_clip_start(self, request: Request) -> Result:
         """Start a clip upload: the note and the size; the browser then sends the bytes in chunks."""
-        body, error = self._clip_body(request, {"note", "size"})
+        body, error = self._clip_body(request, {"note", "size"}, frozenset({"music", "mix"}))
         if error:
             return error
         try:
             note = instagram_uploads.clean_note(body["note"])
             media, now = self.settings.instagram_media, self._now()
-            clip_id = self._clip_call(lambda c: instagram_clips.start(c, media, note, body["size"], now))
-        except (instagram_uploads.PhotoError, instagram_clips.ClipError) as exc:
+
+            def start(conn):
+                picked = instagram_music.choice(body.get("music"), body.get("mix", "under"), conn)
+                return instagram_clips.start(conn, media, note, body["size"], now, picked)
+
+            clip_id = self._clip_call(start)
+        except (instagram_uploads.PhotoError, instagram_clips.ClipError, instagram_music.MusicError) as exc:
             return _error(413 if exc.code == "clip_too_large" else 400, exc.code)
         except OSError:
             return _error(507, "storage_error")

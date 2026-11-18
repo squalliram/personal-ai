@@ -1734,9 +1734,11 @@
   function publishNote(draft, auto) {
     if (draft.publishing) return muted("Posting to Instagram now. It can no longer be approved or rejected.");
     if (draft.publish_error) return muted(`Last publish attempt failed: ${draft.publish_error}`);
+    if (draft.kind === "reel" && draft.reel && draft.reel.render === "pending") return muted("The reel is being made on the next daily run; it can't post until then.");
+    if (draft.kind === "reel" && draft.reel && draft.reel.render === "failed") return muted(`The reel couldn't be made (${draft.reel.render_error || "unknown error"}), so it won't post. Delete it or send the media again.`);
     if (!auto) return null;
     if (draft.will_post && draft.posts_at) return muted(`Posts to Instagram automatically at ${when(draft.posts_at)} unless you reject it before then.`);
-    if (draft.kind === "reel" && draft.status === "pending") return muted("A reel from your clip only posts once you approve it.");
+    if (draft.kind === "reel" && draft.status === "pending") return muted("A reel from your own media only posts once you approve it.");
     if (draft.status === "pending") return muted("Scored under 70, so it only posts if you approve it.");
     return null;
   }
@@ -1746,7 +1748,16 @@
     return el("div", { class: "ig-reel" },
       el("p", {}, el("strong", {}, "Reel hook: "), reel.hook),
       reel.on_screen.length ? el("ol", {}, reel.on_screen.map((beat) => el("li", {}, `${at(beat.start)}-${at(beat.end)}: ${beat.text}`))) : null,
-      muted(`On-screen text is a script for your editor; the clip posts as filmed with its own audio. Cover frame at ${at(reel.cover_seconds)} of ${at(reel.seconds)}.`));
+      muted(reelMaking(reel, at)));
+  }
+
+  function reelMaking(reel, at) {
+    const cover = `Cover frame at ${at(reel.cover_seconds)} of ${at(reel.seconds)}.`;
+    if (!reel.render) return `On-screen text is a script for your editor; the clip posts as filmed with its own audio. ${cover}`;
+    const from = reel.source === "photos" ? "Your photos become a slideshow with slow zooms" : reel.trim ? `Your clip is cut to ${at(reel.trim.in)}-${at(reel.trim.out)}` : "Your clip is used";
+    const sound = !reel.music ? (reel.source === "photos" ? "no music" : "its own audio")
+      : `music "${reel.music.title}" (${reel.music.licence}) ${reel.music.mix === "replace" || reel.source === "photos" ? "as the audio" : "under its own audio"}`;
+    return `${from}, with the text burned in and ${sound}. ${cover}`;
   }
 
   function draftCard(draft, canDecide, auto) {
@@ -1758,7 +1769,7 @@
       el("figcaption", {}, `${i + 1}. ${slide.text}`))));
     const children = [
       slides,
-      draft.note ? el("p", { class: "muted" }, `From your ${draft.kind === "reel" ? "clip" : "photos"}. Your note: ${draft.note}`) : null,
+      draft.note ? el("p", { class: "muted" }, `From your ${draft.kind === "reel" && !(draft.reel && draft.reel.source === "photos") ? "clip" : "photos"}. Your note: ${draft.note}`) : null,
       el("p", { class: "ig-caption" }, draft.caption),
       el("p", { class: "muted" }, draft.hashtags.length ? `${draft.hashtags.length} hashtags: ${draft.hashtags.join(" ")}` : "No hashtags"),
       keyValues([
@@ -1783,7 +1794,9 @@
     } else if (draft.status === "pending") {
       children.push(muted("Approving or rejecting needs RECOMMEND permission."));
     } else if (draft.status === "approved" && !auto) {
-      children.push(muted(draft.kind === "reel"
+      children.push(muted(draft.kind === "reel" && draft.reel && draft.reel.source === "photos"
+        ? "Approved, but automatic posting is off and the made reel only goes to Instagram. Switch automatic posting on to post it."
+        : draft.kind === "reel"
         ? "Approved. Post it yourself: share your original clip as a reel, add the on-screen text above in Instagram's editor and copy the caption."
         : "Approved and saved as an example. Post it yourself: download the slides in order and copy the caption."));
       children.push(postKit(draft));
@@ -1828,6 +1841,21 @@
     return file;
   }
 
+  function musicChoice(data, id, withMix) {
+    const tracks = data.music || [];
+    const pick = el("select", { id: `${id}-music`, name: "music" },
+      el("option", { value: "" }, withMix ? "None: keep the original audio" : "None"),
+      tracks.length ? el("option", { value: "agents" }, "Let the agents pick from my library") : null,
+      ...tracks.map((t) => el("option", { value: t.track_id }, t.title)));
+    const mix = el("select", { id: `${id}-mix`, name: "mix" },
+      el("option", { value: "under" }, "Mix it under the original audio"),
+      el("option", { value: "replace" }, "Replace the original audio"));
+    const node = el("div", {},
+      el("label", { for: `${id}-music` }, tracks.length ? "Music (only tracks with a recorded licence)" : "Music (add licensed tracks to the music library first)"), pick,
+      withMix ? el("label", { for: `${id}-mix` }, "Mix") : null, withMix ? mix : null);
+    return { node, values: () => (pick.value ? { music: pick.value, mix: withMix ? mix.value : "replace" } : {}) };
+  }
+
   function uploadCard(data, canDecide) {
     const intro = muted("Add 1-10 of your own photos and a short note, like \"Dishoom Kings Cross, lamb raan, 8/10\". The next daily run turns the oldest waiting set into the day's draft instead of an AI one; the note is the only source for the place, dish, rating or price.");
     if (!canDecide) return card("Add your photos", intro, muted("Adding photos needs RECOMMEND permission."));
@@ -1837,9 +1865,18 @@
     const note = el("textarea", { id: "ig-note", name: "note", rows: "3", maxlength: "300", required: "", placeholder: "Dishoom Kings Cross, lamb raan, 8/10" });
     const submit = el("button", { type: "submit", class: "primary" }, "Add photos");
     const status = el("p", { class: "muted", role: "status" });
+    // Only Instagram gets the rendered video, so a photo reel needs automatic posting on.
+    const renders = Boolean(data.renders && data.renders.photos && data.auto_publish);
+    const reel = el("input", { id: "ig-as-reel", type: "checkbox", name: "reel" });
+    if (!renders) reel.disabled = true;
+    const music = musicChoice(data, "ig-photo", false);
+    music.node.hidden = true;
+    reel.addEventListener("change", () => { music.node.hidden = !reel.checked; });
     const form = el("form", { class: "ig-upload" },
       el("label", { for: "ig-photos" }, "Photos (1-10, JPEG or PNG; iPhone photos are converted)"), photos,
       el("label", { for: "ig-note" }, "Note"), note,
+      el("label", { for: "ig-as-reel" }, reel, " Make it a reel (7-30 s, slow zooms, text burned in)"),
+      renders ? null : muted(data.auto_publish ? "This server can't make reels yet (its ffmpeg lacks what's needed)." : "Photo reels need automatic posting switched on, since the video only goes to Instagram."), music.node,
       el("div", { class: "ig-actions" }, submit), status);
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
@@ -1851,6 +1888,10 @@
       status.textContent = "Preparing photos…";
       const body = new FormData();
       body.append("note", note.value.trim());
+      if (reel.checked) {
+        body.append("reel", "1");
+        for (const [key, value] of Object.entries(music.values())) body.append(key, value);
+      }
       for (const [i, file] of files.entries()) body.append("photos", await shrink(file), `photo-${i + 1}.jpg`);
       if (signIn !== signInCount) return;
       status.textContent = "Uploading…";
@@ -1890,13 +1931,13 @@
     return { ok: false, status: 0, data: null };
   }
 
-  async function sendClip(file, note, status) {
+  async function sendClip(file, note, status, extra = {}) {
     const signIn = signInCount;
     if (unfinishedClip && unfinishedClip.file === file) {
       status.textContent = "Checking the clip against Instagram's video rules…";
       return finishClip(file, unfinishedClip.clipId, signIn);
     }
-    const start = await api("api/v1/instagram/clips", { method: "POST", body: { note, size: file.size } });
+    const start = await api("api/v1/instagram/clips", { method: "POST", body: { note, size: file.size, ...extra } });
     if (!start.ok) return start;
     const { clip_id: clipId, chunk_bytes: chunk } = start.data;
     for (let offset = 0; offset < file.size; offset += chunk) {
@@ -1912,7 +1953,8 @@
   }
 
   function clipCard(data, canDecide) {
-    const intro = muted("Add one of your own clips (3-90 seconds, raw or edited) and a short note. The next daily run turns the oldest waiting clip into the day's reel instead of a carousel; it keeps its own audio and posts only once you approve the draft. The note is the only source for the place, dish, rating or price.");
+    const renders = Boolean(data.renders && data.renders.clip);
+    const intro = muted(`Add one of your own clips (3-90 seconds, raw or edited) and a short note. The next daily run turns the oldest waiting clip into the day's reel instead of a carousel; ${renders ? "the agents trim it and burn in the on-screen text" : "it posts as filmed"}, and it posts only once you approve the draft. The note is the only source for the place, dish, rating or price.`);
     if (!canDecide) return card("Add a reel clip", intro, muted("Adding clips needs RECOMMEND permission."));
     if (data.state !== "available") return card("Add a reel clip", intro, muted("Not available until the Instagram agent has run on this server."));
     const clip = el("input", { id: "ig-clip", type: "file", name: "clip", accept: "video/mp4,video/quicktime", required: "" });
@@ -1920,9 +1962,10 @@
     const submit = el("button", { type: "submit", class: "primary" }, "Add clip");
     const status = el("p", { class: "muted", role: "status" });
     const problems = el("ul", { class: "muted" });
+    const music = renders ? musicChoice(data, "ig-clip", true) : null;
     const form = el("form", { class: "ig-upload" },
       el("label", { for: "ig-clip" }, "Clip (MP4 or MOV, up to 300 MB, at most 1080 px wide)"), clip,
-      el("label", { for: "ig-clip-note" }, "Note"), note,
+      el("label", { for: "ig-clip-note" }, "Note"), note, music ? music.node : null,
       el("div", { class: "ig-actions" }, submit), status, problems);
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
@@ -1933,7 +1976,7 @@
       if (!note.value.trim()) { status.textContent = CLIP_ERRORS.invalid_note; return; }
       submit.disabled = true;
       const signIn = signInCount;
-      const result = await sendClip(file, note.value.trim(), status);
+      const result = await sendClip(file, note.value.trim(), status, music ? music.values() : {});
       if (signIn !== signInCount) { if (result.ok) clearCache(); return; }
       if (result.status === 401) { showLogin("Your session has ended. Sign in again."); return; }
       if (!result.ok) {
@@ -1951,6 +1994,74 @@
       render();
     });
     return card("Add a reel clip", intro, form);
+  }
+
+  const MUSIC_ERRORS = {
+    licence_required: "Record the licence (for example \"Pixabay Content License\") before adding a track.",
+    invalid_title: "Give the track a title (up to 120 characters).",
+    unsupported_track: "Only MP3, M4A and WAV tracks can be added.",
+    track_too_large: "The track is over 20 MB.",
+    upload_too_large: "The track is over 20 MB.",
+  };
+
+  function musicCard(data, canDecide) {
+    const intro = muted("Music for reels: only tracks you add here, each with the licence you have for it, can be used. Nothing is downloaded automatically. Free sources include the YouTube Audio Library and Pixabay Music; check each track's own licence allows Instagram use.");
+    if (!canDecide || data.state !== "available") return card("Reel music library", intro, muted(canDecide ? "Not available until the Instagram agent has run on this server." : "Adding music needs RECOMMEND permission."));
+    const list = el("ul", {}, (data.music || []).map((track) => {
+      const remove = el("button", { type: "button" }, "Delete");
+      const status = el("span", { class: "muted", role: "status" });
+      remove.addEventListener("click", async () => {
+        if (!window.confirm(`Delete "${track.title}"? Waiting uploads that chose it get no music. Reels already drafted with it but not yet made will fail and won't post.`)) return;
+        remove.disabled = true;
+        const signIn = signInCount;
+        const result = await api("api/v1/instagram/music/delete", { method: "POST", body: { track_id: track.track_id } });
+        if (signIn !== signInCount) { if (result.ok) clearCache(); return; }
+        if (result.status === 401) { showLogin("Your session has ended. Sign in again."); return; }
+        clearCache();
+        if (result.ok) { render(); return; }
+        status.textContent = ` Could not delete it (${(result.data && result.data.error) || result.status}).`;
+        remove.disabled = false;
+      });
+      return el("li", {}, `${track.title}: ${track.licence}${track.source ? ` (${track.source})` : ""} `, remove, status);
+    }));
+    const file = el("input", { id: "ig-track", type: "file", name: "track", accept: "audio/mpeg,audio/mp4,audio/x-m4a,audio/wav", required: "" });
+    const title = el("input", { id: "ig-track-title", name: "title", maxlength: "120", required: "" });
+    const licence = el("input", { id: "ig-track-licence", name: "licence", maxlength: "300", required: "", placeholder: "Pixabay Content License" });
+    const source = el("input", { id: "ig-track-source", name: "source", maxlength: "300", placeholder: "Where you got it, e.g. a link" });
+    const submit = el("button", { type: "submit", class: "primary" }, "Add track");
+    const status = el("p", { class: "muted", role: "status" });
+    const form = el("form", { class: "ig-upload" },
+      el("label", { for: "ig-track" }, "Track (MP3, M4A or WAV, up to 20 MB)"), file,
+      el("label", { for: "ig-track-title" }, "Title"), title,
+      el("label", { for: "ig-track-licence" }, "Licence"), licence,
+      el("label", { for: "ig-track-source" }, "Source"), source,
+      el("div", { class: "ig-actions" }, submit), status);
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const track = (file.files || [])[0];
+      if (!track) { status.textContent = "Choose a track."; return; }
+      if (!licence.value.trim()) { status.textContent = MUSIC_ERRORS.licence_required; return; }
+      submit.disabled = true;
+      const signIn = signInCount;
+      const body = new FormData();
+      body.append("title", title.value.trim());
+      body.append("licence", licence.value.trim());
+      body.append("source", source.value.trim());
+      body.append("track", track, "track");
+      status.textContent = "Uploading…";
+      const result = await api("api/v1/instagram/music", { method: "POST", body });
+      if (signIn !== signInCount) { if (result.ok) clearCache(); return; }
+      if (result.status === 401) { showLogin("Your session has ended. Sign in again."); return; }
+      if (!result.ok) {
+        const code = (result.data && result.data.error) || result.status;
+        status.textContent = `Could not add the track. ${MUSIC_ERRORS[code] || `(${code})`}`;
+        submit.disabled = false;
+        return;
+      }
+      clearCache();
+      render();
+    });
+    return card("Reel music library", intro, list, form);
   }
 
   async function deleteClip(clip, button, status) {
@@ -2021,6 +2132,28 @@
       }));
   }
 
+  // Measured results of past posts. Every finding carries its sample size; nothing here is a fact about a venue.
+  function learningsCard(learned) {
+    const list = (items, empty) => (items && items.length
+      ? el("ul", {}, items.map((f) => el("li", {}, f.text)))
+      : muted(empty));
+    const postLink = (p) => (typeof p.permalink === "string" && p.permalink.startsWith("https://")
+      ? el("a", { href: p.permalink, rel: "noopener noreferrer", target: "_blank" }, "Open")
+      : "None");
+    const times = (v) => (typeof v === "number" ? `${v.toFixed(1)}x` : "Unavailable");
+    const posts = (rows, empty) => table([["Post", (p) => p.topic || "Unknown"], ["Hook", (p) => p.hook || ""],
+      ["Format", (p) => p.format], ["vs median", (p) => times(p.vs_median)], ["Link", postLink]], rows, empty);
+    return card("What's working",
+      muted(`${learned.sample_note} Each post is compared with the median of its own format, 24 and 72 hours after it goes live. The next drafts and reels use these results; they are suggestions, not facts.`),
+      el("h3", {}, "Beating the median"), list(learned.working, "Nothing clearly above the median yet."),
+      el("h3", {}, "Below the median"), list(learned.not_working, "Nothing clearly below the median yet."),
+      el("h3", {}, "Best posts"), posts(learned.best_posts, "Needs at least two measured posts."),
+      el("h3", {}, "Weakest posts"), posts(learned.weakest_posts, "Needs at least four measured posts."),
+      el("h3", {}, "Latest post reports"),
+      table([["When", (r) => when(r.captured_at)], ["Checkpoint", (r) => r.checkpoint], ["Report", (r) => r.summary || ""],
+        ["Link", postLink]], learned.reports, "No post reports yet: the first arrives 24 hours after a post goes live."));
+  }
+
   async function instagram(view) {
     const data = await load("api/v1/instagram/drafts");
     if (!data) return;
@@ -2033,10 +2166,12 @@
       last ? keyValues([["Last run", when(last.started_at)], ["Result", last.outcome], ["Drafts made", last.drafts],
         ...(last.error ? [["Error", last.error]] : [])])
         : muted(data.state === "not_configured" ? "Not connected: there is no Instagram database on this server yet." : "No daily run recorded yet.")));
+    if (data.learnings) view.append(learningsCard(data.learnings));
     view.append(uploadCard(data, canDecide));
     const waiting = waitingCard(data.uploads || [], canDecide);
     if (waiting) view.append(waiting);
     view.append(clipCard(data, canDecide));
+    view.append(musicCard(data, canDecide));
     const waitingClips = waitingClipsCard(data.clips || [], canDecide);
     if (waitingClips) view.append(waitingClips);
     for (const draft of data.drafts) view.append(draftCard(draft, canDecide, data.auto_publish));

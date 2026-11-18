@@ -92,6 +92,17 @@ def recover(conn, now: datetime) -> int:
     return len(stuck)
 
 
+def rendered(row) -> bool:
+    """False for a reel whose render is pending or failed."""
+    if kind(row) != "reel" or "reel" not in row.keys():
+        return True
+    try:
+        state = json.loads(row["reel"] or "{}").get("render")
+    except (ValueError, AttributeError):
+        return False
+    return state in (None, "done")
+
+
 def due(conn, now: datetime) -> list:
     rows = conn.execute(
         "SELECT d.*, (SELECT COUNT(*) FROM publish_runs r WHERE r.draft_id=d.draft_id AND r.outcome='failed') AS fails "
@@ -100,6 +111,8 @@ def due(conn, now: datetime) -> list:
     found = []
     for row in rows:
         when = posts_at(row["scheduled_for"], row["created_at"])
+        if not rendered(row):
+            continue  # a reel still rendering, or whose render failed, never posts unedited
         if will_post(row["status"], row["review_score"], kind(row)) and when <= now <= when + STALE_AFTER:
             if row["fails"] < MAX_ATTEMPTS:
                 found.append(row)

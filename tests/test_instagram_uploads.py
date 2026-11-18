@@ -180,7 +180,15 @@ class UploadApiTests(Fixture):
         self.assertTrue(data["uploads_on"])
         self.assertEqual(
             data["uploads"],
-            [{"upload_id": upload_id, "created_at": data["uploads"][0]["created_at"], "note": NOTE, "photos": 2}],
+            [
+                {
+                    "upload_id": upload_id,
+                    "created_at": data["uploads"][0]["created_at"],
+                    "note": NOTE,
+                    "photos": 2,
+                    "reel": False,
+                }
+            ],
         )
         thumb = client.request("GET", "/api/v1/instagram/upload-photo", query=f"upload={upload_id}&n=1")
         self.assertEqual((thumb.status, thumb.body[:3]), (200, b"\xff\xd8\xff"))

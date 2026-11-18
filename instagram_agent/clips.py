@@ -33,7 +33,8 @@ CREATE TABLE IF NOT EXISTS clips (
     status TEXT NOT NULL DEFAULT 'uploading' CHECK (status IN ('uploading', 'waiting', 'used')),
     facts TEXT,
     draft_id TEXT,
-    used_at TEXT
+    used_at TEXT,
+    music TEXT
 )
 """
 
@@ -65,7 +66,9 @@ def clip_file(media_dir: Path, row) -> Path:
     return folder(media_dir, row["clip_id"]) / f"clip.{'mov' if facts.get('ext') == 'mov' else 'mp4'}"
 
 
-def start(conn: sqlite3.Connection, media_dir: Path, note: str, size: int, now: datetime) -> str:
+def start(
+    conn: sqlite3.Connection, media_dir: Path, note: str, size: int, now: datetime, music: dict | None = None
+) -> str:
     """A new `uploading` clip of `size` bytes; also clears uploads abandoned a day ago."""
     if not isinstance(size, int) or isinstance(size, bool) or not 0 < size <= MAX_CLIP_BYTES:
         raise ClipError("clip_too_large" if isinstance(size, int) and size > 0 else "invalid_size")
@@ -73,6 +76,7 @@ def start(conn: sqlite3.Connection, media_dir: Path, note: str, size: int, now: 
     cutoff = (now - STALE_UPLOAD).isoformat(timespec="seconds")
     with conn:
         conn.execute(TABLE)
+        uploads.add_columns(conn, "clips")
         stale = [
             r[0] for r in conn.execute("SELECT clip_id FROM clips WHERE status='uploading' AND created_at<?", (cutoff,))
         ]
@@ -90,8 +94,8 @@ def start(conn: sqlite3.Connection, media_dir: Path, note: str, size: int, now: 
     try:
         with conn:
             conn.execute(
-                "INSERT INTO clips(clip_id,created_at,note,size) VALUES(?,?,?,?)",
-                (clip_id, now.isoformat(timespec="seconds"), note, size),
+                "INSERT INTO clips(clip_id,created_at,note,size,music) VALUES(?,?,?,?,?)",
+                (clip_id, now.isoformat(timespec="seconds"), note, size, json.dumps(music) if music else None),
             )
     except BaseException:
         shutil.rmtree(root / clip_id, ignore_errors=True)
@@ -239,8 +243,10 @@ def delete(conn: sqlite3.Connection, media_dir: Path, clip_id: str) -> bool:
 
 
 def oldest(conn: sqlite3.Connection):
+    with conn:
+        uploads.add_columns(conn, "clips")
     return conn.execute(
-        "SELECT clip_id, created_at, note, facts FROM clips WHERE status='waiting' ORDER BY created_at, clip_id"
+        "SELECT clip_id, created_at, note, facts, music FROM clips WHERE status='waiting' ORDER BY created_at, clip_id"
     ).fetchone()
 
 
