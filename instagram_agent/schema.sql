@@ -99,6 +99,15 @@ CREATE TABLE IF NOT EXISTS publisher_state (
     value TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS token_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    token_fingerprint TEXT,
+    expires_at TEXT,
+    last_refreshed_at TEXT,
+    last_attempt_at TEXT,
+    last_outcome TEXT NOT NULL,
+    last_error TEXT
+);
 CREATE TABLE IF NOT EXISTS post_reports (
     media_id TEXT NOT NULL,
     checkpoint TEXT NOT NULL CHECK (checkpoint IN ('24h', '72h')),

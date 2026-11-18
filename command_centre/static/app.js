@@ -1688,6 +1688,33 @@
     }
   }
 
+  const TOKEN_STATUS = {
+    not_configured: "Not configured", unknown: "Expiry unknown", valid: "Valid", expiring: "Expiring soon",
+    expired: "Expired", refresh_failed: "Refresh failed", externally_managed: "Externally managed",
+    unsupported: "Automatic renewal unsupported",
+  };
+
+  function tokenCard(token) {
+    const notes = {
+      not_configured: "No Instagram token is configured in the server environment file.",
+      unknown: "Expiry stays unknown until the first successful token refresh.",
+      valid: "The server refreshes this Instagram Login token before it expires.",
+      expiring: "The token expires soon. Check the last refresh result.",
+      expired: "The token has expired. Replace it through the private server setup flow.",
+      refresh_failed: "The current token is unchanged. The next refresh retry is backed off for 24 hours.",
+      externally_managed: "The process environment owns this token, so automatic server-file renewal is off.",
+      unsupported: "Only Instagram Login long-lived tokens can be renewed automatically.",
+    };
+    return card("Access token",
+      keyValues([
+        ["Status", TOKEN_STATUS[token.state] || token.state],
+        ["Expires", when(token.expires_at)],
+        ["Last successful refresh", when(token.last_refreshed_at)],
+        ["Last refresh attempt", when(token.last_attempt_at)],
+      ]),
+      muted(token.last_error || notes[token.state] || "Token lifecycle state is unavailable."));
+  }
+
   const DRAFT_STATUS = {
     pending: "Awaiting review", approved: "Approved", rejected: "Rejected", published: "Published", failed: "Failed",
   };
@@ -2234,6 +2261,7 @@
     if (!data) return;
     const canDecide = Boolean(session) && ["recommend", "execute"].includes(session.permission);
     const last = data.runs[0];
+    view.append(tokenCard(data.token));
     view.append(card("Daily drafts",
       muted(data.auto_publish
         ? "One carousel draft for @instafoodielove is ready by 12:00 London time. If it passes review it posts automatically at its publish time, at least an hour after it's made. Reject it before then to stop it; approve a weaker one to post it."

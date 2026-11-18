@@ -77,6 +77,8 @@ The briefing is written to `reports/daily/YYYY-MM-DD.md`. A small run log goes t
 
 Collects my Instagram analytics and benchmarks the food and coffee accounts I follow: their best recent posts, the hashtags doing best and the hours my followers are online. It also remembers which drafts I approved and how they then performed. Every day it writes one draft, ready by 12:00: from the oldest set of my own photos and note added on the Instagram page (the note is the only source for the place, dish, rating or price), or an AI-generated carousel when none is waiting, and puts it on the Command Centre's Instagram page with Approve and Reject buttons. Once the `INSTAGRAM_ACCESS_TOKEN` and `INSTAGRAM_USER_ID` repository secrets are set (the deploy adds the public slide folder; the repository variable `INSTAGRAM_AUTO_PUBLISH=0` turns it off), a draft that passed review posts automatically at the best audience hour unless I reject it first; until then I post approved ones myself. The full list of settings is under [Automatic publishing](docs/instagram-pipeline.md#automatic-publishing). See the [Instagram pipeline guide](docs/instagram-pipeline.md).
 
+The access token secret bootstraps a missing server token without replacing an existing one. Cron refreshes eligible Instagram Login tokens in the private server `.env` and shows their expiry on the Instagram page.
+
 ## What's in the repo
 
 | Path | What it is |

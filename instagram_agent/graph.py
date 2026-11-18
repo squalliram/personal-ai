@@ -112,6 +112,12 @@ class GraphClient:
         )
         return self._send(request, self.retries if retry else 0)
 
+    def refresh_access_token(self) -> dict:
+        """Refresh an Instagram Login long-lived token at its fixed, unversioned endpoint."""
+        if urlsplit(self.base_url).hostname != urlsplit(INSTAGRAM_HOST).hostname:
+            raise GraphAPIError("Token refresh requires an Instagram Login token")
+        return self.get(f"{INSTAGRAM_HOST}refresh_access_token", {"grant_type": "ig_refresh_token"})
+
     def paginated(self, path: str, params: dict[str, str] | None = None, *, limit: int = 100) -> Iterator[dict]:
         page = self.get(path, params)
         seen: set[str] = set()

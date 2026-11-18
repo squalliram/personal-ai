@@ -1,7 +1,7 @@
 import json
 import tempfile
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -71,6 +71,60 @@ class InstagramQueueTests(unittest.TestCase):
         self.assertEqual([s["text"] for s in draft["slides"]], ["Slide one", "Slide two", "Slide three"])
         self.assertEqual((draft["status"], data["runs"][0]["outcome"]), ("pending", "ok"))
 
+    def test_token_lifecycle_states_are_safe_and_visible(self):
+        client = self.client(Permission.READ)
+        now = datetime.now(timezone.utc)
+        stamp = now.isoformat(timespec="seconds")
+        fingerprint = "a" * 64
+        conn = storage.connect(self.db)
+        try:
+            for days, expected in ((30, "valid"), (7, "expiring"), (-1, "expired")):
+                with self.subTest(expected=expected):
+                    with conn:
+                        storage.record_token_success(
+                            conn,
+                            (now + timedelta(days=days)).isoformat(timespec="seconds"),
+                            stamp,
+                            fingerprint=fingerprint,
+                        )
+                    token = client.request("GET", "/api/v1/instagram/drafts").json()["token"]
+                    self.assertEqual(token["state"], expected)
+                    self.assertIsNotNone(token["expires_at"])
+                    self.assertIsNotNone(token["last_refreshed_at"])
+            with conn:
+                storage.record_token_success(
+                    conn, (now + timedelta(days=30)).isoformat(timespec="seconds"), stamp, fingerprint=fingerprint
+                )
+                storage.record_token_failure(conn, stamp, "Graph API request failed", fingerprint=fingerprint)
+            token = client.request("GET", "/api/v1/instagram/drafts").json()["token"]
+            self.assertEqual(token["state"], "refresh_failed")
+            self.assertEqual(token["last_error"], "Graph API request failed")
+            self.assertIsNotNone(token["expires_at"])
+            self.assertNotIn("token_fingerprint", token)
+            self.assertNotIn(fingerprint, json.dumps(token))
+            with conn:
+                storage.record_token_success(
+                    conn, (now - timedelta(days=1)).isoformat(timespec="seconds"), stamp, fingerprint=fingerprint
+                )
+            token = client.request("GET", "/api/v1/instagram/drafts").json()["token"]
+            self.assertEqual(token["state"], "expired")
+            with conn:
+                storage.record_token_status(conn, "externally_managed")
+            token = client.request("GET", "/api/v1/instagram/drafts").json()["token"]
+            self.assertEqual(token["state"], "externally_managed")
+            self.assertNotIn("access_token", json.dumps(token))
+        finally:
+            conn.close()
+
+    def test_missing_token_state_table_is_legacy_unknown(self):
+        conn = storage.connect(self.db)
+        with conn:
+            conn.execute("DROP TABLE token_state")
+        conn.close()
+        token = self.client(Permission.READ).request("GET", "/api/v1/instagram/drafts").json()["token"]
+        self.assertEqual(token["state"], "unknown")
+        self.assertIsNone(token["expires_at"])
+
     def test_old_pending_drafts_stay_listed_past_the_decision_cap(self):
         conn = storage.connect(self.db)
         with conn:
@@ -94,6 +148,7 @@ class InstagramQueueTests(unittest.TestCase):
         self.db.unlink()
         data = self.client().request("GET", "/api/v1/instagram/drafts").json()
         self.assertEqual((data["state"], data["drafts"]), ("not_configured", []))
+        self.assertEqual(data["token"]["state"], "not_configured")
 
     def test_slides_are_served_by_id_only(self):
         client = self.client(Permission.READ)

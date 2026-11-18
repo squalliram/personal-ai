@@ -130,6 +130,14 @@ The **Instagram** page shows each draft's slides, caption, hashtags, review scor
 
 Both need a RECOMMEND session, CSRF and same-origin, and both are written to the audit log. A draft can only be decided once.
 
+## Access token renewal
+
+Every 15-minute `daily` cron tick runs `token_refresh.tick` before drafting and publishing, under the same lock, even when drafting is skipped. For an `.env`-managed Instagram Login long-lived token (`IG...`), it calls Meta's official `GET https://graph.instagram.com/refresh_access_token` with `grant_type=ig_refresh_token` when the expiry is unknown or within 30 days. Meta requires the existing token to be at least 24 hours old and unexpired; each successful refresh lasts 60 days. Failed API attempts back off for 24 hours and leave the current token unchanged. Tokens supplied through process environment variables are marked externally managed and are not renewed. Facebook Login tokens are not sent to the Instagram Login refresh endpoint.
+
+The replacement goes straight from the Meta response into the server's `.env` through `env_install.py`, which serializes writers with `.env.lock`, preserves unrelated lines, refuses symlinks and writes atomically with mode `0600`. If the token changed during the request, cron discards the response and uses the operator's current configuration. A private SQLite fingerprint ties expiry and backoff to the active token, so a manually replaced token does not inherit the old schedule. The Instagram page shows expiry, refresh timestamps, outcome and a safe error category, but not the fingerprint. Neither the database nor the page contains the token, request URL or response body. Expiry remains unknown until the first successful refresh for the current token; the page warns when it is within 14 days, expired or the latest refresh failed.
+
+The `INSTAGRAM_ACCESS_TOKEN` GitHub secret is **bootstrap-only**. Deployment calls `env_install.py --preserve-existing INSTAGRAM_ACCESS_TOKEN`: it seeds a server with no token but never overwrites an existing or refreshed token with an older secret. To replace an expired or revoked token intentionally, use the existing private SSH-stdin `env_install.py` flow without preserve-existing mode. Never put the token in command arguments or logs.
+
 ## First real post preflight
 
 Use the read-only preflight before enabling the first automatic photo or carousel post:
