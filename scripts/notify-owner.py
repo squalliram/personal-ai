@@ -134,6 +134,10 @@ def ssh_target(env: dict[str, str]) -> tuple[str, str, str] | None:
     return host, user, port
 
 
+class Unconfirmed(RuntimeError):
+    """The host may have stored the notification before the SSH session failed."""
+
+
 def relay(env: dict[str, str], target: tuple[str, str, str], run=subprocess.run) -> int:
     """Runs this script on the host, which can reach its own site; returns the host's exit code."""
     build_request(env)
@@ -143,9 +147,12 @@ def relay(env: dict[str, str], target: tuple[str, str, str], run=subprocess.run)
     ssh += ["-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=20", "-p", port, f"{user}@{host}", command]
     forwarded = {name: env.get(name, "") for name in FORWARDED}
     forwarded["NOTIFY_TITLE"] = clean_title(forwarded["NOTIFY_TITLE"])
-    result = run(ssh, input=json.dumps(forwarded).encode(), timeout=120)
+    try:
+        result = run(ssh, input=json.dumps(forwarded).encode(), timeout=120)
+    except subprocess.TimeoutExpired:
+        raise Unconfirmed("the SSH relay timed out") from None
     if result.returncode == 255:
-        raise RuntimeError("SSH to the host failed")
+        raise Unconfirmed("SSH to the host failed")
     return result.returncode
 
 
@@ -166,6 +173,9 @@ def main(argv: list[str] | None = None) -> int:
             if target := ssh_target(env):
                 return relay(env, target)
         stored = send(env)
+    except Unconfirmed as exc:
+        print(f"Delivery unconfirmed: {exc}; check the Inbox before retrying.", file=sys.stderr)
+        return 1
     except (ValueError, RuntimeError, OSError, subprocess.TimeoutExpired) as exc:
         print(f"Notification not sent: {exc}", file=sys.stderr)
         return 1

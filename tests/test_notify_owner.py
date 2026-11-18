@@ -122,9 +122,11 @@ class NotifyOwnerTests(unittest.TestCase):
         self.assertEqual(forwarded["NOTIFY_INGEST_TOKEN"], TOKEN)
         self.assertEqual(forwarded["NOTIFY_TITLE"], "Posted today's reel")
         self.assertNotIn("CPANEL_SSH_PRIVATE_KEY", forwarded)
-        SCRIPT["relay"]({**env, "NOTIFY_TITLE": "x" * 70000}, target, run)
-        self.assertEqual(len(calls[-1][1]["NOTIFY_TITLE"]), 200)
-        del calls[-1]
+        for long_title in ("x" * 70000, "\u00e9" * 12000):
+            long_env = {**env, "NOTIFY_TITLE": long_title}
+            SCRIPT["relay"](long_env, target, run)
+            host_env = SCRIPT["from_stdin"](json.dumps(calls.pop()[1]))
+            self.assertEqual(SCRIPT["payload"](host_env), SCRIPT["payload"](long_env))
 
         self.assertIsNone(SCRIPT["ssh_target"](ENV))
         with self.assertRaises(ValueError):
@@ -132,8 +134,14 @@ class NotifyOwnerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             SCRIPT["relay"]({**env, "NOTIFY_TITLE": ""}, target, run)
         self.assertEqual(len(calls), 1)
-        with self.assertRaises(RuntimeError):
+        with self.assertRaises(SCRIPT["Unconfirmed"]):
             SCRIPT["relay"](env, target, lambda argv, input, timeout: subprocess.CompletedProcess(argv, 255))
+
+        def hang(argv, input, timeout):
+            raise subprocess.TimeoutExpired(argv, timeout)
+
+        with self.assertRaises(SCRIPT["Unconfirmed"]):
+            SCRIPT["relay"](env, target, hang)
 
     def test_host_side_reads_stdin_and_refuses_bad_input_without_a_request(self):
         self.assertEqual(
