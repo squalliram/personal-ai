@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from . import music, publish, video
+from . import music, video
 from .host_probe import find_tool
 
 WIDTH, HEIGHT, FPS = 1080, 1920, 30
@@ -306,6 +306,8 @@ def render(conn, media_dir: Path, draft_id: str, reel: dict, caps: dict | None =
 
 def slot_after_render(row, now: datetime) -> str | None:
     """A reel rendered after its posting window posts now if it is still its London day, else not at all."""
+    from . import publish
+
     if not row["scheduled_for"]:
         return row["scheduled_for"]
     when = publish.posts_at(row["scheduled_for"], row["created_at"])
