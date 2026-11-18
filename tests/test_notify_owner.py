@@ -106,7 +106,7 @@ class NotifyOwnerTests(unittest.TestCase):
         calls = []
 
         def run(argv, input, timeout):
-            calls.append((argv, json.loads(input), input.decode()))
+            calls.append((argv, json.loads(input), input))
             return subprocess.CompletedProcess(argv, 0)
 
         ssh = {"CPANEL_SSH_HOST": "host.example", "CPANEL_SSH_USERNAME": "acct", "CPANEL_SSH_PRIVATE_KEY": "KEY"}
@@ -133,8 +133,10 @@ class NotifyOwnerTests(unittest.TestCase):
             self.assertEqual(SCRIPT["payload"](host_env), SCRIPT["payload"](long_env))
         with self.assertRaises(ValueError):
             SCRIPT["relay"]({**env, "COMMAND_CENTRE_URL": "https://a.example/" + "a" * 70000}, target, run)
+        SCRIPT["relay"]({**env, "COMMAND_CENTRE_URL": "https://a.example/#" + "a" * 70000}, target, run)
+        self.assertEqual(calls.pop()[1]["COMMAND_CENTRE_URL"], "https://a.example/")
         with self.assertRaises(ValueError):
-            SCRIPT["from_stdin"](json.dumps({"NOTIFY_TITLE": "x" * 70000}))
+            SCRIPT["from_stdin"](json.dumps({"NOTIFY_TITLE": "\u00e9" * 40000}, ensure_ascii=False).encode())
 
         self.assertIsNone(SCRIPT["ssh_target"](ENV))
         with self.assertRaises(ValueError):
@@ -153,11 +155,11 @@ class NotifyOwnerTests(unittest.TestCase):
 
     def test_host_side_reads_stdin_and_refuses_bad_input_without_a_request(self):
         self.assertEqual(
-            SCRIPT["from_stdin"](json.dumps({**ENV, "CPANEL_SSH_HOST": "x"})),
+            SCRIPT["from_stdin"](json.dumps({**ENV, "CPANEL_SSH_HOST": "x"}).encode()),
             ENV,
         )
         with self.assertRaises(ValueError):
-            SCRIPT["from_stdin"]("[1]")
+            SCRIPT["from_stdin"](b"[1]")
         source = (Path(__file__).resolve().parents[1] / "scripts/notify-owner.py").read_text()
         result = subprocess.run(
             [sys.executable, "-c", source, "--stdin"],

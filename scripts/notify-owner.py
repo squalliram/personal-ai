@@ -148,7 +148,7 @@ def relay(env: dict[str, str], target: tuple[str, str, str], run=subprocess.run)
         "NOTIFY_TITLE": body["title"],
         "NOTIFY_OUTCOME": body["outcome"],
         "NOTIFY_LINK": body.get("link", ""),
-        "COMMAND_CENTRE_URL": env.get("COMMAND_CENTRE_URL", "").strip(),
+        "COMMAND_CENTRE_URL": env.get("COMMAND_CENTRE_URL", "").strip().split("#", 1)[0],
     }
     raw = json.dumps(forwarded)
     if len(raw) > MAX_STDIN:
@@ -166,7 +166,7 @@ def relay(env: dict[str, str], target: tuple[str, str, str], run=subprocess.run)
     return result.returncode
 
 
-def from_stdin(raw: str) -> dict[str, str]:
+def from_stdin(raw: bytes) -> dict[str, str]:
     if len(raw) > MAX_STDIN:
         raise ValueError("stdin is larger than 64 KiB")
     data = json.loads(raw)
@@ -179,7 +179,7 @@ def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     try:
         if argv == ["--stdin"]:
-            env = from_stdin(sys.stdin.read(MAX_STDIN + 1))
+            env = from_stdin(sys.stdin.buffer.read(MAX_STDIN + 1))
         else:
             env = with_event_inputs(dict(os.environ))
             if target := ssh_target(env):
