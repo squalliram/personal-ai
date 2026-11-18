@@ -6,7 +6,7 @@ Jarvis is a native React Native app, not a browser wrapper. It reuses the hosted
 
 Choose **Explore demo** on the sign-in screen to use sample data without network access. For live data, use the Command Centre passphrase. If a hosting security check blocks non-browser requests, the app stops rather than working around the check; live access requires the host to permit authenticated mobile API traffic. Verify access from the target phone before distributing a live release.
 
-The Android preview is an APK. Download it to the device, open it and allow installs from that source if Android prompts. A local preview is not store-signed, so uninstall it before installing a build that uses a different signature. For iPhone, use a signed TestFlight build or an EAS internal build with the phone registered for ad hoc provisioning. An iOS simulator build cannot install on an iPhone.
+The Android preview is an APK. Download it from the repository's GitHub Actions run, open it on the device and allow installs from that source if Android prompts. Each CI preview has its own signing key; uninstall an older preview before installing a new one. For iPhone, use a signed TestFlight build or an EAS internal build with the phone registered for ad hoc provisioning. An iOS simulator build cannot install on an iPhone.
 
 ## Develop and build
 
@@ -30,7 +30,7 @@ npx expo prebuild --platform android --no-install
 (cd android && ./gradlew :app:assembleRelease)
 ```
 
-The APK is under `android/app/build/outputs/apk/release/`. Use the standard preview only for testing, not as a release signing key.
+The APK is under `android/app/build/outputs/apk/release/`. The default local build uses the public template debug key; use that build for demo testing only, not for live sign-in or distribution.
 
 ## How sign-in works
 

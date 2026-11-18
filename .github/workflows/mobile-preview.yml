@@ -30,6 +30,12 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - run: npm ci
       - run: npx expo prebuild --platform android --no-install
+      - name: Generate a unique preview signing key
+        run: |
+          keytool -genkeypair -keystore "$RUNNER_TEMP/jarvis-preview.p12" -storetype PKCS12 \
+            -storepass android -keypass android -alias androiddebugkey -keyalg RSA -keysize 2048 \
+            -validity 3650 -dname "CN=Jarvis CI Preview"
+          install -m 600 "$RUNNER_TEMP/jarvis-preview.p12" android/app/debug.keystore
       - run: ./gradlew --no-daemon :app:assembleRelease
         working-directory: mobile/android
       - uses: actions/upload-artifact@v4
