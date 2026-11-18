@@ -18,7 +18,9 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from instagram_agent import learnings as instagram_learnings
+from instagram_agent import music as instagram_music
 from instagram_agent import publish as instagram_publish
+from instagram_agent import render as instagram_render
 from octopus_energy.mcp_server import RefreshRequiredError, dispatch
 from octopus_energy.refresh import validate_status
 
@@ -551,6 +553,8 @@ def instagram_drafts(settings: Settings, limit: int = 30) -> dict:
         "drafts": [],
         "uploads": [],
         "clips": [],
+        "music": [],
+        "renders": {"clip": False, "photos": False},
         "runs": [],
         "latest_attempt": None,
         "learnings": None,
@@ -577,6 +581,7 @@ def instagram_drafts(settings: Settings, limit: int = 30) -> dict:
             waiting, notes = _uploads(conn)
             clips, clip_notes = _clips(conn)
             notes.update(clip_notes)
+            tracks = instagram_music.tracks(conn)
             # Ticks every 15 minutes mostly skip, so find the latest real attempt separately.
             attempt = conn.execute(
                 "SELECT run_on,started_at,outcome,drafts,error FROM daily_runs WHERE outcome!='skipped' "
@@ -613,7 +618,8 @@ def instagram_drafts(settings: Settings, limit: int = 30) -> dict:
                 "posts_at": _posts_at(row),
                 "kind": draft_kind,
                 "reel": _reel(reel) if draft_kind == "reel" else None,
-                "will_post": instagram_publish.will_post(row["status"], row["review_score"], draft_kind),
+                "will_post": instagram_publish.will_post(row["status"], row["review_score"], draft_kind)
+                and instagram_publish.rendered(row),
                 "publish_error": publishing["errors"].get(row["draft_id"]),
                 "publishing": row["draft_id"] in publishing["started"],
             }
@@ -622,6 +628,8 @@ def instagram_drafts(settings: Settings, limit: int = 30) -> dict:
         draft["note"] = notes.get(draft["draft_id"])
     result["uploads"] = waiting
     result["clips"] = clips
+    result["music"] = tracks
+    result["renders"] = {source: instagram_render.can_render(source) for source in ("clip", "photos")}
     result["auto_publish"] = publishing["on"]
     result["runs"] = [dict(run) for run in runs]
     result["latest_attempt"] = dict(attempt) if attempt else None
@@ -635,6 +643,7 @@ def _reel(reel) -> dict:
     reel = reel if isinstance(reel, dict) else {}
     beats = reel.get("on_screen") if isinstance(reel.get("on_screen"), list) else []
     number = lambda v: v if isinstance(v, (int, float)) and not isinstance(v, bool) else 0  # noqa: E731
+    trim, song = reel.get("trim"), reel.get("music")
     return {
         "hook": str(reel.get("hook", "")),
         "on_screen": [
@@ -644,6 +653,11 @@ def _reel(reel) -> dict:
         ],
         "cover_seconds": number(reel.get("cover_ms")) / 1000,
         "seconds": number(reel.get("seconds")),
+        "source": "photos" if reel.get("source") == "photos" else "clip",
+        "render": reel.get("render") if reel.get("render") in ("pending", "done", "failed") else None,
+        "render_error": str(reel.get("render_error", "")) or None,
+        "trim": {"in": number(trim.get("in")), "out": number(trim.get("out"))} if isinstance(trim, dict) else None,
+        "music": {k: str(song.get(k, "")) for k in ("title", "licence", "mix")} if isinstance(song, dict) else None,
     }
 
 
@@ -677,12 +691,15 @@ def _clips(conn) -> tuple[list[dict], dict[str, str]]:
 def _uploads(conn) -> tuple[list[dict], dict[str, str]]:
     """Photo uploads still waiting, oldest (next to post) first, and the owner's note for each drafted one."""
     try:
-        rows = conn.execute("SELECT upload_id,created_at,note,photos,status,draft_id FROM uploads").fetchall()
+        rows = conn.execute("SELECT * FROM uploads").fetchall()
     except sqlite3.OperationalError:
         return [], {}  # the daily run hasn't added the table yet
     waiting = sorted(
         (
-            {k: row[k] for k in ("upload_id", "created_at", "note", "photos")}
+            {
+                **{k: row[k] for k in ("upload_id", "created_at", "note", "photos")},
+                "reel": bool(row["reel"]) if "reel" in row.keys() else False,
+            }
             for row in rows
             if row["status"] == "waiting"
         ),

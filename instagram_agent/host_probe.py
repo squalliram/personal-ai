@@ -44,6 +44,17 @@ def tool_version(path: str) -> str:
     return first[0][:120] if result.returncode == 0 and first else f"unusable (exit {result.returncode})"
 
 
+def reel_features() -> str:
+    """Whether this host can render reels: the ffmpeg filters and encoders `render.py` uses, and Pillow."""
+    from .render import capabilities
+
+    caps = capabilities()
+    if not caps["ffmpeg"]:
+        return "reel render: no ffmpeg"
+    names = ("zoompan", "drawtext", "loudnorm", "libx264", "aac", "pillow")
+    return "reel render: " + ", ".join(f"{name} {'yes' if caps[name] else 'no'}" for name in names)
+
+
 def _unescape(field: str) -> str:
     """mountinfo writes a space as \\040 (and tab, newline, backslash as octal too)."""
     return re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), field)
@@ -126,6 +137,7 @@ def lines(app: Path) -> list[str]:
     for name in ("ffmpeg", "ffprobe"):
         path = find_tool(name)
         out.append(f"{name}: {path} {tool_version(path)}" if path else f"{name}: not found")
+    out.append(reel_features())
     out.append(f"cpus: {os.cpu_count()} (usable: {len(os.sched_getaffinity(0))})")
     for key, label in RLIMITS.items():
         soft, _hard = resource.getrlimit(getattr(resource, key))
