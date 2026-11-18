@@ -635,13 +635,13 @@ class CommandCentreApp:
             return error
         if not isinstance(body["password"], str):
             return _error(400, "invalid_request")
+        generation = self.passkeys.generation()
+        if self.sessions.get(request.token) is None:
+            return _error(401, "authentication_required")
         # Re-entering the passphrase stops a stolen session cookie from adding a lasting credential.
         reservation, error = self._reserve_attempt(request.client, "passkey_register")
         if error:
             return error
-        generation = self.passkeys.generation()
-        if self.sessions.get(request.token) is None:
-            return _error(401, "authentication_required")
         if not verify_password(body["password"], self.settings.password_hash):
             self.audit.record("passkey_register", "failure", actor="owner", client=request.client)
             return _error(401, "invalid_credentials")

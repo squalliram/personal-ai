@@ -2,9 +2,11 @@ import base64
 import hashlib
 import json
 import os
+import sqlite3
 import struct
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
@@ -295,6 +297,8 @@ class PasskeyApiTests(unittest.TestCase):
             response = self.post(self.owner, "/api/v1/passkeys/register/options", {"password": PASSWORD})
         self.assertEqual(response.status, 409)
         self.assertEqual(recovery.count(), 0)
+        with closing(sqlite3.connect(recovery.path)) as conn:
+            self.assertIsNone(conn.execute("SELECT 1 FROM passkey_challenges WHERE purpose LIKE 'register:%'").fetchone())
 
     def test_recovery_before_options_handler_rejects_cached_session(self):
         generation = self.app.passkeys.generation
@@ -304,9 +308,13 @@ class PasskeyApiTests(unittest.TestCase):
             self.app.passkeys.remove_all()
             return generation()
 
-        with patch.object(self.app.passkeys, "generation", side_effect=reset_then_read):
+        with (
+            patch.object(self.app.passkeys, "generation", side_effect=reset_then_read),
+            patch.object(self.app, "_reserve_attempt", wraps=self.app._reserve_attempt) as reserve_attempt,
+        ):
             response = self.post(self.owner, "/api/v1/passkeys/register/options", {"password": PASSWORD})
         self.assertEqual(response.status, 401)
+        reserve_attempt.assert_not_called()
 
     def test_the_passkey_limit_holds(self):
         store = self.app.passkeys
