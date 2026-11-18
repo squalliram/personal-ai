@@ -5,6 +5,7 @@ import fcntl
 import json
 import math
 import os
+import re
 import shlex
 import shutil
 import signal
@@ -159,6 +160,10 @@ def validate_dashboard_data(data):
             if (
                 any((first.hour, first.minute, first.second, first.microsecond))
                 or any((last.hour, last.minute, last.second, last.microsecond))
+                or any(
+                    re.search(r"[.,]\d*[1-9]", value[19:])
+                    for value in (day["hours"][0]["start"], day["hours"][-1]["end"])
+                )
                 or last.date() != day_date + timedelta(days=1)
             ):
                 raise ValueError("Incomplete dashboard latest day")

@@ -133,6 +133,17 @@ class LatestDayTests(unittest.TestCase):
             with self.subTest(shift=shift), self.assertRaises(ValueError):
                 validate_dashboard_data(data)
 
+    def test_publisher_rejects_nonzero_submicrosecond_midnight_fractions(self):
+        self.fill("2026-11-01")
+        valid = self.data()
+        for index, field in ((0, "start"), (-1, "end")):
+            for fraction in ("0000001", "000000000000000001"):
+                data = copy.deepcopy(valid)
+                hour = data["latest_day"]["electricity"]["hours"][index]
+                hour[field] = hour[field].replace("+00:00", f".{fraction}Z")
+                with self.subTest(index=index, field=field, fraction=fraction), self.assertRaises(ValueError):
+                    validate_dashboard_data(data)
+
     def test_latest_complete_day_skips_gap_and_current_or_future_days(self):
         self.fill("2026-11-01")
         self.fill("2026-11-03", last=20)
