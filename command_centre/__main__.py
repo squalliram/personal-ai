@@ -42,8 +42,8 @@ def main(argv: list[str] | None = None) -> int:
         payload = {}
         if args.action == "set":
             base = os.environ.get("COMMAND_CENTRE_URL", "").rstrip("/")
-            if not base.startswith("https://") or not settings.telegram_webhook_secret:
-                print("Set COMMAND_CENTRE_URL (HTTPS) and COMMAND_CENTRE_TELEGRAM_WEBHOOK_SECRET.", file=sys.stderr)
+            if not base.startswith("https://") or not settings.telegram_webhook_secret or not settings.telegram_chat_id:
+                print("Configure Telegram owner chat, webhook secret and COMMAND_CENTRE_URL (HTTPS).", file=sys.stderr)
                 return 2
             payload = {
                 "url": base + "/api/v1/telegram/webhook",

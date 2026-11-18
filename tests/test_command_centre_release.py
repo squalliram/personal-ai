@@ -11,6 +11,7 @@ import tarfile
 import tempfile
 import textwrap
 import unittest
+from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import patch
 
@@ -94,6 +95,8 @@ class ReleaseTests(unittest.TestCase):
         cls.archive = output.getvalue()
 
     def setUp(self):
+        self.stack = ExitStack()
+        self.addCleanup(self.stack.close)
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.home = Path(self.directory.name).resolve()
@@ -108,11 +111,13 @@ class ReleaseTests(unittest.TestCase):
         self.commands = []
         self.original_umask = os.umask(0o077)
         self.addCleanup(os.umask, self.original_umask)
-        self.run = self.enterContext(patch.object(HOST, "run", side_effect=self.command))
-        self.selector = self.enterContext(patch.object(HOST, "selector", side_effect=self.selection))
-        self.verify = self.enterContext(patch.object(HOST, "verify", side_effect=self.verification))
-        self.vendor = self.enterContext(patch.object(HOST, "vendor", return_value=True))
-        self.telegram = self.enterContext(patch.object(HOST, "register_telegram_webhook", return_value="registered"))
+        self.run = self.stack.enter_context(patch.object(HOST, "run", side_effect=self.command))
+        self.selector = self.stack.enter_context(patch.object(HOST, "selector", side_effect=self.selection))
+        self.verify = self.stack.enter_context(patch.object(HOST, "verify", side_effect=self.verification))
+        self.vendor = self.stack.enter_context(patch.object(HOST, "vendor", return_value=True))
+        self.telegram = self.stack.enter_context(
+            patch.object(HOST, "register_telegram_webhook", return_value="registered")
+        )
         self.registered = False
 
     def locked(self):
@@ -587,6 +592,8 @@ class SmokeTests(unittest.TestCase):
 
 class VendorTests(unittest.TestCase):
     def setUp(self):
+        self.stack = ExitStack()
+        self.addCleanup(self.stack.close)
         import base64
         import hashlib
         import io
@@ -609,7 +616,7 @@ class VendorTests(unittest.TestCase):
         hashes = " ".join(f"--hash=sha256:{hashlib.sha256(w).hexdigest()}" for w in (self.good, self.evil))
         (self.release / "deploy/command-centre/requirements.txt").write_text(f"fakepkg==1 {hashes}\n")
         self.encode = lambda data: base64.b64encode(data).decode()
-        self.pip = self.enterContext(patch.object(HOST.subprocess, "run", side_effect=OSError("no pip")))
+        self.pip = self.stack.enter_context(patch.object(HOST.subprocess, "run", side_effect=OSError("no pip")))
 
     def test_pinned_wheels_are_unpacked_without_pip(self):
         self.assertTrue(HOST.vendor(self.release, {"fakepkg-1-py3-none-any.whl": self.encode(self.good)}))

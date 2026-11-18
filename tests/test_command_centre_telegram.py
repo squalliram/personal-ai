@@ -4,6 +4,8 @@ import io
 import json
 import tempfile
 import unittest
+from contextlib import ExitStack
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -17,6 +19,8 @@ from instagram_agent.openai_client import AIError
 
 class TelegramTests(unittest.TestCase):
     def setUp(self):
+        self.stack = ExitStack()
+        self.addCleanup(self.stack.close)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.settings = make_settings(
@@ -29,9 +33,11 @@ class TelegramTests(unittest.TestCase):
         self.client = Client(self.app)
         self.provider = Mock(text_model="test-model")
         self.provider.chat_text.return_value = "Your data looks fine."
-        self.send = self.enterContext(patch("notifications.send_telegram"))
-        self.enterContext(patch.object(self.app, "_assistant_providers", return_value=[("fake", self.provider)]))
-        self.context = self.enterContext(patch("command_centre.assistant.build_context", return_value="owner context"))
+        self.send = self.stack.enter_context(patch("notifications.send_telegram"))
+        self.stack.enter_context(patch.object(self.app, "_assistant_providers", return_value=[("fake", self.provider)]))
+        self.context = self.stack.enter_context(
+            patch("command_centre.assistant.build_context", return_value="owner context")
+        )
 
     def update(self, **message):
         return {
@@ -110,11 +116,37 @@ class TelegramTests(unittest.TestCase):
         self.provider.chat_text.assert_not_called()
 
     def test_not_configured(self):
-        from dataclasses import replace
-
         self.client = Client(make_app(replace(self.settings, telegram_webhook_secret=None)))
         self.assertEqual(self.post(self.update()).status, 503)
         self.send.assert_not_called()
+
+    def test_short_reply_with_large_quoted_message_is_answered(self):
+        body = self.update(reply_to_message={"text": "quoted message " * 500})
+        self.assertGreater(len(json.dumps(body).encode()), 4096)
+        self.assertEqual(self.post(body).status, 200)
+        self.send.assert_called_once_with("test-token", "123", "Your data looks fine.")
+        self.assertNotIn("quoted message", self.provider.chat_text.call_args.args[1])
+
+    def test_update_over_telegram_body_limit_is_ignored(self):
+        body = self.update(reply_to_message={"text": "x" * (64 * 1024)})
+        self.assertEqual(self.post(body).status, 200)
+        self.send.assert_not_called()
+        self.provider.chat_text.assert_not_called()
+
+    def test_cli_set_requires_owner_chat_but_delete_and_info_do_not(self):
+        settings = replace(self.settings, telegram_chat_id=None)
+        with (
+            patch("command_centre.__main__.load_settings", return_value=settings),
+            patch("command_centre.__main__.build_opener") as factory,
+            patch.dict("os.environ", {"COMMAND_CENTRE_URL": "https://example.test/"}),
+            patch("sys.stderr", new_callable=io.StringIO),
+            patch("sys.stdout", new_callable=io.StringIO),
+        ):
+            self.assertEqual(main(["telegram-webhook", "set"]), 2)
+            factory.assert_not_called()
+            factory.return_value.open.return_value.__enter__.return_value.read.return_value = b'{"ok":true,"result":{}}'
+            self.assertEqual(main(["telegram-webhook", "delete"]), 0)
+            self.assertEqual(main(["telegram-webhook", "info"]), 0)
 
     def test_secret_validation(self):
         for secret in ("short", "x" * 257, "x" * 16 + "!"):

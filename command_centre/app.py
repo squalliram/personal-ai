@@ -59,6 +59,7 @@ STATIC_FILES = {
     "/static/app.css": ("app.css", "text/css; charset=utf-8"),
 }
 MAX_BODY_BYTES = 4096
+MAX_TELEGRAM_BODY_BYTES = 64 * 1024
 # Overview, integrations, automations, modules and the assistant share one snapshot. It is reused until a
 # source file changes or this many seconds pass, so time-based health (stale, overdue) stays current.
 COLLECT_TTL_SECONDS = 30
@@ -922,7 +923,7 @@ class CommandCentreApp:
         if not hmac.compare_digest(supplied.encode(), settings.telegram_webhook_secret.encode()):
             audit("unauthorized")
             return _error(401, "authentication_required")
-        body, error = _json_body(request.environ)
+        body, error = _json_body(request.environ, limit=MAX_TELEGRAM_BODY_BYTES)
         message = body.get("message") if isinstance(body, dict) else None
         message = message if isinstance(message, dict) else {}
         chat, sender = message.get("chat"), message.get("from")
