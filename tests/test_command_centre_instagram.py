@@ -74,6 +74,8 @@ class InstagramQueueTests(unittest.TestCase):
     def test_token_lifecycle_states_are_safe_and_visible(self):
         client = self.client(Permission.READ)
         now = datetime.now(timezone.utc)
+        stamp = now.isoformat(timespec="seconds")
+        fingerprint = "a" * 64
         conn = storage.connect(self.db)
         try:
             for days, expected in ((30, "valid"), (7, "expiring"), (-1, "expired")):
@@ -82,7 +84,8 @@ class InstagramQueueTests(unittest.TestCase):
                         storage.record_token_success(
                             conn,
                             (now + timedelta(days=days)).isoformat(timespec="seconds"),
-                            now.isoformat(timespec="seconds"),
+                            stamp,
+                            fingerprint=fingerprint,
                         )
                     token = client.request("GET", "/api/v1/instagram/drafts").json()["token"]
                     self.assertEqual(token["state"], expected)
@@ -90,15 +93,18 @@ class InstagramQueueTests(unittest.TestCase):
                     self.assertIsNotNone(token["last_refreshed_at"])
             with conn:
                 storage.record_token_success(
-                    conn, (now + timedelta(days=30)).isoformat(timespec="seconds"), now.isoformat(timespec="seconds")
+                    conn, (now + timedelta(days=30)).isoformat(timespec="seconds"), stamp, fingerprint=fingerprint
                 )
-                storage.record_token_failure(conn, now.isoformat(timespec="seconds"), "Graph API request failed")
+                storage.record_token_failure(conn, stamp, "Graph API request failed", fingerprint=fingerprint)
             token = client.request("GET", "/api/v1/instagram/drafts").json()["token"]
             self.assertEqual(token["state"], "refresh_failed")
             self.assertEqual(token["last_error"], "Graph API request failed")
+            self.assertIsNotNone(token["expires_at"])
+            self.assertNotIn("token_fingerprint", token)
+            self.assertNotIn(fingerprint, json.dumps(token))
             with conn:
                 storage.record_token_success(
-                    conn, (now - timedelta(days=1)).isoformat(timespec="seconds"), now.isoformat(timespec="seconds")
+                    conn, (now - timedelta(days=1)).isoformat(timespec="seconds"), stamp, fingerprint=fingerprint
                 )
             token = client.request("GET", "/api/v1/instagram/drafts").json()["token"]
             self.assertEqual(token["state"], "expired")

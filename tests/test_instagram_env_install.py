@@ -71,6 +71,18 @@ class EnvInstallTests(unittest.TestCase):
         )
         self.assertEqual(self.path.read_text(), "INSTAGRAM_ACCESS_TOKEN=bootstrap\nINSTAGRAM_AUTO_PUBLISH=0\n")
 
+    def test_preserve_uses_the_effective_non_empty_assignment(self):
+        key = "INSTAGRAM_ACCESS_TOKEN"
+        for original in ('""', "   ", '"   "', 'IG_FIRST\nINSTAGRAM_ACCESS_TOKEN=""'):
+            with self.subTest(original=original):
+                self.path.write_text(f"{key}={original}\n")
+                self.assertTrue(env_install.upsert(self.path, {key: "IG_BOOTSTRAP"}, preserve={key}))
+                self.assertEqual(self.path.read_text(), f"{key}=IG_BOOTSTRAP\n")
+        original = f'{key}=\n{key} = "IG_CURRENT"\n'
+        self.path.write_text(original)
+        self.assertFalse(env_install.upsert(self.path, {key: "IG_BOOTSTRAP"}, preserve={key}))
+        self.assertEqual(self.path.read_text(), original)
+
     def test_write_lock_is_private_and_blocks_a_competing_writer(self):
         self.path.write_text("CLOUDFLARE_API_TOKEN=old\n")
         lock_path = self.path.with_name(self.path.name + ".lock")

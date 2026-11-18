@@ -22,12 +22,15 @@ from .storage import (
 
 
 def load_env(path: Path) -> dict[str, str]:
-    values = {}
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        return parse_env(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
-        return values
-    for line in lines:
+        return {}
+
+
+def parse_env(text: str) -> dict[str, str]:
+    values = {}
+    for line in text.splitlines():
         if "=" in line and not line.lstrip().startswith("#"):
             key, value = line.split("=", 1)
             values[key.strip()] = value.strip().strip("\"'")

@@ -348,7 +348,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "report":
             print(json.dumps(report(conn), indent=2, ensure_ascii=False))
             return 0
-        env = {**load_env(Path(args.env_file)), **os.environ}
+        env_file = Path(args.env_file)
         if args.command == "daily":
             args.media.mkdir(mode=0o700, parents=True, exist_ok=True)
             with open(args.media / ".daily.lock", "w") as lock:
@@ -356,13 +356,17 @@ def main(argv: list[str] | None = None) -> int:
                     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 except BlockingIOError:
                     return 0  # The previous tick is still drafting.
-                refreshed = token_refresh.tick(conn, env, Path(args.env_file), _now())
+                env = {**load_env(env_file), **os.environ}
+                refreshed = token_refresh.tick(conn, env, env_file, _now())
+                if refreshed in ("refreshed", "failed", "metadata_failed", "token_changed"):
+                    env = {**load_env(env_file), **os.environ}
                 outcome = daily(conn, env, args.media)
                 render.render_due(conn, args.media, _notify_render(env, _now()))
                 published = publish.tick(conn, env, args.media, _now())
                 reports = _post_reports(conn, env)
             print(outcome, refreshed, published, reports, sep="; ")
             return 0 if outcome in ("ok", "partial", "skipped", "gave_up") else 1
+        env = {**load_env(env_file), **os.environ}
         token, user_id = env.get("INSTAGRAM_ACCESS_TOKEN", ""), env.get("INSTAGRAM_USER_ID", "")
         if not token or not user_id:
             print("Set INSTAGRAM_ACCESS_TOKEN and INSTAGRAM_USER_ID.", file=sys.stderr)

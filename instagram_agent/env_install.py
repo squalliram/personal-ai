@@ -15,6 +15,8 @@ import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 
+from octopus_energy.cli import parse_env
+
 ALLOWED = (
     "CLOUDFLARE_ACCOUNT_ID",
     "CLOUDFLARE_API_TOKEN",
@@ -34,6 +36,10 @@ KEY_VALUES = {
     "TELEGRAM_CHAT_ID": re.compile(r"-?[0-9]{1,20}"),
     "COMMAND_CENTRE_URL": re.compile(r"https://[A-Za-z0-9._~/-]+"),
 }
+
+
+class EnvChangedError(ValueError):
+    """The file no longer matches the values expected by the caller."""
 
 
 def parse(text: str) -> dict[str, str]:
@@ -63,27 +69,33 @@ def _write_lock(path: Path):
             fcntl.flock(handle, fcntl.LOCK_UN)
 
 
-def upsert(path: Path, values: dict[str, str], *, preserve: set[str] | None = None) -> bool:
+def upsert(
+    path: Path,
+    values: dict[str, str],
+    *,
+    preserve: set[str] | None = None,
+    if_current: dict[str, str] | None = None,
+) -> bool:
     if not values:
         return False
     preserve = preserve or set()
     with _write_lock(path):
         if path.is_symlink():
             raise ValueError("refusing a symlinked env file")
-        lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
-        existing = {
-            line.split("=", 1)[0].strip()
-            for line in lines
-            if "=" in line and not line.lstrip().startswith("#") and line.split("=", 1)[1]
+        original = path.read_text(encoding="utf-8") if path.exists() else ""
+        existing = parse_env(original) if preserve or if_current else {}
+        if if_current and any(existing.get(key) != value for key, value in if_current.items()):
+            raise EnvChangedError("env file changed")
+        values = {
+            key: value for key, value in values.items() if key not in preserve or not existing.get(key, "").strip()
         }
-        values = {key: value for key, value in values.items() if key not in preserve or key not in existing}
         if not values:
             if path.exists():
                 os.chmod(path, 0o600)
             return False
         remaining = dict(values)
         out = []
-        for line in lines:
+        for line in original.splitlines():
             key = line.split("=", 1)[0].strip()
             if "=" in line and not line.lstrip().startswith("#") and key in values:
                 if key in remaining:
@@ -92,7 +104,7 @@ def upsert(path: Path, values: dict[str, str], *, preserve: set[str] | None = No
                 out.append(line)
         out.extend(f"{key}={value}" for key, value in remaining.items())
         content = "\n".join(out) + "\n"
-        if path.exists() and path.read_text(encoding="utf-8") == content:
+        if original == content:
             os.chmod(path, 0o600)
             return False
         fd, tmp = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)

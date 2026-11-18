@@ -1,3 +1,4 @@
+import fcntl
 import io
 import sqlite3
 import stat
@@ -5,15 +6,18 @@ import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timedelta, timezone
+from hashlib import sha256
 from pathlib import Path
 from unittest.mock import patch
 
-from instagram_agent import cli, storage, token_refresh
+from instagram_agent import cli, env_install, storage, token_refresh
 from instagram_agent.graph import GRAPH_HOST, INSTAGRAM_HOST, GraphAPIError, GraphClient
 
 NOW = datetime(2026, 11, 15, 12, 0, tzinfo=timezone.utc)
 OLD_TOKEN = "IG_TEST_OLD"
 NEW_TOKEN = "IG_TEST_NEW"
+ROTATED_TOKEN = "IG_TEST_ROTATED"
+TOKEN_KEY = "INSTAGRAM_ACCESS_TOKEN"
 
 
 class FakeRefresh:
@@ -78,6 +82,9 @@ class TokenRefreshTests(unittest.TestCase):
         self.assertEqual(state["last_refreshed_at"], NOW.isoformat(timespec="seconds"))
         self.assertEqual(state["last_outcome"], "refreshed")
         self.assertIsNone(state["last_error"])
+        self.assertEqual(state["token_fingerprint"], sha256(NEW_TOKEN.encode()).hexdigest())
+        self.assertNotIn(OLD_TOKEN, repr(state))
+        self.assertNotIn(NEW_TOKEN, repr(state))
         self.assertNotIn(OLD_TOKEN.encode(), self.db.read_bytes())
         self.assertNotIn(NEW_TOKEN.encode(), self.db.read_bytes())
 
@@ -87,6 +94,51 @@ class TokenRefreshTests(unittest.TestCase):
         outcome = token_refresh.tick(self.conn, self.env, self.env_file, NOW, environ={}, client=client)
         self.assertEqual(outcome, "not_due")
         self.assertEqual(client.calls, 0)
+
+    def test_replacement_ignores_the_previous_tokens_expiry_and_backoff(self):
+        self.assertEqual(self.tick(self.response(expires_in=31 * 24 * 60 * 60)), "refreshed")
+
+        env_install.upsert(self.env_file, {TOKEN_KEY: ROTATED_TOKEN})
+        self.env[TOKEN_KEY] = ROTATED_TOKEN
+        error = GraphAPIError("Graph API request failed")
+        self.assertEqual(self.tick(error), "failed")
+        state = storage.token_state(self.conn)
+        self.assertIsNone(state["expires_at"])
+        self.assertIsNone(state["last_refreshed_at"])
+        self.assertEqual(self.tick(AssertionError("unexpected retry")), "not_due")
+
+        env_install.upsert(self.env_file, {TOKEN_KEY: OLD_TOKEN})
+        self.env[TOKEN_KEY] = OLD_TOKEN
+        self.assertEqual(self.tick(self.response()), "refreshed")
+
+    def test_manual_rotation_during_refresh_wins_and_leaves_no_stale_schedule(self):
+        def rotate():
+            env_install.upsert(self.env_file, {TOKEN_KEY: ROTATED_TOKEN})
+            return self.response()
+
+        with patch.object(FakeRefresh, "refresh_access_token", side_effect=rotate):
+            self.assertEqual(self.tick(None), "token_changed")
+        self.assertIn(f"{TOKEN_KEY}={ROTATED_TOKEN}\n", self.env_file.read_text())
+        state = storage.token_state(self.conn)
+        self.assertIsNone(state["token_fingerprint"])
+        self.assertIsNone(state["expires_at"])
+        self.assertIsNone(state["last_attempt_at"])
+        self.env[TOKEN_KEY] = ROTATED_TOKEN
+        self.assertEqual(self.tick(self.response()), "refreshed")
+
+    def test_existing_token_state_table_is_upgraded_and_rescheduled(self):
+        with sqlite3.connect(self.db) as conn:
+            conn.execute("ALTER TABLE token_state DROP COLUMN token_fingerprint")
+            conn.execute(
+                "INSERT INTO token_state(id,expires_at,last_outcome) VALUES(1,?,'refreshed')",
+                ((NOW + timedelta(days=60)).isoformat(),),
+            )
+        with storage.connect(self.db) as conn:
+            self.assertIsNone(storage.token_state(conn)["token_fingerprint"])
+            self.assertEqual(
+                token_refresh.tick(conn, self.env, self.env_file, NOW, environ={}, client=FakeRefresh(self.response())),
+                "refreshed",
+            )
 
     def test_schedule_uses_thirty_day_margin_and_daily_failure_backoff(self):
         self.assertTrue(token_refresh.should_refresh({"expires_at": (NOW + timedelta(days=30)).isoformat()}, NOW))
@@ -124,6 +176,8 @@ class TokenRefreshTests(unittest.TestCase):
             self.response(token_type="other"),
             self.response(access_token=""),
             self.response(access_token="not safe"),
+            self.response(access_token=NEW_TOKEN + "\n"),
+            self.response(access_token=NEW_TOKEN + "\nINSTAGRAM_USER_ID=456"),
             self.response(expires_in=True),
             self.response(expires_in=0),
             self.response(expires_in=token_refresh.MAX_EXPIRES_IN + 1),
@@ -197,19 +251,63 @@ class DailyRefreshIntegrationTests(unittest.TestCase):
                 "--media",
                 str(root / "media"),
             ]
+
+            def refresh(*args):
+                with (root / "media" / ".daily.lock").open("r+") as lock:
+                    with self.assertRaises(BlockingIOError):
+                        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                events.append("refresh")
+                return "not_due"
+
             with (
-                patch.object(
-                    cli.token_refresh,
-                    "tick",
-                    side_effect=lambda *a: events.append("refresh") or "not_due",
-                ),
+                patch.object(cli.token_refresh, "tick", side_effect=refresh),
                 patch.object(cli, "daily", side_effect=lambda *a: events.append("draft") or "skipped"),
+                patch.object(cli.render, "render_due"),
                 patch.object(cli.publish, "tick", side_effect=lambda *a: events.append("publish") or "publish_off"),
+                patch.object(cli, "_post_reports", side_effect=lambda *a: events.append("reports") or "reports_off"),
                 redirect_stdout(io.StringIO()) as output,
             ):
                 self.assertEqual(cli.main(args), 0)
-        self.assertEqual(events, ["refresh", "draft", "publish"])
-        self.assertEqual(output.getvalue().strip(), "skipped; not_due; publish_off")
+        self.assertEqual(events, ["refresh", "draft", "publish", "reports"])
+        self.assertEqual(output.getvalue().strip(), "skipped; not_due; publish_off; reports_off")
+
+    def test_daily_reloads_config_after_concurrent_rotation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            env_file = root / ".env"
+            env_file.write_text(f"{TOKEN_KEY}={OLD_TOKEN}\nINSTAGRAM_USER_ID=123\nINSTAGRAM_AUTO_PUBLISH=1\n")
+
+            def refresh():
+                env_install.upsert(env_file, {TOKEN_KEY: ROTATED_TOKEN, "INSTAGRAM_AUTO_PUBLISH": "0"})
+                return {"access_token": NEW_TOKEN, "token_type": "bearer", "expires_in": 5184000}
+
+            with (
+                patch.dict(cli.os.environ, {}, clear=True),
+                patch.object(GraphClient, "refresh_access_token", side_effect=refresh),
+                patch.object(cli, "daily", return_value="skipped") as draft,
+                patch.object(cli.render, "render_due"),
+                patch.object(cli.publish, "tick", return_value="publish_off") as publish,
+                patch.object(cli, "_post_reports", return_value="reports_off") as reports,
+                redirect_stdout(io.StringIO()),
+            ):
+                self.assertEqual(
+                    cli.main(
+                        [
+                            "--env-file",
+                            str(env_file),
+                            "--database",
+                            str(root / "db"),
+                            "daily",
+                            "--media",
+                            str(root / "media"),
+                        ]
+                    ),
+                    0,
+                )
+            for stage in (draft, publish, reports):
+                env = stage.call_args.args[1]
+                self.assertEqual(env[TOKEN_KEY], ROTATED_TOKEN)
+                self.assertEqual(env["INSTAGRAM_AUTO_PUBLISH"], "0")
 
 
 if __name__ == "__main__":

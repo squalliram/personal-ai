@@ -101,6 +101,7 @@ CREATE TABLE IF NOT EXISTS publisher_state (
 );
 CREATE TABLE IF NOT EXISTS token_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
+    token_fingerprint TEXT,
     expires_at TEXT,
     last_refreshed_at TEXT,
     last_attempt_at TEXT,
