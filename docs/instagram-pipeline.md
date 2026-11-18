@@ -138,7 +138,7 @@ Use the read-only preflight before enabling the first automatic photo or carouse
 python3 -m instagram_agent preflight --draft DRAFT_ID
 ```
 
-It checks the configured token and numeric user ID, then makes one official API `GET` for the account's `id,username` and requires @instafoodielove. It also checks the selected draft's approval/review eligibility, publish window, caption length and JPEG slides, the HTTPS public-media configuration, and that no other non-stale draft is eligible. The result is JSON with one `ok` value and a check list; no token, request URL or response body is included. It never calls a Graph `POST`, creates a public file, changes a setting or publishes. A successful account read does not prove content-publish permission; the normal publisher remains the only write path and performs the actual random-slide URL checks before creating containers.
+It checks the configured token and numeric user ID, then makes one official API `GET` for the account's `id,username` and requires @instafoodielove. It also checks the selected draft's approval/review eligibility, publish window, caption length and JPEG images, the HTTPS public-media configuration, and that no other draft could still become due, including reels that can be rescheduled after rendering. The result is JSON with one `ok` value and a check list; no token, request URL or response body is included. It never calls a Graph `POST`, creates a public file, changes a setting or publishes. A successful account read does not prove content-publish permission; the normal publisher remains the only write path and performs the actual random-slide URL checks before creating containers.
 
 For the controlled first post:
 
