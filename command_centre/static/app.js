@@ -1729,7 +1729,13 @@
     box.checked = draft.reel.hold;
     const definite = (r) => r.ok || [400, 401, 404, 409].includes(r.status);
     // A request that hangs counts as unanswered, so the retries and the unknown-state warning still happen.
-    const deadline = () => (typeof AbortSignal !== "undefined" && AbortSignal.timeout ? AbortSignal.timeout(15000) : undefined);
+    const deadline = () => {
+      if (typeof AbortSignal !== "undefined" && AbortSignal.timeout) return AbortSignal.timeout(15000);
+      if (typeof AbortController === "undefined") return undefined;
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(), 15000);
+      return controller.signal;
+    };
     async function send(body, token = `${Date.now()}-${Math.random()}`) {
       box.disabled = true;
       // Saved before sending, so a reload while this is in flight resends it rather than trusting the old state.
