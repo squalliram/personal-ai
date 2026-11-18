@@ -1451,6 +1451,8 @@ class CommandCentreApp:
         if outcome == "not_pending":
             self.audit.record("instagram_hold", "not_pending", actor="owner", draft=draft_id)
             return _error(409, "already_decided")
+        if outcome == "unchanged":
+            return 200, {"draft_id": draft_id, "hold": body["hold"]}, []
         with self._collect_lock:
             self._collected = None
         state = "held" if body["hold"] else "released"
