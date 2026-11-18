@@ -1,6 +1,7 @@
 import http.client
 import json
 import os
+import secrets
 import shutil
 import subprocess
 import sys
@@ -8,7 +9,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from command_centre_fixtures import PASSWORD, PASSWORD_HASH, ROOT
+from command_centre_fixtures import PASSWORD, ROOT
+
+from command_centre.config import load_settings
+from command_centre.security import hash_password
 
 
 class ServerSmokeTests(unittest.TestCase):
@@ -16,16 +20,55 @@ class ServerSmokeTests(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         root = Path(self.directory.name)
+        self.password = secrets.token_urlsafe(32)
         self.env = {
             **os.environ,
-            "COMMAND_CENTRE_PASSWORD_HASH": PASSWORD_HASH,
+            "COMMAND_CENTRE_PASSWORD_HASH": hash_password(self.password),
             "COMMAND_CENTRE_ENERGY_DB": str(root / "energy.sqlite3"),
             "COMMAND_CENTRE_BRIEFING_DB": str(root / "briefing.sqlite3"),
             "COMMAND_CENTRE_BRIEFING_REPORTS": str(root / "daily"),
             "COMMAND_CENTRE_ENERGY_STATUS": str(root / "status.json"),
             "COMMAND_CENTRE_AUDIT_DB": str(root / "audit.sqlite3"),
+            "COMMAND_CENTRE_PASSKEYS_DB": str(root / "passkeys.sqlite3"),
+            "COMMAND_CENTRE_SESSIONS_DB": str(root / "sessions.sqlite3"),
+            "COMMAND_CENTRE_NOTIFICATIONS_DB": str(root / "notifications.sqlite3"),
+            "COMMAND_CENTRE_INSTAGRAM_DB": str(root / "instagram.sqlite3"),
+            "COMMAND_CENTRE_INSTAGRAM_MEDIA": str(root / "media"),
+            "COMMAND_CENTRE_ENERGY_REFRESH_DIR": str(root / "refresh"),
+            # Explicit values also override a developer's .env file.
+            "COMMAND_CENTRE_ALLOWED_HOSTS": "",
+            "COMMAND_CENTRE_PERMISSION": "recommend",
+            "COMMAND_CENTRE_OPENAI_API_KEY": "",
+            "COMMAND_CENTRE_CLOUDFLARE_ACCOUNT_ID": "",
+            "COMMAND_CENTRE_CLOUDFLARE_API_TOKEN": "",
+            "COMMAND_CENTRE_NOTIFY_INGEST_TOKEN": "",
+            "COMMAND_CENTRE_TELEGRAM_BOT_TOKEN": "",
+            "COMMAND_CENTRE_TELEGRAM_CHAT_ID": "",
             "COMMAND_CENTRE_INSPECT_CRONTAB": "0",
         }
+
+    def test_server_settings_isolate_developer_state(self):
+        root = Path(self.directory.name)
+        # Simulate developer configuration pointing every resource outside the test.
+        (root / ".env").write_text(
+            "\n".join(f"{key}=/developer-state/{key}" for key in self.env if key.startswith("COMMAND_CENTRE_")),
+            encoding="utf-8",
+        )
+        settings = load_settings(root=root, environ=self.env)
+        for name, value in vars(settings).items():
+            if isinstance(value, Path) and name != "root":
+                with self.subTest(resource=name):
+                    self.assertTrue(value.is_relative_to(root), value)
+        for name in (
+            "openai_api_key",
+            "cloudflare_account_id",
+            "cloudflare_api_token",
+            "notify_ingest_token",
+            "telegram_bot_token",
+            "telegram_chat_id",
+        ):
+            with self.subTest(integration=name):
+                self.assertIsNone(getattr(settings, name))
 
     def run_cli(self, *args, input_text=None, env=None):
         return subprocess.run(
@@ -71,7 +114,8 @@ class ServerSmokeTests(unittest.TestCase):
         self.assertNotIn("CPython", response.getheader("Server") or "")
         self.assertEqual(request("GET", "/api/v1/overview")[0].status, 401)
         self.assertEqual(request("GET", "/api/v1/health", headers={"Host": "attacker.example"})[0].status, 421)
-        response, data = request("POST", "/api/v1/session", {"password": PASSWORD})
+        self.assertEqual(request("POST", "/api/v1/session", {"password": PASSWORD})[0].status, 401)
+        response, data = request("POST", "/api/v1/session", {"password": self.password})
         self.assertEqual(response.status, 200)
         cookie = response.getheader("Set-Cookie").split(";")[0]
         csrf = json.loads(data)["csrf_token"]
@@ -86,7 +130,7 @@ class ServerSmokeTests(unittest.TestCase):
         self.assertEqual(request("GET", "/api/v1/overview", headers={"Cookie": cookie})[0].status, 401)
         process.terminate()
         _, stderr = process.communicate(timeout=10)
-        self.assertNotIn(PASSWORD, stderr)
+        self.assertNotIn(self.password, stderr)
         self.assertNotIn(cookie.split("=", 1)[1], stderr)
         self.assertNotIn("Traceback", stderr)
 
