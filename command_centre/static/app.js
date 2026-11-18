@@ -1715,18 +1715,21 @@
 
   // A hold change the server never confirmed: resent on every render until it is, so a delayed copy is fenced.
   const unconfirmedHold = (id) => { try { return JSON.parse(sessionStorage.getItem(`ig-hold:${id}`)); } catch { return null; } };
-  const rememberHold = (id, body) => {
-    try { if (body) sessionStorage.setItem(`ig-hold:${id}`, JSON.stringify(body)); else sessionStorage.removeItem(`ig-hold:${id}`); return true; } catch { return false; }
+  const rememberHold = (id, saved) => {
+    try { sessionStorage.setItem(`ig-hold:${id}`, JSON.stringify(saved)); return true; } catch { return false; }
+  };
+  const forgetHold = (id, token) => { // only the change this request saved, never a newer one
+    try { const saved = unconfirmedHold(id); if (saved && saved.token === token) sessionStorage.removeItem(`ig-hold:${id}`); } catch { /* best effort */ }
   };
 
   function holdToggle(draft, status) {
     const box = el("input", { type: "checkbox", id: `ig-hold-${draft.draft_id}`, "data-hold": String(draft.reel.hold) });
     box.checked = draft.reel.hold;
     const definite = (r) => r.ok || [400, 401, 404, 409].includes(r.status);
-    async function send(body) {
+    async function send(body, token = `${Date.now()}-${Math.random()}`) {
       box.disabled = true;
       // Saved before sending, so a reload while this is in flight resends it rather than trusting the old state.
-      const saved = rememberHold(draft.draft_id, body);
+      const saved = rememberHold(draft.draft_id, { token, body });
       const signIn = signInCount;
       let result = await api("api/v1/instagram/hold", { method: "POST", body });
       // Resending the same versioned hold is harmless, so resend until the server gives a definite answer.
@@ -1745,13 +1748,14 @@
           : "The hold state is unknown: the server didn't answer and this browser can't remember the change. Set it again before relying on it.";
         return;
       }
-      rememberHold(draft.draft_id, null);
+      forgetHold(draft.draft_id, token);
       if (!result.ok) {
         const code = (result.data && result.data.error) || result.status;
         status.textContent = `Could not change the hold. ${DECISION_ERRORS[code] || `(${code})`}`;
         box.indeterminate = false;
         box.checked = draft.reel.hold;
-        box.disabled = false;
+        if (code === "hold_changed") { clearCache(); render(); } // rebuild with the current hold and version
+        else box.disabled = false;
         return;
       }
       clearCache();
@@ -1759,11 +1763,12 @@
     }
     box.addEventListener("change", () => send({ draft_id: draft.draft_id, hold: box.checked, version: draft.reel.hold_version }));
     const pending = unconfirmedHold(draft.draft_id);
-    if (pending && pending.draft_id === draft.draft_id && typeof pending.hold === "boolean") {
+    const body = pending && pending.body;
+    if (body && body.draft_id === draft.draft_id && typeof body.hold === "boolean" && typeof pending.token === "string") {
       box.indeterminate = true;
       queueMicrotask(() => {
         status.textContent = "Confirming an earlier hold change…";
-        send(pending);
+        send(body, pending.token);
       });
     }
     return el("p", {}, box, " ", el("label", { for: box.id }, "Hold for my approval (otherwise it posts automatically if it scores 70 or more)"));
