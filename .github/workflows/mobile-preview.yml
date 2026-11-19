@@ -1,0 +1,48 @@
+name: Jarvis Android preview
+
+on:
+  pull_request:
+    paths:
+      - 'mobile/**'
+      - '.github/workflows/mobile-preview.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  android-preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+      - run: npm ci
+      - run: npx expo prebuild --platform android --no-install
+      - name: Generate a unique preview signing key
+        run: |
+          keytool -genkeypair -keystore "$RUNNER_TEMP/jarvis-preview.p12" -storetype PKCS12 \
+            -storepass android -keypass android -alias androiddebugkey -keyalg RSA -keysize 2048 \
+            -validity 3650 -dname "CN=Jarvis CI Preview"
+          install -m 600 "$RUNNER_TEMP/jarvis-preview.p12" android/app/debug.keystore
+      - run: ./gradlew --no-daemon --init-script ../gradle/preview-repositories.init.gradle :app:assembleRelease
+        working-directory: mobile/android
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jarvis-android-preview
+          path: mobile/android/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
+          retention-days: 7
