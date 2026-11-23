@@ -1,0 +1,48 @@
+name: Owner soup reel and Story once
+
+on:
+  push:
+    branches: [devin/1795457826-soup-reel-story]
+    paths: [.github/workflows/instagram-soup-now.yml]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: instagram-owner-soup-now
+  cancel-in-progress: false
+
+jobs:
+  execute:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Stop tonight's carousel before preparing its replacement
+        env:
+          CPANEL_SSH_HOST: ${{ secrets.CPANEL_SSH_HOST }}
+          CPANEL_SSH_USERNAME: ${{ secrets.CPANEL_SSH_USERNAME }}
+          CPANEL_SSH_PORT: ${{ secrets.CPANEL_SSH_PORT }}
+          CPANEL_SSH_PRIVATE_KEY: ${{ secrets.CPANEL_SSH_PRIVATE_KEY }}
+          CPANEL_SSH_KNOWN_HOSTS: ${{ secrets.CPANEL_SSH_KNOWN_HOSTS }}
+          CPANEL_APP_PATH: ${{ secrets.CPANEL_APP_PATH }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$CPANEL_APP_PATH" =~ ^/[a-zA-Z0-9_./-]+$ ]] || exit 1
+          [[ "${CPANEL_SSH_PORT:-22}" =~ ^[0-9]+$ ]] || exit 1
+          install -m 700 -d ~/.ssh
+          umask 077
+          printf '%s\n' "$CPANEL_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          printf '%s\n' "$CPANEL_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=20 -p "${CPANEL_SSH_PORT:-22}" \
+            "$CPANEL_SSH_USERNAME@$CPANEL_SSH_HOST" \
+            "cd '$CPANEL_APP_PATH' && . ./scripts/find-python.sh && \"\$PYTHON\" -c 'import sys; exec(compile(sys.stdin.read(),\"soup_now\",\"exec\"))'" \
+            < deploy/command-centre/soup_now.py | tee result.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: soup-result
+          path: result.json
+          retention-days: 7
