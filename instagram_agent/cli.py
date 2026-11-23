@@ -292,6 +292,8 @@ def make_drafts(conn, env: dict, media_dir: Path, now: datetime | None = None) -
             if draft is None:
                 raise AIError("the agents wrote no usable reel from your clip")
             stored += drafts.store_clip_draft(conn, draft, clip, media_dir, now) is not None
+        if stored < wanted and not render.can_render("photos"):
+            raise AIError("photo reel rendering unavailable; queued photos preserved")
         upload = uploads.oldest(conn) if stored < wanted else None  # also when the clip was deleted meanwhile
         if upload is not None:
             draft = drafts.generate_from_upload(conn, ai, now, upload, media_dir, rules=rules, voice=voice)

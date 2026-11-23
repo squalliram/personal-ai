@@ -184,6 +184,9 @@ class CliStartupTests(unittest.TestCase):
 
 class DailyTickTests(unittest.TestCase):
     def setUp(self):
+        self.rendering = patch.object(cli.render, "can_render", return_value=True)
+        self.rendering.start()
+        self.addCleanup(self.rendering.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         self.conn = storage.connect(self.root / "instagram.sqlite3")
@@ -208,6 +211,16 @@ class DailyTickTests(unittest.TestCase):
         self.assertEqual(self.tick(MORNING), "ok")
         self.assertEqual(storage.drafts_on(self.conn, "2026-11-12"), 1)
         self.assertEqual(self.tick(MORNING), "skipped")
+
+    def test_without_photo_rendering_no_ai_draft_is_generated_or_stored(self):
+        ai = FakeAI([], [])
+        with patch.object(cli.render, "can_render", return_value=False):
+            self.assertEqual(self.tick(MORNING, ai), "failed")
+        self.assertEqual(ai.calls, [])
+        self.assertEqual(storage.drafts_on(self.conn, "2026-11-12"), 0)
+        self.assertIn(
+            "photo reel rendering unavailable", self.conn.execute("SELECT error FROM daily_runs").fetchone()[0]
+        )
 
     def test_one_draft_a_day_at_the_best_audience_hour(self):
         storage.replace_audience_hours(self.conn, {19: 500, 8: 400, 13: 300}, "now")
@@ -480,6 +493,9 @@ class CronInstallTests(unittest.TestCase):
 
 class DailyNotificationTests(unittest.TestCase):
     def setUp(self):
+        rendering = patch.object(cli.render, "can_render", return_value=True)
+        rendering.start()
+        self.addCleanup(rendering.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)

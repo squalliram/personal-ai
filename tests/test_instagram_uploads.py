@@ -310,6 +310,9 @@ def photo_draft(**overrides):
 class DailyFromUploadTests(Fixture):
     def setUp(self):
         super().setUp()
+        rendering = patch.object(cli.render, "can_render", return_value=True)
+        rendering.start()
+        self.addCleanup(rendering.stop)
         self.notes = self.root / "notifications.sqlite3"
         self.env = {
             "OPENAI_API_KEY": "sk-test-secret",
@@ -363,6 +366,17 @@ class DailyFromUploadTests(Fixture):
         self.assertEqual(json.loads(row["reel"])["source"], "photos")
         self.assertEqual(self.titles(), [f'Your photos ("{NOTE}") are now a reel draft, posting is manual'])
         self.assertEqual(self.tick(PhotoAI([], [])), "skipped")
+
+    def test_unrenderable_photos_stay_queued_without_an_ai_fallback(self):
+        upload_id = self.add_upload()
+        ai = PhotoAI([], [])
+        with patch.object(cli.render, "can_render", return_value=False):
+            self.assertEqual(self.tick(ai), "failed")
+        self.assertTrue(uploads.is_waiting(self.conn, upload_id))
+        self.assertTrue((self.media / "uploads" / upload_id / "photo-1.jpg").is_file())
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM drafts").fetchone()[0], 0)
+        self.assertEqual(ai.calls, [])
+        self.assertIn("queued photos preserved", self.conn.execute("SELECT error FROM daily_runs").fetchone()[0])
 
     def test_no_upload_falls_back_to_the_ai_draft(self):
         ai = PhotoAI([], [[90]], creates=[[raw_draft("a")]])
