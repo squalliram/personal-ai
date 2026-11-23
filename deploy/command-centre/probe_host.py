@@ -7,6 +7,7 @@ import glob
 import json
 import re
 import shutil
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -92,6 +93,64 @@ def app_diagnostics(app):
     return result
 
 
+def instagram_state(checkout):
+    result = {}
+    try:
+        result["daily_lock_mtime"] = (checkout / "data/instagram/drafts/.daily.lock").stat().st_mtime
+    except OSError:
+        result["daily_lock_mtime"] = None
+    try:
+        database = checkout / "data/instagram.sqlite3"
+        conn = sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True)
+        try:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA query_only=ON")
+            conn.execute("BEGIN")
+            queries = {
+                "daily_runs": "SELECT * FROM daily_runs ORDER BY id DESC LIMIT 5",
+                "drafts": "SELECT * FROM drafts WHERE created_on >= '2026-11-21' ORDER BY created_at",
+                "publish_runs": "SELECT draft_id,outcome,error,started_at FROM publish_runs "
+                "WHERE started_at >= '2026-11-21' ORDER BY started_at",
+                "uploads": "SELECT upload_id,created_at,reel,length(note) AS note_length FROM uploads ORDER BY created_at",
+                "clips": "SELECT clip_id,created_at,status FROM clips ORDER BY created_at",
+                "post_reports": "SELECT * FROM post_reports WHERE posted_at >= '2026-11-21' "
+                "OR captured_at >= '2026-11-21' OR notified_at >= '2026-11-21' ORDER BY posted_at,checkpoint",
+                "publisher_state": "SELECT * FROM publisher_state ORDER BY key",
+            }
+            for name, query in queries.items():
+                try:
+                    rows = [dict(row) for row in conn.execute(query)]
+                    if name == "drafts":
+                        selected = []
+                        for row in rows:
+                            draft = {
+                                key: value
+                                for key, value in row.items()
+                                if key in (
+                                    "draft_id", "created_at", "created_on", "kind", "status",
+                                    "review_score", "scheduled_for", "topic", "title",
+                                ) or "error" in key
+                            }
+                            try:
+                                reel = json.loads(row.get("reel") or "{}")
+                                draft["reel"] = {
+                                    key: value for key, value in reel.items()
+                                    if key in ("hold", "hold_version") or key.startswith("render")
+                                }
+                            except (ValueError, AttributeError, TypeError):
+                                draft["reel"] = {"error": "invalid_json"}
+                            selected.append(draft)
+                        rows = selected
+                    result[name] = rows
+                except Exception as exc:
+                    result[name] = {"error": type(exc).__name__}
+        finally:
+            conn.close()
+    except Exception as exc:
+        result["error"] = type(exc).__name__
+    return result
+
+
 def main():
     checkout = Path(sys.argv[1])
     app = checkout.parent / "command-centre-app"
@@ -124,6 +183,7 @@ def main():
         "selector_python312_enabled": None,
         "selector_command_centre_registered": None,
         "app_diagnostics": app_diagnostics(app),
+        "instagram_state": instagram_state(checkout),
     }
     uapi = shutil.which("uapi") or (
         "/usr/local/cpanel/bin/uapi" if Path("/usr/local/cpanel/bin/uapi").is_file() else None
