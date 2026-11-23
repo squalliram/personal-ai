@@ -6,13 +6,12 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-from . import drafts, publish, render, storage
+from . import drafts, publish, render, storage, video
 from .analysis import LONDON
 from .drafts import DRAFT_ID_RE
 from .graph import GraphAPIError
 
 EXPECTED_USERNAME = "instafoodielove"
-JPEG_MAGIC = b"\xff\xd8\xff"
 
 
 def _eligible_drafts(conn, now: datetime) -> list[str]:
@@ -24,6 +23,8 @@ def _eligible_drafts(conn, now: datetime) -> list[str]:
     ).fetchall()
     eligible = []
     for row in rows:
+        if publish.kind(row) != "reel":
+            continue
         try:
             slot = row["scheduled_for"]
             if not publish.rendered(row):
@@ -57,14 +58,14 @@ def _public_error(env: dict) -> str | None:
 
 
 def _media_error(row, media_dir: Path) -> str | None:
-    if publish.kind(row) == "reel":
-        return "Choose a photo or carousel for the controlled first post"
+    if publish.kind(row) != "reel":
+        return "Legacy photo and carousel drafts cannot publish; choose a rendered reel"
     try:
-        slides = json.loads(row["slides"])
+        reel = json.loads(row["reel"] or "{}")
     except (TypeError, ValueError):
-        return "Draft slide data is invalid"
-    if not isinstance(slides, list) or not 1 <= len(slides) <= 20:
-        return "A photo post needs 1-20 images"
+        return "Draft reel data is invalid"
+    if not isinstance(reel, dict) or not publish.rendered(row):
+        return "Reel rendering is not complete"
     caption, hashtags = row["caption"] or "", row["hashtags"] or ""
     caption_length = len(caption) + (2 + len(hashtags) if hashtags else 0)
     if caption_length > drafts.MAX_CAPTION:
@@ -72,13 +73,17 @@ def _media_error(row, media_dir: Path) -> str | None:
     folder = media_dir / row["draft_id"]
     if folder.is_symlink():
         return "Draft media folder is not safe"
-    for number in range(1, len(slides) + 1):
-        path = folder / f"slide-{number}.jpg"
-        if path.is_symlink() or not path.is_file():
-            return f"Slide {number} is missing or is not JPEG"
-        with path.open("rb") as stream:
-            if stream.read(len(JPEG_MAGIC)) != JPEG_MAGIC:
-                return f"Slide {number} is not JPEG"
+    name = reel.get("file")
+    if name not in ("reel.mp4", "reel.mov"):
+        return "Rendered reel video is missing"
+    path = folder / name
+    if path.is_symlink() or not path.is_file():
+        return "Rendered reel video is missing or unsafe"
+    facts, problems = video.check(path)
+    if problems:
+        return "Rendered reel video is invalid"
+    if not isinstance(facts.get("seconds"), (int, float)) or facts["seconds"] > video.MAX_SECONDS:
+        return "Reel video duration must be at most 90 seconds"
     return None
 
 
@@ -157,7 +162,7 @@ def run(conn, env: dict, media_dir: Path, now: datetime, *, draft_id: str, clien
             media_error = _media_error(row, Path(media_dir))
         except OSError:
             media_error = "Draft media could not be read"
-        check("draft_media", media_error is None, media_error or "Caption and all JPEG slides are ready")
+        check("draft_media", media_error is None, media_error or "Caption and rendered reel video are ready")
     public_error = _public_error(env)
     check("public_media", public_error is None, public_error or "HTTPS public media configuration is safe")
 

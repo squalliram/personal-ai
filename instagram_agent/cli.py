@@ -279,8 +279,7 @@ def make_drafts(conn, env: dict, media_dir: Path, now: datetime | None = None) -
     try:
         rules = drafts.load_rules(Path(skills).expanduser() if skills else None)
         voice = _read(env.get("INSTAGRAM_VOICE_FILE", "agents/instagram-voice.md"))
-        # The owner's oldest waiting clip comes first (a reel replaces the day's carousel), then their oldest
-        # photos; the AI carousel only fills what they don't.
+        # Owner clips come first, then owner photos, then AI slide reels.
         clip = clips.oldest(conn)
         while clip is not None and not clips.clip_file(media_dir, clip).is_file():
             clips.delete(conn, media_dir, clip["clip_id"])  # its file was lost; don't let it block every day
@@ -293,12 +292,11 @@ def make_drafts(conn, env: dict, media_dir: Path, now: datetime | None = None) -
             if draft is None:
                 raise AIError("the agents wrote no usable reel from your clip")
             stored += drafts.store_clip_draft(conn, draft, clip, media_dir, now) is not None
+        if stored < wanted and not render.can_render("photos"):
+            raise AIError("photo reel rendering unavailable; queued photos preserved")
         upload = uploads.oldest(conn) if stored < wanted else None  # also when the clip was deleted meanwhile
         if upload is not None:
-            as_reel = bool(upload["reel"]) and render.can_render("photos")
-            draft = drafts.generate_from_upload(
-                conn, ai, now, upload, media_dir, rules=rules, voice=voice, as_reel=as_reel
-            )
+            draft = drafts.generate_from_upload(conn, ai, now, upload, media_dir, rules=rules, voice=voice)
             if draft is None:
                 raise AIError("the agents wrote no usable post from your photos")
             stored += drafts.store_upload_draft(conn, draft, upload, media_dir, now) is not None

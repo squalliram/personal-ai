@@ -418,6 +418,7 @@ class ReelDraftTests(Case):
         with (
             patch.object(cli, "model_client", return_value=ReelAI(REEL)),
             patch.object(drafts, "generate", return_value=[]) as fallback,
+            patch.object(cli.render, "can_render", return_value=True),
         ):
             cli.daily(self.conn, env, self.media, now=NOW)
         fallback.assert_called_once()
@@ -432,6 +433,7 @@ class ReelDraftTests(Case):
             patch.object(drafts, "store_clip_draft", return_value=None),
             patch.object(drafts, "generate_from_upload", return_value={"topic": "t"}) as from_photos,
             patch.object(drafts, "store_upload_draft", return_value="d" * 16),
+            patch.object(cli.render, "can_render", return_value=True),
         ):
             cli.daily(self.conn, env, self.media, now=NOW)
         from_photos.assert_called_once()
@@ -563,7 +565,7 @@ class ReelPublishTests(Case):
         graph = ReelGraph(statuses=("FINISHED",))
         with patch.object(publish, "notify") as told:
             self.assertEqual(self.tick(graph), "published 1, failed 0")
-        self.assertEqual(sum(p.endswith("media_publish") for p, _, _ in graph.posts), 1)
+        self.assertEqual(sum(p.endswith("media_publish") for p, _, _ in graph.posts), 2)
         self.assertEqual(told.call_args.args[1], "ok")
         self.assertIn("is live", told.call_args.args[2])
 
@@ -577,7 +579,8 @@ class ReelPublishTests(Case):
         storage.decide_draft(self.conn, "b" * 16, "approved", MADE.isoformat())
         graph = ReelGraph(statuses=("IN_PROGRESS", "FINISHED"))
         self.assertEqual(self.tick(graph), "published 1, failed 0")
-        (path, params, retry), (publish_path, _, publish_retry) = graph.posts
+        (path, params, retry), (publish_path, _, publish_retry) = graph.posts[:2]
+        self.assertEqual(graph.posts[2][1]["media_type"], "STORIES")
         self.assertEqual(params["media_type"], "REELS")
         self.assertEqual(params["share_to_feed"], "true")
         self.assertEqual(params["thumb_offset"], "2500")
@@ -674,6 +677,39 @@ class ReelCommandCentreTests(Case):
         anonymous = Client(make_app(make_settings(self.root, instagram_db=self.db, instagram_media=self.media)))
         self.assertEqual(
             anonymous.request("POST", "/api/v1/instagram/clips", body={"note": NOTE, "size": 10}).status, 401
+        )
+
+    def test_photo_reel_preview_lists_photos_not_script_beats(self):
+        draft = drafts.normalise_reel_draft(REEL, 10.0)
+        draft["reel"].update(source="photos", photos=7)
+        draft.update(draft_id="c" * 16, review_score=95, scheduled_for=SLOT, hashtags=[])
+        with self.conn:
+            storage.insert_draft(self.conn, draft, MADE.date().isoformat(), MADE.isoformat())
+        settings = make_settings(self.root, instagram_db=self.db, instagram_media=self.media)
+        [shown] = sources.instagram_drafts(settings)["drafts"]
+        self.assertEqual(len(shown["slides"]), 7)
+        self.assertEqual(shown["slides"][6], {"text": "Photo 7", "format": "jpg"})
+
+    def test_photo_reel_preview_preserves_text_and_existing_file_formats(self):
+        draft = drafts.normalise_reel_draft(REEL, 10.0)
+        draft["reel"].update(source="photos", photos=3)
+        draft.update(
+            draft_id="c" * 16,
+            review_score=95,
+            scheduled_for=SLOT,
+            hashtags=[],
+            slides=[{"text": "First"}, {"text": "Second", "file": "slide-2.png"}, "ignored"],
+        )
+        with self.conn:
+            storage.insert_draft(self.conn, draft, MADE.date().isoformat(), MADE.isoformat())
+            self.conn.execute(
+                "UPDATE drafts SET slides=? WHERE draft_id=?", (json.dumps(draft["slides"]), draft["draft_id"])
+            )
+        settings = make_settings(self.root, instagram_db=self.db, instagram_media=self.media)
+        [shown] = sources.instagram_drafts(settings)["drafts"]
+        self.assertEqual(
+            shown["slides"],
+            [{"text": "First", "format": "jpg"}, {"text": "Second", "format": "png"}, {"text": "", "format": "jpg"}],
         )
 
     def test_reel_draft_shows_its_script_and_auto_posts_unless_held(self):

@@ -122,8 +122,51 @@ class DraftTests(unittest.TestCase):
         self.assertEqual(sorted(p.name for p in folder.iterdir()), [f"slide-{n}.png" for n in range(1, 5)])
         self.assertEqual(stat.S_IMODE((folder / "slide-1.png").stat().st_mode), 0o600)
         row = self.conn.execute("SELECT * FROM drafts").fetchone()
+        self.assertEqual(row["kind"], "reel")
+        self.assertEqual(json.loads(row["reel"])["render"], "pending")
+        self.assertNotIn("music", json.loads(row["reel"]))
         self.assertEqual((row["draft_id"], row["status"], row["created_on"]), (folder.name, "pending", "2026-11-12"))
         self.assertEqual(json.loads(row["slides"])[0], {"text": "one 0", "file": "slide-1.png"})
+
+    def test_ai_slide_reel_uses_agents_matched_licensed_music(self):
+        track = {"track_id": "a" * 16, "title": "Cafe", "licence": "CC0", "performance": {}}
+        ai = FakeAI([], [])
+        with (
+            patch.object(drafts.music, "for_reel", return_value=[track]),
+            patch.object(ai, "chat_json", return_value={"music_track": track["track_id"]}) as pick,
+        ):
+            self.assertEqual(
+                drafts.render_and_store(
+                    self.conn, ai, [drafts.normalise(raw_draft("coffee"))], self.root / "drafts", MORNING
+                ),
+                1,
+            )
+        reel = json.loads(self.conn.execute("SELECT reel FROM drafts").fetchone()[0])
+        self.assertEqual((reel["source"], reel["photos"], reel["music"]["mix"]), ("photos", 4, "replace"))
+        self.assertEqual(reel["music"]["track_id"], track["track_id"])
+        self.assertIn("music_tracks", json.loads(pick.call_args.args[1]))
+
+    def test_textless_image_provider_gets_one_timed_beat_per_slide(self):
+        ai = FakeAI([], [])
+        ai.draws_text = False
+        item = drafts.normalise(raw_draft("coffee"))
+        drafts.render_and_store(self.conn, ai, [item], self.root / "drafts", MORNING)
+        reel = json.loads(self.conn.execute("SELECT reel FROM drafts").fetchone()[0])
+        self.assertEqual([beat["text"] for beat in reel["on_screen"]], [s["text"] for s in item["slides"]])
+        self.assertEqual([(b["start"], b["end"]) for b in reel["on_screen"]], [(0, 3), (3, 6), (6, 9), (9, 12)])
+        self.assertEqual(reel["on_screen"][-1]["end"], reel["seconds"])
+
+    def test_music_selection_failure_does_not_leave_a_partial_draft(self):
+        ai = FakeAI([], [])
+        media = self.root / "drafts"
+        with (
+            patch.object(drafts.music, "for_reel", return_value=[{"track_id": "a" * 16}]),
+            patch.object(ai, "chat_json", side_effect=OpenAIError("unavailable")),
+        ):
+            with self.assertRaises(OpenAIError):
+                drafts.render_and_store(self.conn, ai, [drafts.normalise(raw_draft("coffee"))], media, MORNING)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM drafts").fetchone()[0], 0)
+        self.assertEqual(list(media.iterdir()), [])
 
     def test_decisions_only_move_pending_drafts_and_feed_memory(self):
         draft = {**drafts.normalise(raw_draft("flat white")), "draft_id": "a" * 16, "hashtags": ["#coffee"]}
@@ -151,6 +194,9 @@ class CliStartupTests(unittest.TestCase):
 
 class DailyTickTests(unittest.TestCase):
     def setUp(self):
+        self.rendering = patch.object(cli.render, "can_render", return_value=True)
+        self.rendering.start()
+        self.addCleanup(self.rendering.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         self.conn = storage.connect(self.root / "instagram.sqlite3")
@@ -175,6 +221,16 @@ class DailyTickTests(unittest.TestCase):
         self.assertEqual(self.tick(MORNING), "ok")
         self.assertEqual(storage.drafts_on(self.conn, "2026-11-12"), 1)
         self.assertEqual(self.tick(MORNING), "skipped")
+
+    def test_without_photo_rendering_no_ai_draft_is_generated_or_stored(self):
+        ai = FakeAI([], [])
+        with patch.object(cli.render, "can_render", return_value=False):
+            self.assertEqual(self.tick(MORNING, ai), "failed")
+        self.assertEqual(ai.calls, [])
+        self.assertEqual(storage.drafts_on(self.conn, "2026-11-12"), 0)
+        self.assertIn(
+            "photo reel rendering unavailable", self.conn.execute("SELECT error FROM daily_runs").fetchone()[0]
+        )
 
     def test_one_draft_a_day_at_the_best_audience_hour(self):
         storage.replace_audience_hours(self.conn, {19: 500, 8: 400, 13: 300}, "now")
@@ -447,6 +503,9 @@ class CronInstallTests(unittest.TestCase):
 
 class DailyNotificationTests(unittest.TestCase):
     def setUp(self):
+        rendering = patch.object(cli.render, "can_render", return_value=True)
+        rendering.start()
+        self.addCleanup(rendering.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)

@@ -1252,7 +1252,7 @@ class CommandCentreApp:
         options = form[2]
         if options.get("reel", "0") not in ("0", "1"):
             return _error(400, "invalid_request")
-        as_reel = options.get("reel") == "1"
+        as_reel = True
         conn = sqlite3.connect(self.settings.instagram_db, timeout=5)
         conn.row_factory = sqlite3.Row
         try:
