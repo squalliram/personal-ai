@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { ActivityIndicator, KeyboardAvoidingView, Platform, Text, TextInput } from "react-native";
+import { ActivityIndicator, Keyboard, KeyboardAvoidingView, Platform, Text } from "react-native";
+import { DraftInput } from "../../components/draft-input";
 import { Button, Card, ErrorNote, Page, color, type } from "../../components/ui";
 import { ApiError, problem } from "../../lib/api";
 import { api, useAuth } from "../../lib/auth";
@@ -17,6 +18,7 @@ export default function Ask() {
   async function submit(text: string) {
     const clean = text.trim();
     if (!clean || busy || !available || access.kind !== "live") return;
+    Keyboard.dismiss();
     setBusy(true);
     setError("");
     try {
@@ -35,7 +37,7 @@ export default function Ask() {
     <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
       <Page title="Ask Jarvis">
         <Text style={type.body}>{access.kind === "demo"
-          ? "Try a sample question. Answers are examples, and nothing is sent to Jarvis."
+          ? "Try a sample question or practice dictation. Nothing is sent to Jarvis."
           : "Ask about the information in your Command Centre. Jarvis won’t take actions from this screen."}</Text>
         {statusError && <ErrorNote message={statusError} retry={reload} />}
         {loading && <ActivityIndicator color={color.accent} accessibilityLabel="Checking assistant availability" />}
@@ -43,11 +45,10 @@ export default function Ask() {
         {access.kind === "demo" && demoQuestions.map((sample, index) => (
           <Button key={sample.question} primary={index === 0} label={sample.question} onPress={() => setReply(sample)} />
         ))}
-        {access.kind === "live" && available && <>
-          <TextInput accessibilityLabel="Your question for Jarvis" placeholder="What needs my attention today?"
-            placeholderTextColor={color.muted} style={[type.input, { minHeight: 108, textAlignVertical: "top" }]}
-            editable={!busy} multiline maxLength={500} value={question} onChangeText={setQuestion} />
-          <Button primary label={busy ? "Asking…" : "Ask Jarvis"} disabled={!question.trim() || busy}
+        {available && <>
+          <DraftInput label="Your question for Jarvis" dictateLabel="Dictate a question" placeholder="What needs my attention today?"
+            maxLength={500} value={question} onChange={setQuestion} editable={!busy} />
+          <Button primary label={busy ? "Asking…" : "Ask Jarvis"} disabled={access.kind !== "live" || !question.trim() || busy}
             onPress={() => void submit(question)} />
         </>}
         {error && <ErrorNote message={error} />}
