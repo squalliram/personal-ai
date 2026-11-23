@@ -1,4 +1,5 @@
 name: Inspect command centre hosting
+# Read-only: prints hosting and Instagram queue state.
 
 on:
   push:
