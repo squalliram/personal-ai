@@ -19,8 +19,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      PHASE: draft
-      DRAFT_ID: ''
+      PHASE: publish
+      DRAFT_ID: '4025e9735f1332fc'
     steps:
       - uses: actions/checkout@v4
       - name: Run selected reel phase
