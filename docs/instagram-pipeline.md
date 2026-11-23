@@ -63,6 +63,10 @@ age -d -i <(printf '%s\n' "$IG_BASELINE_AGE_KEY") baseline.tar.gz.age | tar xz
 This extracts `posts.csv`, `summary.json` and `raw/`. Keep the decrypted files private; never attach them to public
 issues, PRs, artifacts or logs.
 
+`raw/active_stories.json` snapshots currently available stories before the historical feed is read; take it before
+the story expires. Missing metrics are null, not zero. `posts.csv` includes attributed follows and profile visits
+for recent feed posts when Meta provides them. A story snapshot does not identify which reel it drove traffic to.
+
 ## Daily drafts
 
 ```bash

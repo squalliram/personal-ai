@@ -126,6 +126,8 @@ CREATE TABLE IF NOT EXISTS post_reports (
     total_interactions INTEGER,
     avg_watch_ms INTEGER,
     total_watch_ms INTEGER,
+    follows INTEGER,
+    profile_visits INTEGER,
     summary TEXT,
     notified_at TEXT,
     PRIMARY KEY (media_id, checkpoint)

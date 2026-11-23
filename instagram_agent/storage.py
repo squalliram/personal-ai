@@ -32,6 +32,7 @@ LATER_COLUMNS = {
     "token_state": {"token_fingerprint": "TEXT"},
     "posts": {"media_product_type": "TEXT"},
     "post_metrics": {"avg_watch_ms": "INTEGER", "total_watch_ms": "INTEGER"},
+    "post_reports": {"follows": "INTEGER", "profile_visits": "INTEGER"},
     "drafts": {
         "kind": "TEXT NOT NULL DEFAULT 'carousel' CHECK (kind IN ('carousel', 'reel'))",
         "reel": "TEXT",

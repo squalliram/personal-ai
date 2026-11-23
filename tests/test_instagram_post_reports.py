@@ -124,6 +124,36 @@ class PostReportTests(Case):
         self.assertEqual(post_report.tick(self.conn, self.env, at24 + timedelta(hours=1), client=graph), "reports 1")
         self.assertEqual([r[3] for r in self.inbox()], ["instagram-post-report:9001:24h"])
 
+    def test_unavailable_profile_visits_does_not_drop_zero_follows_or_fail_the_report(self):
+        self.publish()
+
+        class Graph(InsightsGraph):
+            def get(self, path_or_url, params=None):
+                if params.get("metric") == "profile_visits":
+                    raise GraphAPIError("Metric unsupported for this media")
+                return super().get(path_or_url, params)
+
+        at = PUBLISHED + timedelta(hours=25)
+        self.assertEqual(
+            post_report.tick(self.conn, self.env, at, client=Graph({"reach": 500, "follows": 0})), "reports 1"
+        )
+        stored = self.conn.execute("SELECT follows, profile_visits FROM post_reports").fetchone()
+        self.assertEqual(tuple(stored), (0, None))
+        self.assertIn("follows 0", self.inbox()[0][1])
+
+    def test_alert_retry_reuses_the_original_reach_and_conversion_snapshot(self):
+        self.publish()
+        at = PUBLISHED + timedelta(hours=25)
+        first = InsightsGraph({"reach": 500, "follows": 2, "profile_visits": 0})
+        with mock.patch.object(post_report, "notify", return_value=None):
+            post_report.tick(self.conn, self.env, at, client=first)
+        second = InsightsGraph({"reach": 1000})
+        post_report.tick(self.conn, self.env, at + timedelta(minutes=15), client=second)
+        stored = self.conn.execute("SELECT reach, follows, profile_visits, captured_at FROM post_reports").fetchone()
+        self.assertEqual(tuple(stored), (500, 2, 0, at.isoformat()))
+        self.assertEqual(second.calls, [])
+        self.assertIn("follows 2", self.inbox()[0][1])
+
     def test_times_are_london_time(self):
         summer = datetime(2026, 7, 1, 17, 0, tzinfo=timezone.utc)
         text = post_report.summarise("Iced latte", "reel", "24h", summer, {"reach": 1}, {"posts": 0, "medians": {}})
@@ -281,6 +311,98 @@ class LearningsTests(Case):
     def test_old_posts_leave_the_window(self):
         self.measure("9001", 1000, days=200)
         self.assertEqual(learnings.summary(self.conn, PUBLISHED)["posts_measured"], 0)
+
+    def test_sending_the_post_counts_as_a_share_ask(self):
+        post = {
+            "format": "reel",
+            "posted": PUBLISHED,
+            "caption": "Coffee after lunch. Send this to the friend you'd bring.",
+        }
+        self.assertIn(("caption ask", "share"), learnings._growth_features(post))
+        for caption in ("Send this to @coffee.club", "Send this one to your brunch buddy", "Send this reel to them"):
+            with self.subTest(caption=caption):
+                self.assertIn(("caption ask", "share"), learnings._growth_features({**post, "caption": caption}))
+        dm = {**post, "caption": "Send me a DM with your favourite café."}
+        self.assertNotIn(("caption ask", "share"), learnings._growth_features(dm))
+
+    def test_growth_uses_all_checkpoints_as_peers_and_counts_each_post_once(self):
+        for n in range(6):
+            at = PUBLISHED - timedelta(days=30 - n)
+            self.publish(str(9600 + n), at=at, tags=("#latte",) if n < 3 else ("#other",))
+            graph24 = InsightsGraph({"reach": 100, "follows": 3 if n < 3 else 0}, at=at)
+            graph72 = InsightsGraph({"reach": 200, **({"follows": 0} if n >= 3 else {})}, at=at)
+            post_report.tick(self.conn, self.env, at + timedelta(hours=25), client=graph24)
+            post_report.tick(self.conn, self.env, at + timedelta(hours=73), client=graph72)
+        self.publish("9700")
+        post_report.tick(
+            self.conn, self.env, PUBLISHED + timedelta(hours=25), client=InsightsGraph({"reach": 100, "follows": 0})
+        )
+        findings = learnings.summary(self.conn, PUBLISHED + timedelta(hours=25))["growth_findings"]["follows"]
+        latte = next(row for row in findings if row["value"] == "#latte")
+        self.assertEqual((latte["posts"], latte["vs_peer_rate"]), (3, 2.33))
+
+    def test_follows_rank_tag_caption_and_slot_above_reach_without_using_missing_values(self):
+        for n in range(11):
+            strong = n < 5
+            local = (PUBLISHED - timedelta(days=20 - n)).astimezone(learnings.LONDON)
+            at = local.replace(hour=15 if strong else 18).astimezone(timezone.utc)
+            tag = "#latte" if strong else "#general"
+            media_id = str(9100 + n)
+            draft_id = self.publish(media_id, at=at, tags=(tag,))
+            if strong:
+                self.conn.execute(
+                    "UPDATE drafts SET caption=? WHERE draft_id=?",
+                    ("Coffee after lunch. Follow @coffee.club for more.", draft_id),
+                )
+            counts = {"reach": 100 if strong else 1000, "saved": 0 if strong else 400}
+            if n != 10:
+                counts["follows"] = 2 if strong else 0
+            post_report.tick(self.conn, self.env, at + timedelta(hours=73), client=InsightsGraph(counts, at=at))
+        ctx = drafts.context(self.conn, PUBLISHED)
+        findings = ctx["performance_learnings"]["growth_findings"]
+        follows = {(row["feature"], row["value"]): row for row in findings["follows"]}
+        self.assertEqual(follows["hashtag", "#latte"]["vs_peer_rate"], 2)
+        self.assertIn(("caption ask", "follow"), follows)
+        self.assertIn(("caption mention", "@coffee.club"), follows)
+        self.assertNotIn(("hashtag", "#general"), follows)
+        self.assertIn("#general", [row["value"] for row in findings["saved"]])
+
+        ai = mock.Mock()
+        ai.chat_json.return_value = {"hashtags": [["#latte"]]}
+        draft = {"topic": "Latte", "category": "coffee", "caption": "Follow for more coffee."}
+        drafts.tag(ai, ctx, [draft])
+        payload = json.loads(ai.chat_json.call_args.args[1])
+        self.assertEqual(payload["drafts"][0]["growth_findings"]["follows"][0]["value"], "#latte")
+        self.assertEqual(draft["hashtags"], ["#latte"])
+        self.assertEqual(drafts.publish_slots(self.conn, PUBLISHED.replace(hour=9), 1), ["2026-11-12T15:00+00:00"])
+
+    def test_hashtag_conversion_evidence_stays_with_the_drafts_format(self):
+        posts = []
+        for fmt in ("carousel", "reel"):
+            for n in range(10):
+                latte = n < (6 if fmt == "reel" else 3)
+                posts.append(
+                    {
+                        "media_id": f"{fmt}{n}",
+                        "checkpoint": "24h",
+                        "posted": PUBLISHED,
+                        "format": fmt,
+                        "reach": 100,
+                        "follows": 10 if latte == (fmt == "reel") else 0,
+                        "hashtags": "#latte" if latte else "#other",
+                    }
+                )
+        summary = learnings.summary(self.conn, PUBLISHED)
+        summary["growth_findings"] = learnings.growth_findings(posts)
+        ctx = {"performance_learnings": learnings.for_prompt(summary), "trending_hashtags": []}
+        ai = mock.Mock()
+        ai.chat_json.return_value = {}
+        draft = {"topic": "Latte", "category": "coffee", "caption": "Follow for more coffee."}
+        drafts.tag(ai, ctx, [{**draft, "kind": "reel"}, draft.copy(), {**draft, "slides": [{"text": "Photo"}]}])
+        reel, carousel, photo = json.loads(ai.chat_json.call_args.args[1])["drafts"]
+        self.assertEqual([f["value"] for f in reel["growth_findings"]["follows"]], ["#latte"])
+        self.assertEqual([f["value"] for f in carousel["growth_findings"]["follows"]], ["#other"])
+        self.assertEqual(photo["growth_findings"], {})
 
     def test_create_and_review_get_learnings_as_data_not_evidence(self):
         self.measure("9001", 1000, days=8)

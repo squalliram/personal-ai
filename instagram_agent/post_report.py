@@ -15,7 +15,7 @@ from notifications import command_centre_link, notify, safe_link
 
 from . import storage
 from .analysis import LONDON
-from .graph import MEDIA_FIELDS, GraphAPIError, GraphClient
+from .graph import CONVERSION_METRICS, MEDIA_FIELDS, GraphAPIError, GraphClient
 
 # Checkpoint name, age at which it is due, and how long after that it may still be taken.
 CHECKPOINTS = (("24h", timedelta(hours=24), timedelta(hours=48)), ("72h", timedelta(hours=72), timedelta(days=4)))
@@ -29,9 +29,11 @@ METRICS = (
     "total_interactions",
     "avg_watch_ms",
     "total_watch_ms",
+    *CONVERSION_METRICS,
 )
 SHOWN = (("reach", "reach"), ("views", "views"), ("likes", "likes"), ("comments", "comments"), ("saved", "saves"),
-         ("shares", "shares"), ("avg_watch_ms", "avg watch"))  # fmt: skip
+         ("shares", "shares"), ("avg_watch_ms", "avg watch"), ("follows", "follows"),
+         ("profile_visits", "profile visits"))  # fmt: skip
 MAX_ATTEMPTS = 4
 PER_TICK = 6
 BASELINE_DAYS = 90
@@ -96,7 +98,13 @@ def fetch(client: GraphClient, media_id: str) -> tuple[dict, dict[str, int]]:
 
     media = client.get(media_id, {"fields": MEDIA_FIELDS})
     media = {**media, "id": media_id}
-    return media, _insights(client, media)
+    values = _insights(client, media)
+    for metric in CONVERSION_METRICS:
+        try:
+            values.update(client.media_insights(media_id, metric))
+        except GraphAPIError:
+            continue
+    return media, values
 
 
 def _lifetime_rows(conn: sqlite3.Connection, fmt: str, exclude: str, since: datetime) -> list[dict]:
@@ -174,7 +182,7 @@ def summarise(topic: str, fmt: str, checkpoint: str, posted_at: datetime | None,
                 parts.append(f"{labels[metric]} {_number(metric, values[metric])}{ratio}")
         return (", ".join(parts) + ".") if parts else "Instagram returned no numbers yet."
 
-    for metrics in ([m for m, _ in SHOWN], ["reach", "views", "saved", "shares", "avg_watch_ms"], ["reach", "saved"]):
+    for metrics in ([m for m, _ in SHOWN], ["reach", "saved", "shares", *CONVERSION_METRICS], ["reach", "saved"]):
         for limit in (60, 30):
             short = topic if len(topic) <= limit else topic[: limit - 1].rstrip() + "…"
             text = f"{head.format(topic=short)} {stats(metrics)} {verdict}"
@@ -209,12 +217,27 @@ def _gave_up(conn, post, checkpoint: str, env: dict, now: datetime, page: str) -
             )
 
 
+def _deliver_report(conn, post, checkpoint: str, text: str, link: str | None, env: dict, now: datetime) -> bool:
+    key = f"instagram-post-report:{post['media_id']}:{checkpoint}"
+    if notify("instagram", "info", text, link, key=key, env=env, now=now) is None:
+        return False
+    with conn:
+        conn.execute(
+            "UPDATE post_reports SET notified_at=? WHERE media_id=? AND checkpoint=?",
+            (now.isoformat(timespec="seconds"), post["media_id"], checkpoint),
+        )
+    return True
+
+
 def report_one(conn, client: GraphClient, post, checkpoint: str, env: dict, now: datetime) -> bool:
     page = command_centre_link(env, "instagram")
-    tried = conn.execute(
-        "SELECT attempts FROM post_reports WHERE media_id=? AND checkpoint=?", (post["media_id"], checkpoint)
+    previous = conn.execute(
+        "SELECT attempts,captured_at,summary,permalink FROM post_reports WHERE media_id=? AND checkpoint=?",
+        (post["media_id"], checkpoint),
     ).fetchone()
-    if tried and tried[0] >= MAX_ATTEMPTS:
+    if previous and previous["captured_at"]:
+        return _deliver_report(conn, post, checkpoint, previous["summary"], previous["permalink"] or page, env, now)
+    if previous and previous["attempts"] >= MAX_ATTEMPTS:
         _gave_up(conn, post, checkpoint, env, now, page)
         return False
     try:
@@ -253,15 +276,7 @@ def report_one(conn, client: GraphClient, post, checkpoint: str, env: dict, now:
                 *(values.get(m) for m in METRICS),
             ),
         )
-    key = f"instagram-post-report:{post['media_id']}:{checkpoint}"
-    if notify("instagram", "info", text, link or page, key=key, env=env, now=now) is None:
-        return False  # not stored: the next tick tries again while the checkpoint is due
-    with conn:
-        conn.execute(
-            "UPDATE post_reports SET notified_at=? WHERE media_id=? AND checkpoint=?",
-            (stamp, post["media_id"], checkpoint),
-        )
-    return True
+    return _deliver_report(conn, post, checkpoint, text, link or page, env, now)
 
 
 def tick(conn, env: dict, now: datetime | None = None, client: GraphClient | None = None) -> str:

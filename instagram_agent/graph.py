@@ -14,6 +14,7 @@ GRAPH_VERSION = "v27.0"
 MEDIA_FIELDS = "id,caption,media_type,media_product_type,timestamp,permalink,like_count,comments_count"
 MEDIA_METRICS = "reach,likes,comments,saved,shares,views,total_interactions"
 REEL_METRICS = MEDIA_METRICS + ",ig_reels_avg_watch_time,ig_reels_video_view_total_time"  # in ms
+CONVERSION_METRICS = ("follows", "profile_visits")
 BENCHMARK_MEDIA_FIELDS = "id,caption,media_type,timestamp,permalink,like_count,comments_count,view_count"
 
 
