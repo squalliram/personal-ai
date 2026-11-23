@@ -346,9 +346,37 @@ class LearningsTests(Case):
         draft = {"topic": "Latte", "category": "coffee", "caption": "Follow for more coffee."}
         drafts.tag(ai, ctx, [draft])
         payload = json.loads(ai.chat_json.call_args.args[1])
-        self.assertEqual(payload["growth_findings"]["follows"][0]["value"], "#latte")
+        self.assertEqual(payload["drafts"][0]["growth_findings"]["follows"][0]["value"], "#latte")
         self.assertEqual(draft["hashtags"], ["#latte"])
         self.assertEqual(drafts.publish_slots(self.conn, PUBLISHED.replace(hour=9), 1), ["2026-11-12T15:00+00:00"])
+
+    def test_hashtag_conversion_evidence_stays_with_the_drafts_format(self):
+        posts = []
+        for fmt in ("carousel", "reel"):
+            for n in range(10):
+                latte = n < (6 if fmt == "reel" else 3)
+                posts.append(
+                    {
+                        "media_id": f"{fmt}{n}",
+                        "checkpoint": "24h",
+                        "posted": PUBLISHED,
+                        "format": fmt,
+                        "reach": 100,
+                        "follows": 10 if latte == (fmt == "reel") else 0,
+                        "hashtags": "#latte" if latte else "#other",
+                    }
+                )
+        summary = learnings.summary(self.conn, PUBLISHED)
+        summary["growth_findings"] = learnings.growth_findings(posts)
+        ctx = {"performance_learnings": learnings.for_prompt(summary), "trending_hashtags": []}
+        ai = mock.Mock()
+        ai.chat_json.return_value = {}
+        draft = {"topic": "Latte", "category": "coffee", "caption": "Follow for more coffee."}
+        drafts.tag(ai, ctx, [{**draft, "kind": "reel"}, draft.copy(), {**draft, "slides": [{"text": "Photo"}]}])
+        reel, carousel, photo = json.loads(ai.chat_json.call_args.args[1])["drafts"]
+        self.assertEqual([f["value"] for f in reel["growth_findings"]["follows"]], ["#latte"])
+        self.assertEqual([f["value"] for f in carousel["growth_findings"]["follows"]], ["#other"])
+        self.assertEqual(photo["growth_findings"], {})
 
     def test_create_and_review_get_learnings_as_data_not_evidence(self):
         self.measure("9001", 1000, days=8)

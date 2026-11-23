@@ -185,9 +185,10 @@ def growth_findings(reports: list[dict]) -> dict[str, list[dict]]:
                     cohorts[post["checkpoint"]] if feature == "format" else formats[post["checkpoint"], post["format"]]
                 )
                 if len(peers) >= MIN_CONVERSION_GROUP and (mean := statistics.mean(peers)):
-                    groups[feature, value][post["media_id"]] = rate / mean
+                    tag_format = (post["format"] or "post") if feature == "hashtag" else None
+                    groups[feature, value, tag_format][post["media_id"]] = rate / mean
         ranked = []
-        for (feature, value), lifts in groups.items():
+        for (feature, value, tag_format), lifts in groups.items():
             if len(lifts) < MIN_CONVERSION_GROUP:
                 continue
             lift = round(statistics.mean(lifts.values()), 2)
@@ -199,6 +200,7 @@ def growth_findings(reports: list[dict]) -> dict[str, list[dict]]:
                         "posts": len(lifts),
                         "vs_peer_rate": lift,
                         "small_sample": len(lifts) < SMALL_GROUP,
+                        **({"format": tag_format} if tag_format else {}),
                     }
                 )
         if ranked:
@@ -307,6 +309,15 @@ def for_prompt(found: dict) -> dict:
     """The compact, data-only form the Create and Review agents see."""
     keep = ("feature", "value", "posts", "vs_median", "small_sample")
     post_keys = ("topic", "hook", "format", "vs_median")
+    growth = {}
+    for metric, rows in found["growth_findings"].items():
+        tags_by_format = defaultdict(list)
+        for row in rows:
+            if row["feature"] == "hashtag":
+                tags_by_format[row["format"]].append(row)
+        growth[metric] = [row for row in rows if row["feature"] != "hashtag"][:FINDINGS_SHOWN] + [
+            row for tags in tags_by_format.values() for row in tags[:TAGS_SHOWN]
+        ]
     return {
         "posts_measured": found["posts_measured"],
         "small_sample": found["small_sample"],
@@ -314,9 +325,5 @@ def for_prompt(found: dict) -> dict:
         "below_median": [{k: f[k] for k in keep} for f in found["not_working"]],
         "best_posts": [{k: p[k] for k in post_keys} for p in found["best_posts"]],
         "weakest_posts": [{k: p[k] for k in post_keys} for p in found["weakest_posts"]],
-        "growth_findings": {
-            metric: [row for row in rows if row["feature"] != "hashtag"][:FINDINGS_SHOWN]
-            + [row for row in rows if row["feature"] == "hashtag"][:TAGS_SHOWN]
-            for metric, rows in found["growth_findings"].items()
-        },
+        "growth_findings": growth,
     }

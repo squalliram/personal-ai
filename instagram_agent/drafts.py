@@ -229,22 +229,17 @@ def create(ai: AI, ctx: dict, count: int, feedback: list[str], *, rules: str, vo
 
 
 def tag(ai: AI, ctx: dict, drafts: list[dict]) -> None:
-    payload = {
-        "trending_hashtags": ctx["trending_hashtags"],
-        "growth_findings": {
-            metric: [row for row in rows if row["feature"] == "hashtag"]
-            for metric, rows in ctx["performance_learnings"]["growth_findings"].items()
-        },
-        "drafts": [
-            {
-                "topic": d["topic"],
-                "category": d["category"],
-                "caption": d["caption"],
-                "format": d.get("kind", "carousel"),
-            }
-            for d in drafts
-        ],
-    }
+    tagged = []
+    for draft in drafts:
+        fmt = "reel" if draft.get("kind") == "reel" else "photo" if len(draft.get("slides", [])) == 1 else "carousel"
+        findings = {}
+        for metric, rows in ctx["performance_learnings"]["growth_findings"].items():
+            if tags := [row for row in rows if row["feature"] == "hashtag" and row["format"] == fmt]:
+                findings[metric] = tags
+        tagged.append(
+            {k: draft[k] for k in ("topic", "category", "caption")} | {"format": fmt, "growth_findings": findings}
+        )
+    payload = {"trending_hashtags": ctx["trending_hashtags"], "drafts": tagged}
     reply = ai.chat_json(_prompt(TAGS, "", ""), json.dumps(payload, ensure_ascii=False))
     lists = reply.get("hashtags") if isinstance(reply.get("hashtags"), list) else []
     for draft, tags in zip(drafts, lists + [[]] * len(drafts), strict=False):
