@@ -1,0 +1,66 @@
+name: Owner latte music reel and Story
+
+on:
+  push:
+    branches: [devin/1763910000-ig-state-probe]
+    paths: [.github/workflows/instagram-music-now.yml]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: instagram-owner-music-now
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Publish the owner-requested music version once
+        env:
+          CPANEL_SSH_HOST: ${{ secrets.CPANEL_SSH_HOST }}
+          CPANEL_SSH_USERNAME: ${{ secrets.CPANEL_SSH_USERNAME }}
+          CPANEL_SSH_PORT: ${{ secrets.CPANEL_SSH_PORT }}
+          CPANEL_SSH_PRIVATE_KEY: ${{ secrets.CPANEL_SSH_PRIVATE_KEY }}
+          CPANEL_SSH_KNOWN_HOSTS: ${{ secrets.CPANEL_SSH_KNOWN_HOSTS }}
+          CPANEL_APP_PATH: ${{ secrets.CPANEL_APP_PATH }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$CPANEL_APP_PATH" =~ ^/[a-zA-Z0-9_./-]+$ ]] || exit 1
+          [[ "${CPANEL_SSH_PORT:-22}" =~ ^[0-9]+$ ]] || exit 1
+          install -m 700 -d ~/.ssh
+          umask 077
+          printf '%s\n' "$CPANEL_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          printf '%s\n' "$CPANEL_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          curl -fsSL https://wsos.app/media/music/overcast-cafe.m4a -o track.m4a
+          echo '9a88dd11a2dc364d4ae5b59721b130ca79b56c397704a329ba5861484e71d8fb  track.m4a' | sha256sum -c -
+          python3 - <<'PY' > payload.json
+          import base64, json
+          from pathlib import Path
+          print(json.dumps({
+              "track": base64.b64encode(Path("track.m4a").read_bytes()).decode(),
+              "story": Path("deploy/command-centre/story_now.py").read_text(),
+              "runner": Path("deploy/command-centre/music_reel_now.py").read_text(),
+          }))
+          PY
+          ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=20 -p "${CPANEL_SSH_PORT:-22}" \
+            "$CPANEL_SSH_USERNAME@$CPANEL_SSH_HOST" \
+            "cd '$CPANEL_APP_PATH' && . ./scripts/find-python.sh && \"\$PYTHON\" -c 'import json,sys,os,types; p=json.load(sys.stdin); m=types.ModuleType(\"story_now\"); exec(p[\"story\"],m.__dict__); sys.modules[\"story_now\"]=m; os.environ[\"OWNER_TRACK_BASE64\"]=p[\"track\"]; exec(compile(p[\"runner\"],\"music_reel_now\",\"exec\"))'" \
+            < payload.json | tee result.json
+          id=$(python3 -c 'import json; r=json.load(open("result.json")); assert r["outcome"] == "published"; print(r["draft_id"])')
+          [[ "$id" =~ ^[0-9a-f]{16}$ ]] || exit 1
+          scp -i ~/.ssh/id_ed25519 -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            -P "${CPANEL_SSH_PORT:-22}" \
+            "$CPANEL_SSH_USERNAME@$CPANEL_SSH_HOST:$CPANEL_APP_PATH/data/instagram/drafts/$id/reel.mp4" reel.mp4
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: latte-reel-with-music
+          path: |
+            result.json
+            reel.mp4
+          retention-days: 7
