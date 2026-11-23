@@ -219,10 +219,11 @@ def _gave_up(conn, post, checkpoint: str, env: dict, now: datetime, page: str) -
 
 def report_one(conn, client: GraphClient, post, checkpoint: str, env: dict, now: datetime) -> bool:
     page = command_centre_link(env, "instagram")
-    tried = conn.execute(
-        "SELECT attempts FROM post_reports WHERE media_id=? AND checkpoint=?", (post["media_id"], checkpoint)
+    previous = conn.execute(
+        f"SELECT attempts,{','.join(CONVERSION_METRICS)} FROM post_reports WHERE media_id=? AND checkpoint=?",
+        (post["media_id"], checkpoint),
     ).fetchone()
-    if tried and tried[0] >= MAX_ATTEMPTS:
+    if previous and previous["attempts"] >= MAX_ATTEMPTS:
         _gave_up(conn, post, checkpoint, env, now, page)
         return False
     try:
@@ -230,6 +231,10 @@ def report_one(conn, client: GraphClient, post, checkpoint: str, env: dict, now:
     except (GraphAPIError, ValueError, KeyError, TypeError, AttributeError):
         _attempt_failed(conn, post, checkpoint, env, now, page)
         return False
+    if previous:
+        for metric in CONVERSION_METRICS:
+            if values.get(metric) is None and previous[metric] is not None:
+                values[metric] = previous[metric]
     fmt = media_format(media.get("media_product_type"), media.get("media_type"))
     if post["kind"] == "reel":
         fmt = "reel"

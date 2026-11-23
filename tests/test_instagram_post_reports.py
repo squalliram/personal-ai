@@ -141,6 +141,18 @@ class PostReportTests(Case):
         self.assertEqual(tuple(stored), (0, None))
         self.assertIn("follows 0", self.inbox()[0][1])
 
+    def test_alert_retry_keeps_missing_conversion_and_accepts_explicit_zero(self):
+        self.publish()
+        at = PUBLISHED + timedelta(hours=25)
+        first = InsightsGraph({"reach": 500, "follows": 2, "profile_visits": 4})
+        with mock.patch.object(post_report, "notify", return_value=None):
+            post_report.tick(self.conn, self.env, at, client=first)
+        second = InsightsGraph({"reach": 500, "profile_visits": 0})
+        post_report.tick(self.conn, self.env, at + timedelta(minutes=15), client=second)
+        stored = self.conn.execute("SELECT follows, profile_visits FROM post_reports").fetchone()
+        self.assertEqual(tuple(stored), (2, 0))
+        self.assertIn("follows 2", self.inbox()[0][1])
+
     def test_times_are_london_time(self):
         summer = datetime(2026, 7, 1, 17, 0, tzinfo=timezone.utc)
         text = post_report.summarise("Iced latte", "reel", "24h", summer, {"reach": 1}, {"posts": 0, "medians": {}})
