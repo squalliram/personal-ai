@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useRef, type ComponentRef } from "react";
 import { Platform, Text, TextInput, View } from "react-native";
 import { Button, color, type } from "./ui";
 
@@ -11,7 +11,7 @@ export function DraftInput({ label, dictateLabel, placeholder, value, onChange, 
   maxLength: number;
   editable: boolean;
 }) {
-  const input = useRef<TextInput>(null);
+  const input = useRef<ComponentRef<typeof TextInput>>(null);
   return (
     <View style={{ gap: 8 }}>
       <TextInput ref={input} accessibilityLabel={label} placeholder={placeholder} placeholderTextColor={color.muted}
