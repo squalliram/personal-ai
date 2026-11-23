@@ -225,11 +225,11 @@ class PreflightTests(unittest.TestCase):
         report = self.preflight(now=now)
         self.assertFalse(report["ok"])
         self.assertEqual(report["eligible_drafts"], [OTHER, DRAFT])
-        self.assertEqual([row["draft_id"] for row in publish.due(self.conn, now)], [DRAFT])
+        self.assertEqual([row["draft_id"] for row in publish.due(self.conn, now)], [])
 
         with patch.object(render, "render", return_value={"render": "done"}):
             self.assertEqual(render.render_due(self.conn, self.media, now=now), "rendered 1, failed 0")
-        self.assertCountEqual([row["draft_id"] for row in publish.due(self.conn, now)], [DRAFT, OTHER])
+        self.assertEqual([row["draft_id"] for row in publish.due(self.conn, now)], [OTHER])
 
     def test_old_or_failed_reel_does_not_block_preflight(self):
         self.add()

@@ -563,7 +563,7 @@ class ReelPublishTests(Case):
         graph = ReelGraph(statuses=("FINISHED",))
         with patch.object(publish, "notify") as told:
             self.assertEqual(self.tick(graph), "published 1, failed 0")
-        self.assertEqual(sum(p.endswith("media_publish") for p, _, _ in graph.posts), 1)
+        self.assertEqual(sum(p.endswith("media_publish") for p, _, _ in graph.posts), 2)
         self.assertEqual(told.call_args.args[1], "ok")
         self.assertIn("is live", told.call_args.args[2])
 
@@ -577,7 +577,8 @@ class ReelPublishTests(Case):
         storage.decide_draft(self.conn, "b" * 16, "approved", MADE.isoformat())
         graph = ReelGraph(statuses=("IN_PROGRESS", "FINISHED"))
         self.assertEqual(self.tick(graph), "published 1, failed 0")
-        (path, params, retry), (publish_path, _, publish_retry) = graph.posts
+        (path, params, retry), (publish_path, _, publish_retry) = graph.posts[:2]
+        self.assertEqual(graph.posts[2][1]["media_type"], "STORIES")
         self.assertEqual(params["media_type"], "REELS")
         self.assertEqual(params["share_to_feed"], "true")
         self.assertEqual(params["thumb_offset"], "2500")

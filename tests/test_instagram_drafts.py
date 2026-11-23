@@ -122,8 +122,41 @@ class DraftTests(unittest.TestCase):
         self.assertEqual(sorted(p.name for p in folder.iterdir()), [f"slide-{n}.png" for n in range(1, 5)])
         self.assertEqual(stat.S_IMODE((folder / "slide-1.png").stat().st_mode), 0o600)
         row = self.conn.execute("SELECT * FROM drafts").fetchone()
+        self.assertEqual(row["kind"], "reel")
+        self.assertEqual(json.loads(row["reel"])["render"], "pending")
+        self.assertNotIn("music", json.loads(row["reel"]))
         self.assertEqual((row["draft_id"], row["status"], row["created_on"]), (folder.name, "pending", "2026-11-12"))
         self.assertEqual(json.loads(row["slides"])[0], {"text": "one 0", "file": "slide-1.png"})
+
+    def test_ai_slide_reel_uses_agents_matched_licensed_music(self):
+        track = {"track_id": "a" * 16, "title": "Cafe", "licence": "CC0", "performance": {}}
+        ai = FakeAI([], [])
+        with (
+            patch.object(drafts.music, "for_reel", return_value=[track]),
+            patch.object(ai, "chat_json", return_value={"music_track": track["track_id"]}) as pick,
+        ):
+            self.assertEqual(
+                drafts.render_and_store(
+                    self.conn, ai, [drafts.normalise(raw_draft("coffee"))], self.root / "drafts", MORNING
+                ),
+                1,
+            )
+        reel = json.loads(self.conn.execute("SELECT reel FROM drafts").fetchone()[0])
+        self.assertEqual((reel["source"], reel["photos"], reel["music"]["mix"]), ("photos", 4, "replace"))
+        self.assertEqual(reel["music"]["track_id"], track["track_id"])
+        self.assertIn("music_tracks", json.loads(pick.call_args.args[1]))
+
+    def test_music_selection_failure_does_not_leave_a_partial_draft(self):
+        ai = FakeAI([], [])
+        media = self.root / "drafts"
+        with (
+            patch.object(drafts.music, "for_reel", return_value=[{"track_id": "a" * 16}]),
+            patch.object(ai, "chat_json", side_effect=OpenAIError("unavailable")),
+        ):
+            with self.assertRaises(OpenAIError):
+                drafts.render_and_store(self.conn, ai, [drafts.normalise(raw_draft("coffee"))], media, MORNING)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM drafts").fetchone()[0], 0)
+        self.assertEqual(list(media.iterdir()), [])
 
     def test_decisions_only_move_pending_drafts_and_feed_memory(self):
         draft = {**drafts.normalise(raw_draft("flat white")), "draft_id": "a" * 16, "hashtags": ["#coffee"]}

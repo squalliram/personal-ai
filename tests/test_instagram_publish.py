@@ -60,6 +60,8 @@ class PublishCase(unittest.TestCase):
                     "draft_id": draft_id,
                     "category": "coffee",
                     "topic": "Flat whites",
+                    "kind": "reel",
+                    "reel": {"file": "reel.mp4"},
                     "slides": [{"text": f"s{n}", "file": f"slide-{n}.jpg"} for n in range(1, slides + 1)],
                     "caption": "Save this.",
                     "hashtags": ["#coffee", "#london"],
@@ -70,6 +72,8 @@ class PublishCase(unittest.TestCase):
                 made.isoformat(timespec="seconds"),
             )
         (self.media / draft_id).mkdir(parents=True)
+        if data == JPEG:
+            (self.media / draft_id / "reel.mp4").write_bytes(b"video")
         for n in range(1, slides + 1):
             (self.media / draft_id / f"slide-{n}.jpg").write_bytes(data)
         return draft_id
@@ -86,31 +90,96 @@ class PublishCase(unittest.TestCase):
 
 
 class PublishTests(PublishCase):
-    def test_publishes_a_passing_pending_draft_as_a_carousel(self):
+    def test_publishes_reel_then_same_video_story_once(self):
         self.add()
         graph = FakeGraph(statuses=("IN_PROGRESS", "FINISHED"))
         self.assertEqual(self.tick(graph), "published 1, failed 0")
+        containers = [params for path, params, _ in graph.posts if path.endswith("/media")]
+        self.assertEqual([c["media_type"] for c in containers], ["REELS", "STORIES"])
+        self.assertEqual(set(containers[1]), {"media_type", "video_url"})
+        self.assertEqual(len(self.checked), 2)
+        self.assertTrue(all(not retry for path, _, retry in graph.posts if path.endswith("media_publish")))
+        story = json.loads(self.conn.execute("SELECT reel FROM drafts").fetchone()[0])["story"]
+        self.assertEqual(story["state"], "published")
         self.assertEqual(tuple(self.status()), ("published", "9001"))
-        children = graph.posts[:3]
-        self.assertTrue(all(p[1]["is_carousel_item"] == "true" for p in children))
-        self.assertEqual([p[1]["image_url"] for p in children], self.checked)
-        self.assertTrue(all(u.startswith("https://example.test/ig-media/") for u in self.checked))
-        parent = graph.posts[3][1]
-        self.assertEqual((parent["media_type"], parent["children"]), ("CAROUSEL", "c1,c2,c3"))
-        self.assertEqual(parent["caption"], "Save this.\n\n#coffee #london")
-        self.assertEqual(graph.posts[4], ("17841408862128347/media_publish", {"creation_id": "c4"}, False))
         self.assertEqual([p.name for p in self.public.iterdir()], ["index.html"])
         self.assertEqual(self.tick(FakeGraph()), "published 0, failed 0")
+        calls = len(graph.posts)
+        row = self.conn.execute("SELECT * FROM drafts").fetchone()
+        publish.publish_story_once(
+            self.conn, graph, row, self.media, self.public, ENV["INSTAGRAM_PUBLIC_URL"], self.env, DUE
+        )
+        self.assertEqual(len(graph.posts), calls)
 
-    def test_a_single_photo_posts_as_one_image(self):
-        self.add(slides=1)
+    def test_legacy_photo_and_carousel_are_skipped_and_notified(self):
+        for slides in (1, 3):
+            draft_id = self.add(str(slides) * 16, slides=slides)
+            with self.conn:
+                self.conn.execute("UPDATE drafts SET kind='carousel',reel=NULL WHERE draft_id=?", (draft_id,))
+                if slides == 1:
+                    self.conn.execute("UPDATE drafts SET status='approved' WHERE draft_id=?", (draft_id,))
         graph = FakeGraph()
-        self.assertEqual(self.tick(graph), "published 1, failed 0")
-        self.assertEqual(len(graph.posts), 2)
-        path, params, _ = graph.posts[0]
-        self.assertEqual(path, "17841408862128347/media")
-        self.assertEqual(params, {"image_url": self.checked[0], "caption": "Save this.\n\n#coffee #london"})
-        self.assertEqual(graph.posts[1], ("17841408862128347/media_publish", {"creation_id": "c1"}, False))
+        with patch.object(publish, "notify") as notify:
+            self.assertEqual(self.tick(graph), "published 0, failed 0")
+            self.assertEqual(notify.call_count, 2)
+        self.assertEqual(graph.posts, [])
+        self.assertEqual(publish.due(self.conn, DUE), [])
+        with self.assertRaises(publish.PublishError):
+            publish.publish_draft(
+                graph,
+                self.conn.execute("SELECT * FROM drafts").fetchone(),
+                self.media,
+                self.public,
+                ENV["INSTAGRAM_PUBLIC_URL"],
+            )
+
+    def test_story_publish_failure_does_not_fail_reel_or_retry(self):
+        self.add()
+        graph = FakeGraph()
+        post = graph.post
+
+        def fail_story(path, params, **kwargs):
+            if path.endswith("media_publish") and any(p[1].get("media_type") == "STORIES" for p in graph.posts):
+                raise GraphAPIError("uncertain Story result")
+            return post(path, params, **kwargs)
+
+        with patch.object(graph, "post", side_effect=fail_story):
+            self.assertEqual(self.tick(graph), "published 1, failed 0")
+        self.assertEqual(self.status()["status"], "published")
+        self.assertEqual(
+            json.loads(self.conn.execute("SELECT reel FROM drafts").fetchone()[0])["story"]["state"], "failed"
+        )
+        self.assertEqual(self.tick(graph), "published 0, failed 0")
+
+    def test_claimed_story_is_not_repeated_after_crash(self):
+        self.add()
+        with self.conn:
+            self.conn.execute(
+                "UPDATE drafts SET status='published',reel=?",
+                (json.dumps({"file": "reel.mp4", "story": {"state": "started"}}),),
+            )
+        graph = FakeGraph()
+        row = self.conn.execute("SELECT * FROM drafts").fetchone()
+        publish.publish_story_once(
+            self.conn, graph, row, self.media, self.public, ENV["INSTAGRAM_PUBLIC_URL"], self.env, DUE
+        )
+        self.assertEqual(graph.posts, [])
+
+    def test_story_hosting_failure_is_recorded_without_changing_reel(self):
+        draft_id = self.add()
+        with self.conn:
+            self.conn.execute("UPDATE drafts SET status='published' WHERE draft_id=?", (draft_id,))
+        (self.media / draft_id / "reel.mp4").unlink()
+        graph = FakeGraph()
+        row = self.conn.execute("SELECT * FROM drafts").fetchone()
+        publish.publish_story_once(
+            self.conn, graph, row, self.media, self.public, ENV["INSTAGRAM_PUBLIC_URL"], self.env, DUE
+        )
+        self.assertEqual(graph.posts, [])
+        self.assertEqual(self.status()["status"], "published")
+        self.assertEqual(
+            json.loads(self.conn.execute("SELECT reel FROM drafts").fetchone()[0])["story"]["state"], "failed"
+        )
 
     def test_rejected_weak_and_future_drafts_are_not_posted(self):
         self.add("a" * 16)
@@ -156,7 +225,7 @@ class PublishTests(PublishCase):
             self.assertEqual(self.tick(FakeGraph()), "published 0, failed 1")
         self.assertEqual(self.status()["status"], "failed")
         error = self.conn.execute("SELECT error FROM publish_runs ORDER BY id DESC").fetchone()[0]
-        self.assertEqual(error, "Instagram only accepts JPEG slides")
+        self.assertEqual(error, "the reel's video is missing")
 
     def test_processing_error_is_recorded_and_folder_removed(self):
         self.add()
@@ -232,11 +301,12 @@ class PublishTests(PublishCase):
 
     def test_png_slides_fail_with_a_clear_reason(self):
         draft_id = self.add()
+        (self.media / draft_id / "reel.mp4").unlink()
         for n in range(1, 4):
             (self.media / draft_id / f"slide-{n}.jpg").rename(self.media / draft_id / f"slide-{n}.png")
         self.assertEqual(self.tick(FakeGraph()), "published 0, failed 1")
         error = self.conn.execute("SELECT error FROM publish_runs").fetchone()[0]
-        self.assertEqual(error, "Instagram only accepts JPEG slides")
+        self.assertEqual(error, "the reel's video is missing")
 
     def test_a_crash_mid_publish_is_never_retried(self):
         draft_id = self.add()

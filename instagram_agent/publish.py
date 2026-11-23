@@ -1,8 +1,8 @@
-"""Publish due drafts to @instafoodielove as carousels, single photos or reels: the one Instagram write this project makes.
+"""Publish due reels to @instafoodielove, followed by one Story of the same video.
 
 A draft is due at max(scheduled_for, created_at + VETO_LEAD) when it was approved, or is still
 pending and passed review (unless it's a reel the owner held for approval). Rejecting it in the
-Command Centre before then stops it. Meta fetches each slide or video from a public URL, so they are copied
+Command Centre before then stops it. Meta fetches the video from a public URL, so it is copied
 to an unguessable folder under INSTAGRAM_PUBLIC_DIR for the length of the call and removed afterwards.
 """
 
@@ -127,7 +127,7 @@ def due(conn, now: datetime) -> list:
     found = []
     for row in rows:
         when = posts_at(row["scheduled_for"], row["created_at"])
-        if not rendered(row):
+        if kind(row) != "reel" or not rendered(row):
             continue  # a reel still rendering, or whose render failed, never posts unedited
         if will_post(row["status"], row["review_score"], held(row)) and when <= now <= when + STALE_AFTER:
             if row["fails"] < MAX_ATTEMPTS:
@@ -193,6 +193,7 @@ def publish_reel(
     check: Callable[[str, int], None] = _check_public_video,
     sleep: Callable[[float], None] = time.sleep,
     on_publish: Callable[[], None] = lambda: None,
+    story: bool = False,
 ) -> str:
     """A REELS container from the clip's public URL, polled until Meta has processed it, then media_publish."""
     reel = json.loads(row["reel"] or "{}")
@@ -214,8 +215,10 @@ def publish_reel(
         user = client.user_id
         caption = row["caption"] + ("\n\n" + row["hashtags"] if row["hashtags"] else "")
         params = {"media_type": "REELS", "video_url": url, "caption": caption, "share_to_feed": "true"}
+        if story:
+            params = {"media_type": "STORIES", "video_url": url}
         cover = reel.get("cover_ms")
-        if isinstance(cover, int) and not isinstance(cover, bool) and cover > 0:
+        if not story and isinstance(cover, int) and not isinstance(cover, bool) and cover > 0:
             params["thumb_offset"] = str(cover)
         container = client.post(f"{user}/media", params)["id"]
         for _ in range(REEL_POLLS):
@@ -246,60 +249,41 @@ def publish_draft(
     sleep: Callable[[float], None] = time.sleep,
     on_publish: Callable[[], None] = lambda: None,
 ) -> str:
-    """Containers for each slide and the carousel (or one image), then media_publish (never retried). Returns the ID."""
-    slides = json.loads(row["slides"])
-    folder_in = media_dir / row["draft_id"]
-    if folder_in.is_symlink():
-        raise PublishError("a slide image is missing")
-    images = []
-    for number in range(1, len(slides) + 1):
-        path = folder_in / f"slide-{number}.jpg"
-        if not path.exists() and (folder_in / f"slide-{number}.png").exists():
-            raise PublishError("Instagram only accepts JPEG slides")
-        if path.is_symlink() or not path.is_file():
-            raise PublishError("a slide image is missing")
-        data = path.read_bytes()
-        if not _is_jpeg(data):
-            raise PublishError("Instagram only accepts JPEG slides")
-        images.append(data)
-    if not 1 <= len(images) <= 20:
-        raise PublishError("a post needs 1-20 slides")
-    folder = _public_folder(public_dir)
+    raise PublishError("Feed photo and carousel publishing is disabled; use a reel")
+
+
+def publish_story_once(conn, client, row, media_dir, public_dir, public_url, env, now, **kwargs):
+    """Claim durably before any Story API call; uncertain outcomes are never retried."""
+    draft_id = row["draft_id"]
+    conn.execute("BEGIN IMMEDIATE")
     try:
-        folder.mkdir(mode=0o755)
-        urls = []
-        for number, data in enumerate(images, 1):
-            name = f"{number}.jpg"
-            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
-            with os.fdopen(os.open(folder / name, flags, 0o644), "wb") as stream:
-                stream.write(data)
-            url = f"{public_url.rstrip('/')}/{folder.name}/{name}"
-            check(url, len(data))
-            urls.append(url)
-        user = client.user_id
-        caption = row["caption"] + ("\n\n" + row["hashtags"] if row["hashtags"] else "")
-        if len(urls) == 1:  # one uploaded photo is a single-image post
-            container = client.post(f"{user}/media", {"image_url": urls[0], "caption": caption})["id"]
-        else:
-            children = [client.post(f"{user}/media", {"image_url": u, "is_carousel_item": "true"})["id"] for u in urls]
-            container = client.post(
-                f"{user}/media", {"media_type": "CAROUSEL", "children": ",".join(children), "caption": caption}
-            )["id"]
-        for _ in range(STATUS_POLLS):
-            status = client.get(container, {"fields": "status_code"}).get("status_code")
-            if status == "FINISHED":
-                break
-            if status in ("ERROR", "EXPIRED"):
-                raise PublishError(f"Instagram could not process the carousel ({status})")
-            sleep(3)
-        else:
-            raise PublishError("Instagram was still processing the carousel")
-        on_publish()
-        return str(client.post(f"{user}/media_publish", {"creation_id": container}, retry=False)["id"])
-    except KeyError:
-        raise PublishError("Instagram returned no ID") from None
-    finally:
-        shutil.rmtree(folder, ignore_errors=True)
+        current = conn.execute("SELECT * FROM drafts WHERE draft_id=?", (draft_id,)).fetchone()
+        reel = json.loads(current["reel"] or "{}")
+        if kind(current) != "reel" or current["status"] != "published" or "story" in reel:
+            conn.rollback()
+            return
+        reel["story"] = {"state": "started", "started_at": now.isoformat(timespec="seconds")}
+        conn.execute("UPDATE drafts SET reel=? WHERE draft_id=?", (json.dumps(reel), draft_id))
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+    try:
+        media_id = publish_reel(client, current, media_dir, public_dir, public_url, story=True, **kwargs)
+        result = {"state": "published", "media_id": media_id, "permalink": permalink(client, media_id)}
+    except Exception as exc:
+        result = {"state": "failed", "error": type(exc).__name__}
+        notify(
+            "instagram",
+            "failed",
+            "Reel is live, but its Story failed; not retried",
+            command_centre_link(env, "instagram"),
+            env=env,
+        )
+    with conn:
+        latest = json.loads(conn.execute("SELECT reel FROM drafts WHERE draft_id=?", (draft_id,)).fetchone()[0])
+        latest["story"] = result
+        conn.execute("UPDATE drafts SET reel=? WHERE draft_id=?", (json.dumps(latest), draft_id))
 
 
 def permalink(client: GraphClient, media_id: str) -> str | None:
@@ -349,7 +333,21 @@ def tick(conn, env: dict, media_dir: Path, now: datetime, client: GraphClient | 
     if stuck:
         notify("instagram", "failed", f"{stuck} Instagram post(s) stopped mid-publish: check Instagram", page, env=env)
     published = failed = 0
+    legacy = conn.execute(
+        "SELECT draft_id FROM drafts WHERE status IN ('pending','approved') AND COALESCE(kind,'carousel')!='reel'"
+    ).fetchall()
+    for old in legacy:
+        notify(
+            "instagram",
+            "failed",
+            f"Legacy draft {old['draft_id']} skipped: only reels can publish",
+            page,
+            key=f"instagram-legacy-skipped:{old['draft_id']}",
+            env=env,
+        )
     for row in due(conn, now):
+        if kind(row) != "reel":
+            continue
         stamp = now.isoformat(timespec="seconds")
 
         sent = []
@@ -361,7 +359,7 @@ def tick(conn, env: dict, media_dir: Path, now: datetime, client: GraphClient | 
                 now_row = conn.execute(
                     "SELECT status, review_score, kind, reel FROM drafts WHERE draft_id=?", (draft_id,)
                 ).fetchone()
-                if not will_post(now_row["status"], now_row["review_score"], held(now_row)):
+                if kind(now_row) != "reel" or not will_post(now_row["status"], now_row["review_score"], held(now_row)):
                     raise Withdrawn("rejected or held before posting")
                 _record(conn, draft_id, stamp, "started")
             except BaseException:
@@ -371,8 +369,7 @@ def tick(conn, env: dict, media_dir: Path, now: datetime, client: GraphClient | 
             sent.append(True)
 
         try:
-            send = publish_reel if kind(row) == "reel" else publish_draft
-            media_id = send(client, row, media_dir, Path(public_dir), public_url, on_publish=started, **kwargs)
+            media_id = publish_reel(client, row, media_dir, Path(public_dir), public_url, on_publish=started, **kwargs)
         except Withdrawn:
             continue
         except (PublishError, GraphAPIError, OSError, ValueError) as exc:
@@ -410,5 +407,9 @@ def tick(conn, env: dict, media_dir: Path, now: datetime, client: GraphClient | 
             pass  # linked once sync has stored the post
         link = permalink(client, media_id) or page
         notify("instagram", "ok", f"Instagram post is live: {row['topic']}", link, env=env)
+        try:
+            publish_story_once(conn, client, row, media_dir, Path(public_dir), public_url, env, now, **kwargs)
+        except Exception:
+            notify("instagram", "failed", "Reel is live; Story recording failed, check Instagram", page, env=env)
         published += 1
     return f"published {published}, failed {failed}"

@@ -1969,15 +1969,15 @@
     const status = el("p", { class: "muted", role: "status" });
     // Only Instagram gets the rendered video, so a photo reel needs automatic posting on.
     const renders = Boolean(data.renders && data.renders.photos && data.auto_publish);
-    const reel = el("input", { id: "ig-as-reel", type: "checkbox", name: "reel" });
-    if (!renders) reel.disabled = true;
+    const reel = el("input", { id: "ig-as-reel", type: "checkbox", name: "reel", checked: "", disabled: "" });
+    reel.checked = true;
     const music = musicChoice(data, "ig-photo", false);
-    music.node.hidden = true;
+    music.node.hidden = false;
     reel.addEventListener("change", () => { music.node.hidden = !reel.checked; });
     const form = el("form", { class: "ig-upload" },
       el("label", { for: "ig-photos" }, "Photos (1-10, JPEG or PNG; iPhone photos are converted)"), photos,
       el("label", { for: "ig-note" }, "Note"), note,
-      el("label", { for: "ig-as-reel" }, reel, " Make it a reel (7-30 s, slow zooms, text burned in)"),
+      el("label", { for: "ig-as-reel" }, reel, " Always a reel + Story (slow zooms, text burned in)"),
       renders ? null : muted(data.auto_publish ? "This server can't make reels yet (its ffmpeg lacks what's needed)." : "Photo reels need automatic posting switched on, since the video only goes to Instagram."), music.node,
       el("div", { class: "ig-actions" }, submit), status);
     form.addEventListener("submit", async (event) => {
@@ -2056,7 +2056,7 @@
 
   function clipCard(data, canDecide) {
     const renders = Boolean(data.renders && data.renders.clip);
-    const intro = muted(`Add one of your own clips (3-90 seconds, raw or edited) and a short note. The next daily run turns the oldest waiting clip into the day's reel instead of a carousel; ${renders ? "the agents trim it and burn in the on-screen text" : "it posts as filmed"}. ${data.auto_publish ? "Like a carousel it posts automatically if it scores 70 or more, unless you reject it or hold it for your approval." : "Automatic posting is off, so it won't post on its own."} The note is the only source for the place, dish, rating or price.`);
+    const intro = muted(`Add one of your own clips (3-90 seconds, raw or edited) and a short note. The next daily run turns the oldest waiting clip into the day's reel; ${renders ? "the agents trim it and burn in the on-screen text" : "it posts as filmed"}. ${data.auto_publish ? "It publishes as a reel and Story automatically if it scores 70 or more, unless you reject it or hold it for your approval." : "Automatic posting is off, so it won't post on its own."} The note is the only source for the place, dish, rating or price.`);
     if (!canDecide) return card("Add a reel clip", intro, muted("Adding clips needs RECOMMEND permission."));
     if (data.state !== "available") return card("Add a reel clip", intro, muted("Not available until the Instagram agent has run on this server."));
     const clip = el("input", { id: "ig-clip", type: "file", name: "clip", accept: "video/mp4,video/quicktime", required: "" });
@@ -2264,8 +2264,8 @@
     view.append(tokenCard(data.token));
     view.append(card("Daily drafts",
       muted(data.auto_publish
-        ? "One carousel draft for @instafoodielove is ready by 12:00 London time. If it passes review it posts automatically at its publish time, at least an hour after it's made. Reject it before then to stop it; approve a weaker one to post it."
-        : "One carousel draft for @instafoodielove is ready by 12:00 London time. Automatic posting is off, so nothing is posted from here: approve it if you like it, then post it yourself."),
+        ? "One reel draft for @instafoodielove is ready by 12:00 London time. If it passes review it posts automatically at its publish time, at least an hour after it's made. Reject it before then to stop it; approve a weaker one to post it."
+        : "One reel draft for @instafoodielove is ready by 12:00 London time. Automatic posting is off, so nothing is posted from here: approve it if you like it, then post it yourself."),
       last ? keyValues([["Last run", when(last.started_at)], ["Result", last.outcome], ["Drafts made", last.drafts],
         ...(last.error ? [["Error", last.error]] : [])])
         : muted(data.state === "not_configured" ? "Not connected: there is no Instagram database on this server yet." : "No daily run recorded yet.")));

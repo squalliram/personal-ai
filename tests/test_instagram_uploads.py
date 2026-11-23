@@ -186,7 +186,7 @@ class UploadApiTests(Fixture):
                     "created_at": data["uploads"][0]["created_at"],
                     "note": NOTE,
                     "photos": 2,
-                    "reel": False,
+                    "reel": True,
                 }
             ],
         )
@@ -359,7 +359,9 @@ class DailyFromUploadTests(Fixture):
         review_system, review_payload = ai.calls[-1]
         self.assertTrue(review_system.startswith("You are the Review agent"))
         self.assertEqual(review_payload["owner_note"], NOTE)
-        self.assertEqual(self.titles(), [f'Your photos ("{NOTE}") are now an Instagram draft, posting is manual'])
+        self.assertEqual(row["kind"], "reel")
+        self.assertEqual(json.loads(row["reel"])["source"], "photos")
+        self.assertEqual(self.titles(), [f'Your photos ("{NOTE}") are now a reel draft, posting is manual'])
         self.assertEqual(self.tick(PhotoAI([], [])), "skipped")
 
     def test_no_upload_falls_back_to_the_ai_draft(self):

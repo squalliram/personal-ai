@@ -80,6 +80,13 @@ class CommandTests(unittest.TestCase):
         self.assertEqual(render.photo_seconds(2), 3.5)
         self.assertEqual(render.photo_seconds(10) * 10, 30.0)
 
+    def test_ai_png_slides_and_owner_jpegs_use_the_same_photo_reel_path(self):
+        (self.dir / "slide-1.png").write_bytes(b"png")
+        (self.dir / "slide-2.jpg").write_bytes(b"jpeg")
+        argv, _ = render.command(self.dir, photo_reel(photos=2), self.work, CAPS, None)
+        self.assertIn(str(self.dir / "slide-1.png"), argv)
+        self.assertIn(str(self.dir / "slide-2.jpg"), argv)
+
     def test_photo_reel_is_ken_burns_9_16_h264_aac_with_moov_first(self):
         argv, seconds = render.command(self.dir, photo_reel(), self.work, CAPS, None)
         self.assertEqual(seconds, 9.0)
@@ -151,7 +158,7 @@ class RealRenderTests(Case):
         uploads.save(self.conn, self.media, "Coffee", [(jpeg, jpeg)], NOW, reel=True)
         upload = uploads.oldest(self.conn)
         draft = drafts.generate_from_upload(
-            self.conn, ReelAI({**REEL, "music_track": track_id}), NOW, upload, self.media, as_reel=True
+            self.conn, ReelAI({**REEL, "music_track": track_id}), NOW, upload, self.media
         )
         draft_id = drafts.store_upload_draft(self.conn, draft, upload, self.media, NOW)
         reel = render.render(self.conn, self.media, draft_id, draft["reel"], PROBE())
@@ -320,7 +327,7 @@ class ReelDraftRenderTests(Case):
         uploads.save(self.conn, self.media, "Coffee", [(jpeg, jpeg)], NOW, reel=True)
         ai = ReelAI({**REEL, "music_track": track_id})
         with patch.object(ai, "chat_json", wraps=ai.chat_json) as chat:
-            draft = drafts.generate_from_upload(self.conn, ai, NOW, uploads.oldest(self.conn), self.media, as_reel=True)
+            draft = drafts.generate_from_upload(self.conn, ai, NOW, uploads.oldest(self.conn), self.media)
         self.assertEqual(
             draft["reel"]["music"],
             {"track_id": track_id, "mix": "replace", "title": "Warm coffee lo-fi", "licence": "CC0"},
@@ -364,7 +371,7 @@ class ReelDraftRenderTests(Case):
                     self.conn.execute("UPDATE uploads SET music='not json'")
                 upload = self.conn.execute("SELECT * FROM uploads WHERE upload_id=?", (upload_id,)).fetchone()
                 ai = ReelAI({**REEL, "music_track": track_id})
-                draft = drafts.generate_from_upload(self.conn, ai, NOW, upload, self.media, as_reel=True)
+                draft = drafts.generate_from_upload(self.conn, ai, NOW, upload, self.media)
                 self.assertNotIn("music", draft["reel"])
                 self.assertNotIn("music_tracks are", ai.calls[0])
 
@@ -417,7 +424,7 @@ class ReelDraftRenderTests(Case):
                                  reel=True, music={"pick": "agents", "mix": "under"})  # fmt: skip
         upload = uploads.oldest(self.conn)
         ai = ReelAI({**REEL, "music_track": track_id})
-        draft = drafts.generate_from_upload(self.conn, ai, NOW, upload, self.media, as_reel=True)
+        draft = drafts.generate_from_upload(self.conn, ai, NOW, upload, self.media)
         self.assertIn("9-second reel", ai.calls[0])
         self.assertIn("music_track", ai.calls[0])
         self.assertEqual(draft["kind"], "reel")
@@ -439,11 +446,10 @@ class ReelDraftRenderTests(Case):
             NOW,
             uploads.oldest(self.conn),
             self.media,
-            as_reel=True,
         )
         self.assertNotIn("music", draft["reel"])
         odd = drafts.generate_from_upload(
-            self.conn, ReelAI({**REEL, "music_track": ["x"]}), NOW, uploads.oldest(self.conn), self.media, as_reel=True
+            self.conn, ReelAI({**REEL, "music_track": ["x"]}), NOW, uploads.oldest(self.conn), self.media
         )
         self.assertNotIn("music", odd["reel"])
 
@@ -463,6 +469,14 @@ class ReelDraftRenderTests(Case):
 
 
 class MusicApiTests(Fixture):
+    def test_photo_reel_control_is_always_on_and_approval_hold_remains(self):
+        script = (Path(__file__).resolve().parents[1] / "command_centre/static/app.js").read_text()
+        self.assertIn('name: "reel", checked: "", disabled: ""', script)
+        self.assertIn("Always a reel + Story", script)
+        self.assertIn("Hold for my approval", script)
+        self.assertNotIn("One carousel draft", script)
+        self.assertNotIn("Make it a reel", script)
+
     @unittest.skipUnless(shutil.which("node"), "Node.js is required for form checks")
     def test_background_refresh_preserves_changed_music_choices(self):
         script = (Path(__file__).resolve().parents[1] / "command_centre/static/app.js").read_text()

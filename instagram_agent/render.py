@@ -200,7 +200,11 @@ def command(draft_dir: Path, reel: dict, work: Path, caps: dict, track: Path | N
         count = int(reel["photos"])
         each = photo_seconds(count)
         for n in range(count):
-            inputs += ["-i", str(draft_dir / f"slide-{n + 1}.jpg")]
+            image = draft_dir / f"slide-{n + 1}.jpg"
+            if not image.exists():
+                image = draft_dir / f"slide-{n + 1}.png"
+            _safe(image)
+            inputs += ["-i", str(image)]
             graph.append(_frame(f"{n}:v", f"p{n}") + _ken_burns(n, each) + f"[v{n}]")
         graph.append("".join(f"[v{n}]" for n in range(count)) + f"concat=n={count}:v=1:a=0[base]")
         seconds, source_audio = round(each * count, 2), None
