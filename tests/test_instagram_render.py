@@ -463,6 +463,43 @@ class ReelDraftRenderTests(Case):
 
 
 class MusicApiTests(Fixture):
+    @unittest.skipUnless(shutil.which("node"), "Node.js is required for form checks")
+    def test_background_refresh_preserves_changed_music_choices(self):
+        script = (Path(__file__).resolve().parents[1] / "command_centre/static/app.js").read_text()
+        check = script[
+            script.index("    const unsent = ") : script.index("    if (background && (editing || unsent)) return;")
+        ]
+        harness = (
+            """
+const assert = require('node:assert/strict');
+function hasUnsent(fields) {
+  const $ = () => ({querySelectorAll(selector) {
+    assert.ok(selector.includes('form.ig-upload select'));
+    return fields;
+  }});
+"""
+            + check
+            + """
+  return unsent;
+}
+function select(value, options) { return {value, options, matches: () => true}; }
+const music = [{value: 'off', defaultSelected: false}, {value: 'agents', defaultSelected: true}, {value: 'track', defaultSelected: false}];
+assert.equal(hasUnsent([]), false);
+assert.equal(hasUnsent([select('agents', music)]), false);
+assert.equal(hasUnsent([select('off', music)]), true);
+assert.equal(hasUnsent([select('track', music)]), true);
+const mix = [{value: 'under', defaultSelected: false}, {value: 'replace', defaultSelected: false}];
+assert.equal(hasUnsent([select('under', mix)]), false);
+assert.equal(hasUnsent([select('replace', mix)]), true);
+assert.equal(hasUnsent([{files: [], matches: () => false}]), false);
+assert.equal(hasUnsent([{files: ['photo'], matches: () => false}]), true);
+assert.equal(hasUnsent([{value: '', matches: () => false}]), false);
+assert.equal(hasUnsent([{value: 'Coffee', matches: () => false}]), true);
+"""
+        )
+        result = subprocess.run(["node", "-e", harness], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_form_defaults_and_off_are_stored_for_photos_and_clips(self):
         client = self.client()
         for choice in (None, "off"):

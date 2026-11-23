@@ -2353,9 +2353,11 @@
     if (current !== renderCount) return;
     if (background && section[0] === "energy" && energyRefreshOwner !== null) return; // a refresh began while this render loaded
     const editing = document.activeElement && $("view").contains(document.activeElement) && document.activeElement.matches("input, textarea, select");
-    // Photos picked or a note typed in the upload form would be lost if the form were rebuilt.
-    const unsent = [...$("view").querySelectorAll("form.ig-upload input[type=file], form.ig-upload textarea")]
-      .some((field) => (field.files ? field.files.length > 0 : field.value.trim() !== ""));
+    // Unsent uploads and changed music choices would be lost if the form were rebuilt.
+    const unsent = [...$("view").querySelectorAll("form.ig-upload input[type=file], form.ig-upload textarea, form.ig-upload select")]
+      .some((field) => field.matches("select")
+        ? field.value !== ([...field.options].find((option) => option.defaultSelected) || field.options[0]).value
+        : (field.files ? field.files.length > 0 : field.value.trim() !== ""));
     if (background && (editing || unsent)) return;
     const fresh = [...view.childNodes];
     const title = $("view-title").textContent;
