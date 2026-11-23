@@ -1862,12 +1862,14 @@
   }
 
   function draftCard(draft, canDecide, auto) {
-    const slides = draft.kind === "reel" && draft.reel ? reelScript(draft.reel) : el("div", { class: "ig-slides" }, draft.slides.map((slide, i) => el("figure", {},
+    const isReel = draft.kind === "reel" && draft.reel;
+    const images = !isReel || draft.reel.source === "photos" ? el("div", { class: "ig-slides" }, draft.slides.map((slide, i) => el("figure", {},
       el("img", {
         src: slideUrl(draft, i + 1),
         alt: slide.text, width: "200", height: "250", loading: "lazy",
       }),
-      el("figcaption", {}, `${i + 1}. ${slide.text}`))));
+      el("figcaption", {}, `${i + 1}. ${slide.text}`)))) : null;
+    const slides = isReel ? el("div", {}, images, reelScript(draft.reel)) : images;
     const children = [
       slides,
       draft.note ? el("p", { class: "muted" }, `From your ${draft.kind === "reel" && !(draft.reel && draft.reel.source === "photos") ? "clip" : "photos"}. Your note: ${draft.note}`) : null,

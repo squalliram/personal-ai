@@ -469,6 +469,40 @@ class ReelDraftRenderTests(Case):
 
 
 class MusicApiTests(Fixture):
+    @unittest.skipUnless(shutil.which("node"), "Node.js is required for card checks")
+    def test_photo_reel_cards_show_each_slide_and_keep_the_reel_script(self):
+        script = (Path(__file__).resolve().parents[1] / "command_centre/static/app.js").read_text()
+        function = script[script.index("  function draftCard(") : script.index("  const MAX_PHOTOS")]
+        harness = (
+            """
+const assert = require('node:assert/strict');
+function el(tag, attrs, ...children) { return {tag, attrs, children: children.flat().filter(Boolean)}; }
+const card = (title, ...children) => el('card', {title}, ...children);
+const reelScript = () => el('script', {});
+const slideUrl = (draft, n) => `slide/${draft.draft_id}/${n}`;
+const keyValues = () => null, when = x => x, publishNote = () => null;
+const muted = text => el('p', {}, text), DRAFT_STATUS = {};
+function nodes(node, tag) { return !node || typeof node !== 'object' ? [] :
+  [...(node.tag === tag ? [node] : []), ...node.children.flatMap(child => nodes(child, tag))]; }
+"""
+            + function
+            + """
+const base = {draft_id:'abc', kind:'reel', status:'published', hashtags:[],
+  slides:[{text:'First'}, {text:'Second'}], reel:{source:'photos'}};
+for (const note of [undefined, 'Owner note']) {
+  const tree = draftCard({...base, note}, false, true);
+  assert.deepEqual(nodes(tree, 'img').map(n => n.attrs.src), ['slide/abc/1', 'slide/abc/2']);
+  assert.deepEqual(nodes(tree, 'img').map(n => n.attrs.alt), ['First', 'Second']);
+  assert.equal(nodes(tree, 'script').length, 1);
+}
+assert.equal(nodes(draftCard({...base, reel:{source:'clip'}}, false, true), 'img').length, 0);
+assert.equal(nodes(draftCard({...base, slides:[]}, false, true), 'img').length, 0);
+assert.equal(nodes(draftCard({...base, kind:'carousel', reel:null}, false, true), 'img').length, 2);
+"""
+        )
+        result = subprocess.run(["node", "-e", harness], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_photo_reel_control_is_always_on_and_approval_hold_remains(self):
         script = (Path(__file__).resolve().parents[1] / "command_centre/static/app.js").read_text()
         self.assertIn('name: "reel", checked: "", disabled: ""', script)
