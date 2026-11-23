@@ -18,7 +18,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - name: Stop tonight's carousel before preparing its replacement
+      - name: Publish the owner-approved soup reel and Story once
         env:
           CPANEL_SSH_HOST: ${{ secrets.CPANEL_SSH_HOST }}
           CPANEL_SSH_USERNAME: ${{ secrets.CPANEL_SSH_USERNAME }}
@@ -38,11 +38,18 @@ jobs:
           ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes -o StrictHostKeyChecking=yes \
             -o ConnectTimeout=20 -p "${CPANEL_SSH_PORT:-22}" \
             "$CPANEL_SSH_USERNAME@$CPANEL_SSH_HOST" \
-            "cd '$CPANEL_APP_PATH' && . ./scripts/find-python.sh && \"\$PYTHON\" -c 'import sys; exec(compile(sys.stdin.read(),\"soup_now\",\"exec\"))'" \
+            "cd '$CPANEL_APP_PATH' && . ./scripts/find-python.sh && \"\$PYTHON\" -c 'import sys; exec(compile(sys.stdin.read(),\"soup_now\",\"exec\"))' publish" \
             < deploy/command-centre/soup_now.py | tee result.json
+          id=$(python3 -c 'import json; r=json.loads(open("result.json").read().splitlines()[-1]); assert r["outcome"] == "published"; print(r["draft_id"])')
+          [[ "$id" =~ ^[0-9a-f]{16}$ ]] || exit 1
+          scp -i ~/.ssh/id_ed25519 -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            -P "${CPANEL_SSH_PORT:-22}" \
+            "$CPANEL_SSH_USERNAME@$CPANEL_SSH_HOST:$CPANEL_APP_PATH/data/instagram/drafts/$id/reel.mp4" reel.mp4
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: soup-result
-          path: result.json
+          name: soup-reel-and-story
+          path: |
+            result.json
+            reel.mp4
           retention-days: 7
