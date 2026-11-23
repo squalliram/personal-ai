@@ -702,6 +702,9 @@ class ReelCommandCentreTests(Case):
         )
         with self.conn:
             storage.insert_draft(self.conn, draft, MADE.date().isoformat(), MADE.isoformat())
+            self.conn.execute(
+                "UPDATE drafts SET slides=? WHERE draft_id=?", (json.dumps(draft["slides"]), draft["draft_id"])
+            )
         settings = make_settings(self.root, instagram_db=self.db, instagram_media=self.media)
         [shown] = sources.instagram_drafts(settings)["drafts"]
         self.assertEqual(

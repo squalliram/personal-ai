@@ -655,7 +655,7 @@ def instagram_drafts(settings: Settings, limit: int = 30, now: datetime | None =
                     slides = [{"text": f"Photo {n}", "file": f"slide-{n}.jpg"} for n in range(1, count + 1)]
                 else:
                     slides = [
-                        {"file": f"slide-{n}.jpg", **slide} if isinstance(slide, dict) else slide
+                        {"file": f"slide-{n}.jpg", **(slide if isinstance(slide, dict) else {})}
                         for n, slide in enumerate(slides, 1)
                     ]
         result["drafts"].append(
