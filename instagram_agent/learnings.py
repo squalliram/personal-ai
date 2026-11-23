@@ -156,7 +156,8 @@ def _growth_features(post: dict) -> list[tuple[str, str]]:
     sentences = re.split(r"[.!?]+\s+|\n+", caption.strip())
     ask = re.match(
         r"\W*(?:please\s+)?(follow|save|share|comment|"
-        r"send(?=\s+(?:it|this|(?:this|the)\s+(?:post|reel|video|carousel))\s+to\s+\w))\b",
+        r"send(?=\s+(?:it|this(?:\s+one)?|(?:this|the)\s+(?:post|reel|video|carousel|clip|photo))"
+        r"\s+to\s+@?\w))\b",
         sentences[-1],
         re.IGNORECASE,
     )

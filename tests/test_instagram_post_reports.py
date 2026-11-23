@@ -319,6 +319,9 @@ class LearningsTests(Case):
             "caption": "Coffee after lunch. Send this to the friend you'd bring.",
         }
         self.assertIn(("caption ask", "share"), learnings._growth_features(post))
+        for caption in ("Send this to @coffee.club", "Send this one to your brunch buddy", "Send this reel to them"):
+            with self.subTest(caption=caption):
+                self.assertIn(("caption ask", "share"), learnings._growth_features({**post, "caption": caption}))
         dm = {**post, "caption": "Send me a DM with your favourite café."}
         self.assertNotIn(("caption ask", "share"), learnings._growth_features(dm))
 
