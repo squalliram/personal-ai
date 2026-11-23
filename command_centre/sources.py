@@ -648,6 +648,10 @@ def instagram_drafts(settings: Settings, limit: int = 30, now: datetime | None =
             reel = json.loads(row["reel"]) if draft_kind == "reel" else None
         except (TypeError, ValueError):
             reel = None
+        if isinstance(reel, dict) and reel.get("source") == "photos":
+            count = reel.get("photos")
+            if type(count) is int and 1 <= count <= 10 and len(slides) != count:
+                slides = [{"text": f"Photo {n}", "file": f"slide-{n}.jpg"} for n in range(1, count + 1)]
         result["drafts"].append(
             {
                 **dict(row),

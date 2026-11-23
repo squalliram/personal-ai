@@ -37,6 +37,9 @@ class FakeGraph:
 
 class PreflightTests(unittest.TestCase):
     def setUp(self):
+        self.validation = patch.object(preflight.video, "check", return_value=({"seconds": 9.0}, []))
+        self.validation_mock = self.validation.start()
+        self.addCleanup(self.validation.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
@@ -60,6 +63,8 @@ class PreflightTests(unittest.TestCase):
                     "draft_id": draft_id,
                     "category": "coffee",
                     "topic": "Flat whites",
+                    "kind": "reel",
+                    "reel": {"render": "done", "file": "reel.mp4"},
                     "slides": [{"text": f"Slide {n}", "file": f"slide-{n}.jpg"} for n in range(1, slides + 1)],
                     "caption": caption,
                     "hashtags": ["#coffee"],
@@ -71,6 +76,7 @@ class PreflightTests(unittest.TestCase):
             )
         folder = self.media / draft_id
         folder.mkdir(parents=True, exist_ok=True)
+        (folder / "reel.mp4").write_bytes(b"rendered video")
         for number in range(1, slides + 1):
             (folder / f"slide-{number}.jpg").write_bytes(JPEG)
         return draft_id
@@ -136,18 +142,18 @@ class PreflightTests(unittest.TestCase):
         self.assertFalse(self.check(report, "publish_window")["ok"])
         self.assertEqual(report["eligible_drafts"], [])
 
-    def test_png_missing_and_malformed_media_fail_clearly(self):
+    def test_invalid_missing_and_malformed_reel_media_fail_clearly(self):
         self.add()
-        slide = self.media / DRAFT / "slide-2.jpg"
-        slide.write_bytes(b"\x89PNG\r\n\x1a\n" + b"image")
+        slide = self.media / DRAFT / "reel.mp4"
+        self.validation_mock.return_value = ({}, ["invalid video"])
         report = self.preflight()
         self.assertFalse(self.check(report, "draft_media")["ok"])
-        self.assertIn("not JPEG", self.check(report, "draft_media")["detail"])
+        self.assertIn("invalid", self.check(report, "draft_media")["detail"])
         slide.unlink()
         report = self.preflight()
         self.assertIn("missing", self.check(report, "draft_media")["detail"])
         with self.conn:
-            self.conn.execute("UPDATE drafts SET slides='not-json' WHERE draft_id=?", (DRAFT,))
+            self.conn.execute("UPDATE drafts SET reel='not-json' WHERE draft_id=?", (DRAFT,))
         report = self.preflight()
         self.assertIn("invalid", self.check(report, "draft_media")["detail"])
 
@@ -198,7 +204,7 @@ class PreflightTests(unittest.TestCase):
         self.assertFalse(self.check(report, "single_candidate")["ok"])
         self.assertEqual(report["eligible_drafts"], [DRAFT, OTHER])
 
-    def test_photo_post_with_one_image_is_ready(self):
+    def test_photo_reel_with_one_image_is_ready(self):
         self.add(slides=1)
         report = self.preflight()
         self.assertTrue(report["ok"], report)
@@ -225,11 +231,26 @@ class PreflightTests(unittest.TestCase):
         report = self.preflight(now=now)
         self.assertFalse(report["ok"])
         self.assertEqual(report["eligible_drafts"], [OTHER, DRAFT])
-        self.assertEqual([row["draft_id"] for row in publish.due(self.conn, now)], [])
+        self.assertEqual([row["draft_id"] for row in publish.due(self.conn, now)], [DRAFT])
 
-        with patch.object(render, "render", return_value={"render": "done"}):
+        with patch.object(render, "render", return_value={"render": "done"}) as made:
             self.assertEqual(render.render_due(self.conn, self.media, now=now), "rendered 1, failed 0")
-        self.assertEqual([row["draft_id"] for row in publish.due(self.conn, now)], [OTHER])
+        made.assert_called_once_with(self.conn, self.media, OTHER, {"render": "pending"})
+        self.assertCountEqual([row["draft_id"] for row in publish.due(self.conn, now)], [DRAFT, OTHER])
+
+    def test_legacy_drafts_do_not_block_a_rendered_reel(self):
+        self.add()
+        self.add(OTHER)
+        with self.conn:
+            self.conn.execute("UPDATE drafts SET kind='carousel',reel=NULL WHERE draft_id=?", (OTHER,))
+        self.assertEqual(self.preflight()["eligible_drafts"], [DRAFT])
+        self.assertTrue(self.preflight()["ok"])
+        self.assertIn("Legacy", self.check(self.preflight(draft_id=OTHER), "draft_media")["detail"])
+
+    def test_long_video_fails_read_only_reel_preflight(self):
+        self.add()
+        self.validation_mock.return_value = ({"seconds": 75}, [])
+        self.assertIn("60 seconds", self.check(self.preflight(), "draft_media")["detail"])
 
     def test_old_or_failed_reel_does_not_block_preflight(self):
         self.add()

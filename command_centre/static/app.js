@@ -1826,7 +1826,7 @@
         $("view-status").textContent = "Couldn't copy automatically; select the caption above and copy it.";
       }
     });
-    if (draft.kind === "reel") return el("div", { class: "ig-actions" }, copy);
+    if (draft.kind === "reel" && (!draft.reel || draft.reel.source !== "photos")) return el("div", { class: "ig-actions" }, copy);
     const downloads = draft.slides.map((slide, i) =>
       el("a", { href: slideUrl(draft, i + 1), download: `instafoodielove-${draft.created_on}-${i + 1}.${slide.format}` }, `Slide ${i + 1}`));
     return el("div", { class: "ig-actions" }, copy, el("span", { class: "ig-downloads" }, "Download: ", downloads));
@@ -1899,7 +1899,7 @@
       children.push(muted("Approving or rejecting needs RECOMMEND permission."));
     } else if (draft.status === "approved" && !auto) {
       children.push(muted(draft.kind === "reel" && draft.reel && draft.reel.source === "photos"
-        ? "Approved, but automatic posting is off and the made reel only goes to Instagram. Switch automatic posting on to post it."
+        ? "Approved, but automatic posting is off. Download the slides to assemble a reel manually, or switch automatic posting on to publish the made reel and Story."
         : draft.kind === "reel"
         ? "Approved. Post it yourself: share your original clip as a reel, add the on-screen text above in Instagram's editor and copy the caption."
         : "Approved and saved as an example. Post it yourself: download the slides in order and copy the caption."));

@@ -469,6 +469,28 @@ class ReelDraftRenderTests(Case):
 
 
 class MusicApiTests(Fixture):
+    @unittest.skipUnless(shutil.which("node"), "Node.js is required for export checks")
+    def test_photo_reels_keep_slide_exports_when_posting_is_manual(self):
+        script = (Path(__file__).resolve().parents[1] / "command_centre/static/app.js").read_text()
+        function = script[script.index("  function postKit(") : script.index("  function publishNote(")]
+        harness = (
+            """
+const assert = require('node:assert/strict');
+function el(tag, attrs, ...children) { return {tag, attrs, children:children.flat().filter(Boolean), addEventListener(){}}; }
+const slideUrl = (draft, n) => `slide/${n}`;
+function links(node) { return !node || typeof node !== 'object' ? [] :
+  [...(node.tag === 'a' ? [node] : []), ...node.children.flatMap(links)]; }
+"""
+            + function
+            + """
+const draft = {kind:'reel', reel:{source:'photos'}, slides:[{format:'jpg'}, {format:'png'}]};
+assert.deepEqual(links(postKit(draft)).map(link => link.attrs.href), ['slide/1', 'slide/2']);
+assert.equal(links(postKit({...draft, reel:{source:'clip'}})).length, 0);
+"""
+        )
+        result = subprocess.run(["node", "-e", harness], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     @unittest.skipUnless(shutil.which("node"), "Node.js is required for card checks")
     def test_photo_reel_cards_show_each_slide_and_keep_the_reel_script(self):
         script = (Path(__file__).resolve().parents[1] / "command_centre/static/app.js").read_text()

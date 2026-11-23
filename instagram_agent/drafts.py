@@ -670,7 +670,16 @@ def render_and_store(
             continue
         try:
             seconds = render.photo_seconds(len(draft["slides"])) * len(draft["slides"])
-            draft = {**draft, "kind": "reel", "reel": {"hook": draft["topic"], "on_screen": [], "seconds": seconds}}
+            each = render.photo_seconds(len(draft["slides"]))
+            beats = (
+                []
+                if getattr(ai, "draws_text", True)
+                else [
+                    {"start": round(n * each, 2), "end": round((n + 1) * each, 2), "text": slide["text"]}
+                    for n, slide in enumerate(draft["slides"])
+                ]
+            )
+            draft = {**draft, "kind": "reel", "reel": {"hook": draft["topic"], "on_screen": beats, "seconds": seconds}}
             tracks = music.for_reel(conn, media_dir)
             selected = {}
             if tracks:

@@ -418,6 +418,7 @@ class ReelDraftTests(Case):
         with (
             patch.object(cli, "model_client", return_value=ReelAI(REEL)),
             patch.object(drafts, "generate", return_value=[]) as fallback,
+            patch.object(cli.render, "can_render", return_value=True),
         ):
             cli.daily(self.conn, env, self.media, now=NOW)
         fallback.assert_called_once()
@@ -432,6 +433,7 @@ class ReelDraftTests(Case):
             patch.object(drafts, "store_clip_draft", return_value=None),
             patch.object(drafts, "generate_from_upload", return_value={"topic": "t"}) as from_photos,
             patch.object(drafts, "store_upload_draft", return_value="d" * 16),
+            patch.object(cli.render, "can_render", return_value=True),
         ):
             cli.daily(self.conn, env, self.media, now=NOW)
         from_photos.assert_called_once()
@@ -676,6 +678,17 @@ class ReelCommandCentreTests(Case):
         self.assertEqual(
             anonymous.request("POST", "/api/v1/instagram/clips", body={"note": NOTE, "size": 10}).status, 401
         )
+
+    def test_photo_reel_preview_lists_photos_not_script_beats(self):
+        draft = drafts.normalise_reel_draft(REEL, 10.0)
+        draft["reel"].update(source="photos", photos=7)
+        draft.update(draft_id="c" * 16, review_score=95, scheduled_for=SLOT, hashtags=[])
+        with self.conn:
+            storage.insert_draft(self.conn, draft, MADE.date().isoformat(), MADE.isoformat())
+        settings = make_settings(self.root, instagram_db=self.db, instagram_media=self.media)
+        [shown] = sources.instagram_drafts(settings)["drafts"]
+        self.assertEqual(len(shown["slides"]), 7)
+        self.assertEqual(shown["slides"][6], {"text": "Photo 7", "format": "jpg"})
 
     def test_reel_draft_shows_its_script_and_auto_posts_unless_held(self):
         draft = drafts.normalise_reel_draft(REEL, 10.0)

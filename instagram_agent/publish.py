@@ -23,7 +23,7 @@ from urllib.request import Request, urlopen
 
 from notifications import command_centre_link, notify
 
-from . import storage
+from . import storage, video
 from .drafts import PASS_SCORE
 from .graph import GraphAPIError, GraphClient
 
@@ -203,6 +203,11 @@ def publish_reel(
     source = media_dir / row["draft_id"] / name
     if source.parent.is_symlink() or source.is_symlink() or not source.is_file():
         raise PublishError("the reel's video is missing")
+    facts, problems = video.read(source)
+    if problems or not isinstance(facts.get("seconds"), (int, float)):
+        raise PublishError("video duration unavailable; upload a valid clip for the reel and Story")
+    if facts["seconds"] > 60:
+        raise PublishError("Reel and Story need the same video of at most 60 seconds; upload a shorter clip")
     _quota_left(client)
     folder = _public_folder(public_dir)
     try:

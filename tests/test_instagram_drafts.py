@@ -146,6 +146,16 @@ class DraftTests(unittest.TestCase):
         self.assertEqual(reel["music"]["track_id"], track["track_id"])
         self.assertIn("music_tracks", json.loads(pick.call_args.args[1]))
 
+    def test_textless_image_provider_gets_one_timed_beat_per_slide(self):
+        ai = FakeAI([], [])
+        ai.draws_text = False
+        item = drafts.normalise(raw_draft("coffee"))
+        drafts.render_and_store(self.conn, ai, [item], self.root / "drafts", MORNING)
+        reel = json.loads(self.conn.execute("SELECT reel FROM drafts").fetchone()[0])
+        self.assertEqual([beat["text"] for beat in reel["on_screen"]], [s["text"] for s in item["slides"]])
+        self.assertEqual([(b["start"], b["end"]) for b in reel["on_screen"]], [(0, 3), (3, 6), (6, 9), (9, 12)])
+        self.assertEqual(reel["on_screen"][-1]["end"], reel["seconds"])
+
     def test_music_selection_failure_does_not_leave_a_partial_draft(self):
         ai = FakeAI([], [])
         media = self.root / "drafts"
