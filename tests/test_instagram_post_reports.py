@@ -319,6 +319,8 @@ class LearningsTests(Case):
             "caption": "Coffee after lunch. Send this to the friend you'd bring.",
         }
         self.assertIn(("caption ask", "share"), learnings._growth_features(post))
+        dm = {**post, "caption": "Send me a DM with your favourite café."}
+        self.assertNotIn(("caption ask", "share"), learnings._growth_features(dm))
 
     def test_growth_uses_all_checkpoints_as_peers_and_counts_each_post_once(self):
         for n in range(6):

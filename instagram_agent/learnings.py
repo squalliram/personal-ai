@@ -154,7 +154,12 @@ def _growth_features(post: dict) -> list[tuple[str, str]]:
     mentions = dict.fromkeys(re.findall(r"(?<![\w.])@([a-z0-9_][a-z0-9_.]*)", caption.lower()))
     features_found.extend(("caption mention", f"@{name.rstrip('.')}") for name in mentions)
     sentences = re.split(r"[.!?]+\s+|\n+", caption.strip())
-    ask = re.match(r"\W*(?:please\s+)?(follow|save|share|send|comment)\b", sentences[-1], re.IGNORECASE)
+    ask = re.match(
+        r"\W*(?:please\s+)?(follow|save|share|comment|"
+        r"send(?=\s+(?:it|this|(?:this|the)\s+(?:post|reel|video|carousel))\s+to\s+\w))\b",
+        sentences[-1],
+        re.IGNORECASE,
+    )
     if ask:
         action = ask[1].lower()
         features_found.append(("caption ask", "share" if action == "send" else action))
