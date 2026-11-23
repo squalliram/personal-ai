@@ -299,6 +299,14 @@ class LearningsTests(Case):
         self.measure("9001", 1000, days=200)
         self.assertEqual(learnings.summary(self.conn, PUBLISHED)["posts_measured"], 0)
 
+    def test_sending_the_post_counts_as_a_share_ask(self):
+        post = {
+            "format": "reel",
+            "posted": PUBLISHED,
+            "caption": "Coffee after lunch. Send this to the friend you'd bring.",
+        }
+        self.assertIn(("caption ask", "share"), learnings._growth_features(post))
+
     def test_growth_uses_all_checkpoints_as_peers_and_counts_each_post_once(self):
         for n in range(6):
             at = PUBLISHED - timedelta(days=30 - n)
