@@ -27,7 +27,7 @@ morning, so edit it on GitHub to change the voice; the next deploy picks it up. 
 - First line is the hook and works on its own before "more": a specific claim or surprise, not "Hey foodies!"
 - Specifics over adjectives: the dish, the price range, the area, when to go, what to skip.
 - Short lines, one idea each. British spelling (flavour, favourite, colour).
-- End with one ask only: save it, send it to someone, or answer a simple question in the comments.
+- End with one ask only: follow for more like this, save it, send it to someone, or answer a simple question in the comments.
 
 ## Accounts I follow for style (reference only, never copy)
 
@@ -58,5 +58,5 @@ Home cooking and baking: @haliskitchen, @the1whobakes, @bakeandkies, @hungryhusb
 
 ## The ask
 
-- **Default:** "Save this for your next…" or "Send this to the friend you'd bring"
+- **Default:** Give readers one specific reason to follow for more posts like this. Use a save, share or comment ask instead when the account's results favour it.
 - **Where my link goes:** (none)

@@ -10,11 +10,14 @@ Command Centre; it is never evidence for a venue, dish, rating or price.
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import statistics
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
 from .analysis import LONDON, hashtags
+from .graph import CONVERSION_METRICS
 from .post_report import parse_time
 
 WINDOW_DAYS = 90
@@ -24,6 +27,8 @@ MIN_GROUP = 2
 ABOVE, BELOW = 1.15, 0.85
 FINDINGS_SHOWN = 8
 TAGS_SHOWN = 4
+GROWTH_METRICS = (*CONVERSION_METRICS, "shares", "saved")
+MIN_CONVERSION_GROUP = 3
 
 
 def _engagement(row: dict) -> float | None:
@@ -135,6 +140,76 @@ def features(post: dict) -> list[tuple[str, str]]:
     return found
 
 
+def _growth_features(post: dict) -> list[tuple[str, str]]:
+    features_found = features(post)
+    caption = post.get("caption") or ""
+    mentions = dict.fromkeys(re.findall(r"(?<![\w.])@([a-z0-9_][a-z0-9_.]*)", caption.lower()))
+    features_found.extend(("caption mention", f"@{name.rstrip('.')}") for name in mentions)
+    sentences = re.split(r"[.!?]+\s+|\n+", caption.strip())
+    ask = re.match(r"\W*(?:please\s+)?(follow|save|share|comment)\b", sentences[-1], re.IGNORECASE)
+    if ask:
+        features_found.append(("caption ask", ask[1].lower()))
+    features_found.append(("London posting hour", str(post["posted"].astimezone(LONDON).hour)))
+    return features_found
+
+
+def growth_findings(posts: list[dict]) -> dict[str, list[dict]]:
+    """Rank features by their measured events per reach, without mixing signals or post ages."""
+    found = {}
+    for metric in GROWTH_METRICS:
+        cohorts, formats = defaultdict(list), defaultdict(list)
+        rates = {}
+        for post in posts:
+            value = post.get(metric)
+            if value is None or not post.get("reach"):
+                continue
+            rate = value / post["reach"]
+            rates[post["media_id"]] = rate
+            cohorts[post["checkpoint"]].append(rate)
+            formats[post["checkpoint"], post["format"]].append(rate)
+        groups = defaultdict(list)
+        for post in posts:
+            rate = rates.get(post["media_id"])
+            if rate is None:
+                continue
+            for feature, value in set(_growth_features(post)):
+                peers = (
+                    cohorts[post["checkpoint"]] if feature == "format" else formats[post["checkpoint"], post["format"]]
+                )
+                if len(peers) >= MIN_CONVERSION_GROUP and (mean := statistics.mean(peers)):
+                    groups[feature, value].append(rate / mean)
+        ranked = []
+        for (feature, value), lifts in groups.items():
+            if len(lifts) < MIN_CONVERSION_GROUP:
+                continue
+            lift = round(statistics.mean(lifts), 2)
+            if lift >= ABOVE:
+                ranked.append(
+                    {
+                        "feature": feature,
+                        "value": value,
+                        "posts": len(lifts),
+                        "vs_peer_rate": lift,
+                        "small_sample": len(lifts) < SMALL_GROUP,
+                    }
+                )
+        if ranked:
+            found[metric] = sorted(ranked, key=lambda f: (-f["vs_peer_rate"], -f["posts"], f["feature"], f["value"]))
+    return found
+
+
+def growth_hours(conn: sqlite3.Connection, now: datetime) -> list[int]:
+    findings = growth_findings(measured(conn, now))
+    return list(
+        dict.fromkeys(
+            int(row["value"])
+            for metric in CONVERSION_METRICS
+            for row in findings.get(metric, [])
+            if row["feature"] == "London posting hour" and not row["small_sample"]
+        )
+    )
+
+
 def _finding(feature: str, value: str, lifts: list[float]) -> dict:
     lift = round(statistics.median(lifts), 2)
     small = len(lifts) < SMALL_GROUP
@@ -214,6 +289,7 @@ def summary(conn: sqlite3.Connection, now: datetime | None = None) -> dict:
         "not_working": pick([f for f in findings if f["vs_median"] <= BELOW], False),
         "best_posts": [_post(p) for p in ranked[:3]] if len(ranked) >= MIN_GROUP else [],
         "weakest_posts": [_post(p) for p in ranked[::-1][:3]] if len(ranked) >= 2 * MIN_GROUP else [],
+        "growth_findings": growth_findings(posts),
         "reports": reports,
     }
 
@@ -229,4 +305,9 @@ def for_prompt(found: dict) -> dict:
         "below_median": [{k: f[k] for k in keep} for f in found["not_working"]],
         "best_posts": [{k: p[k] for k in post_keys} for p in found["best_posts"]],
         "weakest_posts": [{k: p[k] for k in post_keys} for p in found["weakest_posts"]],
+        "growth_findings": {
+            metric: [row for row in rows if row["feature"] != "hashtag"][:FINDINGS_SHOWN]
+            + [row for row in rows if row["feature"] == "hashtag"][:TAGS_SHOWN]
+            for metric, rows in found["growth_findings"].items()
+        },
     }

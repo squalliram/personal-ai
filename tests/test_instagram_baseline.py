@@ -155,7 +155,7 @@ class ExportTests(unittest.TestCase):
                     return {"username": "instafoodielove"}
                 if path == "123/media":
                     return {"data": [media(media_type="VIDEO", media_product_type="REELS")]}
-                if path == "123/insights":
+                if path in ("123/insights", "123/stories"):
                     return {"data": []}
                 self.metrics.append(params["metric"])
                 return response(None if params["metric"] == "views" else 42)
@@ -208,6 +208,8 @@ class ExportTests(unittest.TestCase):
                     return {"username": "instafoodielove"}
                 if path == "123/media":
                     return {"data": [media("1")], **({"paging": {"next": "next"}} if self.old else {})}
+                if path == "123/stories":
+                    return {"data": []}
                 if path == "next":
                     return {"data": [media("2")]}
                 return response(1)
@@ -245,7 +247,7 @@ class ExportTests(unittest.TestCase):
                     }
                 if path.startswith("https://"):
                     return {"data": [media("102", permalink="https://www.instagram.com/p/Abc_123/")]}
-                if path == "123/insights":
+                if path in ("123/insights", "123/stories"):
                     return {"data": []}
                 if params["metric"] == "saved":
                     raise GraphAPIError("unsafe private https://graph.example/error")
@@ -268,6 +270,41 @@ class ExportTests(unittest.TestCase):
             self.assertIn("https://www.instagram.com/p/Abc_123/", (output / "summary.json").read_text())
             errors = json.loads((output / "raw/errors.json").read_text())
             self.assertEqual(sum(e["request"].endswith(":saved") for e in errors), 102)
+
+    def test_recent_feed_and_active_story_conversion_are_reported_separately(self):
+        now = datetime(2026, 11, 17, tzinfo=timezone.utc)
+
+        class Client:
+            user_id = "123"
+            paths = []
+
+            def get(self, path, params):
+                self.paths.append(path)
+                if path == "123":
+                    return {"username": "instafoodielove"}
+                if path == "123/media":
+                    return {"data": [{**media("1"), "timestamp": now.isoformat()}]}
+                if path == "123/stories":
+                    return {"data": [media("2", media_product_type="STORY")]}
+                if path == "123/insights":
+                    return {"data": []}
+                if params["metric"] == "profile_visits":
+                    raise GraphAPIError("Unsupported metric")
+                return response(0 if params["metric"] == "follows" else 30)
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            client = Client()
+            BASELINE.export(client, output, "", now)
+            self.assertLess(client.paths.index("2/insights"), client.paths.index("123/media"))
+            story = json.loads((output / "raw/active_stories.json").read_text())["data"][0]
+            self.assertEqual((story["id"], story["insights"]["reach"]), ("2", 30))
+            self.assertEqual(story["insights"]["follows"], 0)
+            self.assertIsNone(story["insights"]["profile_visits"])
+            with (output / "posts.csv").open() as handle:
+                self.assertEqual(
+                    [(p["id"], p["follows"], p["profile_visits"]) for p in csv.DictReader(handle)], [("1", "0", "")]
+                )
 
     def test_profile_error_is_sanitized_and_stops_collection(self):
         class Client:

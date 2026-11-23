@@ -15,7 +15,7 @@ from notifications import command_centre_link, notify, safe_link
 
 from . import storage
 from .analysis import LONDON
-from .graph import MEDIA_FIELDS, GraphAPIError, GraphClient
+from .graph import CONVERSION_METRICS, MEDIA_FIELDS, GraphAPIError, GraphClient
 
 # Checkpoint name, age at which it is due, and how long after that it may still be taken.
 CHECKPOINTS = (("24h", timedelta(hours=24), timedelta(hours=48)), ("72h", timedelta(hours=72), timedelta(days=4)))
@@ -29,9 +29,11 @@ METRICS = (
     "total_interactions",
     "avg_watch_ms",
     "total_watch_ms",
+    *CONVERSION_METRICS,
 )
 SHOWN = (("reach", "reach"), ("views", "views"), ("likes", "likes"), ("comments", "comments"), ("saved", "saves"),
-         ("shares", "shares"), ("avg_watch_ms", "avg watch"))  # fmt: skip
+         ("shares", "shares"), ("avg_watch_ms", "avg watch"), ("follows", "follows"),
+         ("profile_visits", "profile visits"))  # fmt: skip
 MAX_ATTEMPTS = 4
 PER_TICK = 6
 BASELINE_DAYS = 90
@@ -96,7 +98,13 @@ def fetch(client: GraphClient, media_id: str) -> tuple[dict, dict[str, int]]:
 
     media = client.get(media_id, {"fields": MEDIA_FIELDS})
     media = {**media, "id": media_id}
-    return media, _insights(client, media)
+    values = _insights(client, media)
+    for metric in CONVERSION_METRICS:
+        try:
+            values.update(client.media_insights(media_id, metric))
+        except GraphAPIError:
+            continue
+    return media, values
 
 
 def _lifetime_rows(conn: sqlite3.Connection, fmt: str, exclude: str, since: datetime) -> list[dict]:
@@ -174,7 +182,7 @@ def summarise(topic: str, fmt: str, checkpoint: str, posted_at: datetime | None,
                 parts.append(f"{labels[metric]} {_number(metric, values[metric])}{ratio}")
         return (", ".join(parts) + ".") if parts else "Instagram returned no numbers yet."
 
-    for metrics in ([m for m, _ in SHOWN], ["reach", "views", "saved", "shares", "avg_watch_ms"], ["reach", "saved"]):
+    for metrics in ([m for m, _ in SHOWN], ["reach", "saved", "shares", *CONVERSION_METRICS], ["reach", "saved"]):
         for limit in (60, 30):
             short = topic if len(topic) <= limit else topic[: limit - 1].rstrip() + "…"
             text = f"{head.format(topic=short)} {stats(metrics)} {verdict}"

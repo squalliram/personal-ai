@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from instagram_agent.graph import (  # noqa: E402
+    CONVERSION_METRICS,
     GRAPH_HOST,
     GRAPH_VERSION,
     INSTAGRAM_HOST,
@@ -29,6 +30,7 @@ from instagram_agent.graph import (  # noqa: E402
 LONDON = ZoneInfo("Europe/London")
 COMMON_METRICS = ("reach", "views", "likes", "comments", "saved", "shares", "total_interactions")
 REEL_METRICS = ("ig_reels_avg_watch_time", "ig_reels_video_view_total_time")
+STORY_METRICS = ("reach", "views", "replies", "shares", *CONVERSION_METRICS)
 POST_COLUMNS = (
     "id",
     "date",
@@ -48,6 +50,7 @@ POST_COLUMNS = (
     "shares_per_reach",
     "caption_80",
     "permalink",
+    *CONVERSION_METRICS,
 )
 
 
@@ -157,6 +160,7 @@ def summarize(media, insights, profile):
                         ratio(values.get("shares"), values.get("reach")),
                         (item.get("caption") or "")[:80],
                         item.get("permalink"),
+                        *(values.get(metric) for metric in CONVERSION_METRICS),
                     ],
                     strict=True,
                 )
@@ -243,6 +247,25 @@ def export(client, output, token, now=None):
     if profile is None or profile.get("username", "").lower() != "instafoodielove":
         save("errors.json", errors + [{"request": "profile", "error": "Target account could not be verified"}])
         raise ValueError("Target account could not be verified")
+
+    # Stories expire; take this snapshot before walking the historical feed.
+    story_page = get(f"{client.user_id}/stories", {"fields": MEDIA_FIELDS, "limit": "100"}, "active_stories")
+    stories = []
+    for item in (story_page or {}).get("data", []):
+        media_id = item["id"]
+        values = {}
+        for metric in STORY_METRICS:
+            payload = get(f"{media_id}/insights", {"metric": metric}, f"story:{media_id}:{metric}")
+            values[metric] = metric_value(payload or {})
+        stories.append({**item, "insights": values})
+    save(
+        "active_stories.json",
+        {
+            "complete": story_page is not None and not (story_page.get("paging") or {}).get("next"),
+            "data": stories,
+        },
+    )
+
     media, pages, seen = [], 0, set()
     path, params = f"{client.user_id}/media", {"fields": MEDIA_FIELDS, "limit": "100"}
     complete = True
@@ -266,6 +289,9 @@ def export(client, output, token, now=None):
         metrics = COMMON_METRICS
         if item.get("media_product_type") == "REELS":
             metrics += REEL_METRICS
+        posted_at = datetime.fromisoformat(item["timestamp"].replace("Z", "+00:00"))
+        if posted_at >= since:
+            metrics += CONVERSION_METRICS
         values = {}
         for metric in metrics:
             response = get(f"{item['id']}/insights", {"metric": metric}, f"media:{item['id']}:{metric}")
