@@ -262,6 +262,31 @@ class MusicTests(Case):
 
 
 class ReelDraftRenderTests(Case):
+    def test_fallback_prefers_24h_and_uses_72h_only_when_24h_is_missing(self):
+        tracks = [
+            {
+                "track_id": "a" * 16,
+                "title": "Lo-fi",
+                "licence": "CC0",
+                "performance": {
+                    "24h": {"mean_views": 100, "mean_reach": 80},
+                    "72h": {"mean_views": 1000, "mean_reach": 800},
+                },
+            },
+            {
+                "track_id": "b" * 16,
+                "title": "Acoustic",
+                "licence": "CC0",
+                "performance": {
+                    "24h": {"mean_views": 200, "mean_reach": 160},
+                },
+            },
+        ]
+        for expected in ("b" * 16, "a" * 16):
+            draft = drafts._with_render({"reel": {}}, {}, {}, {"pick": "agents", "mix": "under"}, tracks)
+            self.assertEqual(draft["reel"]["music"]["track_id"], expected)
+            tracks[0]["performance"].pop("24h", None)
+
     def test_missing_photo_choice_defaults_to_agents_and_replace(self):
         track_id = music.save(self.conn, self.media, "Warm coffee lo-fi", "CC0", "", MP3, NOW)
         jpeg = photo()

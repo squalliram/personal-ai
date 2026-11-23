@@ -335,7 +335,7 @@ def _with_render(draft: dict, raw, extra: dict, picked: dict | None, tracks: lis
 
         def performance(track):
             history = track.get("performance", {})
-            metrics = history.get("72h", history.get("24h", {}))
+            metrics = history.get("24h", history.get("72h", {}))
             return (metrics.get("mean_views") or 0, metrics.get("mean_reach") or 0)
 
         track_id = max(tracks, key=performance)["track_id"]
