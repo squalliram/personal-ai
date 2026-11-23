@@ -299,6 +299,22 @@ class LearningsTests(Case):
         self.measure("9001", 1000, days=200)
         self.assertEqual(learnings.summary(self.conn, PUBLISHED)["posts_measured"], 0)
 
+    def test_growth_uses_all_checkpoints_as_peers_and_counts_each_post_once(self):
+        for n in range(6):
+            at = PUBLISHED - timedelta(days=30 - n)
+            self.publish(str(9600 + n), at=at, tags=("#latte",) if n < 3 else ("#other",))
+            graph24 = InsightsGraph({"reach": 100, "follows": 3 if n < 3 else 0}, at=at)
+            graph72 = InsightsGraph({"reach": 200, **({"follows": 0} if n >= 3 else {})}, at=at)
+            post_report.tick(self.conn, self.env, at + timedelta(hours=25), client=graph24)
+            post_report.tick(self.conn, self.env, at + timedelta(hours=73), client=graph72)
+        self.publish("9700")
+        post_report.tick(
+            self.conn, self.env, PUBLISHED + timedelta(hours=25), client=InsightsGraph({"reach": 100, "follows": 0})
+        )
+        findings = learnings.summary(self.conn, PUBLISHED + timedelta(hours=25))["growth_findings"]["follows"]
+        latte = next(row for row in findings if row["value"] == "#latte")
+        self.assertEqual((latte["posts"], latte["vs_peer_rate"]), (3, 2.33))
+
     def test_follows_rank_tag_caption_and_slot_above_reach_without_using_missing_values(self):
         for n in range(11):
             strong = n < 5
