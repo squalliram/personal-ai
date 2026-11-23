@@ -1,3 +1,4 @@
+import { router } from "expo-router";
 import { useCallback, useState } from "react";
 import { ActivityIndicator, Linking, RefreshControl, Text, View } from "react-native";
 import { Button, Card, ErrorNote, Page, color, label, londonTime, type } from "../../components/ui";
@@ -28,6 +29,7 @@ export default function Inbox() {
     <Page title="Inbox" refreshControl={access.kind === "live"
       ? <RefreshControl refreshing={loading && hasPage} onRefresh={reload} tintColor={color.accent} colors={[color.accent]} />
       : undefined}>
+      <Button label="Back to Settings" onPress={() => router.navigate("/settings")} />
       <Text style={type.muted}>{access.kind === "demo"
         ? "Sample updates from Instagram, energy and the daily briefing."
         : "Updates from your connected automations and assistants."}</Text>

@@ -1,3 +1,4 @@
+import { router } from "expo-router";
 import { useState } from "react";
 import { Text } from "react-native";
 import { Button, Card, Page, type } from "../../components/ui";
@@ -23,6 +24,7 @@ export default function Settings() {
             ? "This device is remembered. You can revoke its session from website Settings."
             : "Your session isn’t saved on this device."}</Text>
       </Card>
+      <Button label="Open update history" onPress={() => router.navigate("/inbox")} />
       <Button label={busy ? "Signing out…" : demo ? "Exit demo" : "Sign out"} disabled={busy} onPress={() => void exit()} />
     </Page>
   );

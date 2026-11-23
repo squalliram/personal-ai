@@ -10,13 +10,10 @@ type SessionData = { authenticated: true; csrf_token: string; expires_at: string
 type Options = { method?: Method; token?: string; csrf?: string; body?: object; page?: number; timeout?: number };
 
 export type Session = { token: string; csrf: string; expiresAt: string; remembered: boolean };
+export type Attention = { source: string; severity: string; fact: string; href?: string };
 export type Overview = {
   generated_at: string;
-  status: { state: string; automations_monitored: number; automations_healthy: number };
-  attention: { source: string; severity: string; fact: string }[];
-  instagram: { status: string; summary: string; pending_drafts: number | null; next_slot: string | null };
-  energy: { state: string; last_successful_sync_at: string | null };
-  briefing: { latest_report_date: string | null };
+  attention: Attention[];
 };
 export type Inbox = {
   state: string;
