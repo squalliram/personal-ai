@@ -162,14 +162,32 @@ class PublishTests(PublishCase):
         )
         self.assertEqual(self.tick(graph), "published 0, failed 0")
 
-    def test_story_incompatible_clip_is_refused_before_either_publish(self):
-        self.add()
-        graph = FakeGraph()
-        with patch.object(publish.video, "read", return_value=({"seconds": 75.0}, [])):
-            self.assertEqual(self.tick(graph), "published 0, failed 1")
-        self.assertEqual(graph.posts, [])
-        self.assertEqual(self.status()["status"], "pending")
-        self.assertIn("shorter clip", self.conn.execute("SELECT error FROM publish_runs").fetchone()[0])
+    def test_long_reels_publish_but_their_story_is_skipped_and_notified_once(self):
+        for number, seconds in enumerate((61.0, 75.0, 90.0), 1):
+            with self.subTest(seconds=seconds):
+                draft_id = self.add(str(number) * 16)
+                graph = FakeGraph()
+                with patch.object(publish.video, "read", return_value=({"seconds": seconds}, [])):
+                    self.assertEqual(self.tick(graph), "published 1, failed 0")
+                self.assertEqual(sum(path.endswith("media_publish") for path, _, _ in graph.posts), 1)
+                self.assertEqual(graph.posts[0][1]["media_type"], "REELS")
+                self.assertEqual(self.status(draft_id)["status"], "published")
+                row = self.conn.execute("SELECT * FROM drafts WHERE draft_id=?", (draft_id,)).fetchone()
+                self.assertEqual(json.loads(row["reel"])["story"]["state"], "skipped")
+                calls = len(graph.posts)
+                publish.publish_story_once(
+                    self.conn, graph, row, self.media, self.public, ENV["INSTAGRAM_PUBLIC_URL"], self.env, DUE
+                )
+                self.assertEqual(self.tick(graph), "published 0, failed 0")
+                self.assertEqual(len(graph.posts), calls)
+                with sqlite3.connect(self.notes) as notes:
+                    self.assertEqual(
+                        notes.execute(
+                            "SELECT COUNT(*) FROM notifications WHERE dedupe_key=?",
+                            (f"instagram-story-skipped:{draft_id}",),
+                        ).fetchone()[0],
+                        1,
+                    )
 
     def test_sixty_second_clip_remains_compatible(self):
         self.add()

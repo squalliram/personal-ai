@@ -82,8 +82,8 @@ def _media_error(row, media_dir: Path) -> str | None:
     facts, problems = video.check(path)
     if problems:
         return "Rendered reel video is invalid"
-    if not isinstance(facts.get("seconds"), (int, float)) or facts["seconds"] > 60:
-        return "Reel and Story require a video of at most 60 seconds"
+    if not isinstance(facts.get("seconds"), (int, float)) or facts["seconds"] > video.MAX_SECONDS:
+        return "Reel video duration must be at most 90 seconds"
     return None
 
 

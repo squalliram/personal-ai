@@ -43,6 +43,10 @@ class Withdrawn(PublishError):
     """Rejected or held between being picked and the final publish call: skipped, not failed."""
 
 
+class StorySkipped(PublishError):
+    """A published reel's video cannot be reused as a Story."""
+
+
 def _instant(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
@@ -206,8 +210,8 @@ def publish_reel(
     facts, problems = video.read(source)
     if problems or not isinstance(facts.get("seconds"), (int, float)):
         raise PublishError("video duration unavailable; upload a valid clip for the reel and Story")
-    if facts["seconds"] > 60:
-        raise PublishError("Reel and Story need the same video of at most 60 seconds; upload a shorter clip")
+    if story and facts["seconds"] > 60:
+        raise StorySkipped("Story videos must be at most 60 seconds")
     _quota_left(client)
     folder = _public_folder(public_dir)
     try:
@@ -276,6 +280,16 @@ def publish_story_once(conn, client, row, media_dir, public_dir, public_url, env
     try:
         media_id = publish_reel(client, current, media_dir, public_dir, public_url, story=True, **kwargs)
         result = {"state": "published", "media_id": media_id, "permalink": permalink(client, media_id)}
+    except StorySkipped as exc:
+        result = {"state": "skipped", "reason": str(exc)}
+        notify(
+            "instagram",
+            "ok",
+            "Reel is live; Story skipped because the video exceeds 60 seconds",
+            command_centre_link(env, "instagram"),
+            key=f"instagram-story-skipped:{draft_id}",
+            env=env,
+        )
     except Exception as exc:
         result = {"state": "failed", "error": type(exc).__name__}
         notify(

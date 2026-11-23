@@ -247,10 +247,10 @@ class PreflightTests(unittest.TestCase):
         self.assertTrue(self.preflight()["ok"])
         self.assertIn("Legacy", self.check(self.preflight(draft_id=OTHER), "draft_media")["detail"])
 
-    def test_long_video_fails_read_only_reel_preflight(self):
+    def test_long_reel_passes_read_only_preflight(self):
         self.add()
         self.validation_mock.return_value = ({"seconds": 75}, [])
-        self.assertIn("60 seconds", self.check(self.preflight(), "draft_media")["detail"])
+        self.assertTrue(self.preflight()["ok"])
 
     def test_old_or_failed_reel_does_not_block_preflight(self):
         self.add()
