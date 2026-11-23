@@ -287,7 +287,9 @@ def make_drafts(conn, env: dict, media_dir: Path, now: datetime | None = None) -
             clip = clips.oldest(conn)
         if clip is not None:
             rendered = render.can_render("clip")
-            draft = drafts.generate_from_clip(conn, ai, now, clip, rules=rules, voice=voice, rendered=rendered)
+            draft = drafts.generate_from_clip(
+                conn, ai, now, clip, rules=rules, voice=voice, rendered=rendered, media_dir=media_dir
+            )
             if draft is None:
                 raise AIError("the agents wrote no usable reel from your clip")
             stored += drafts.store_clip_draft(conn, draft, clip, media_dir, now) is not None

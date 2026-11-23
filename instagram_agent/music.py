@@ -5,6 +5,7 @@ Only a track with a recorded licence can go under a reel. Nothing is ever downlo
 
 from __future__ import annotations
 
+import json
 import os
 import secrets
 import shutil
@@ -130,13 +131,44 @@ def usable_file(conn: sqlite3.Connection, media_dir: Path, track_id: str) -> Pat
     return path
 
 
-def choice(value, mix, conn: sqlite3.Connection | None = None) -> dict | None:
-    """The owner's music pick for a reel: None (keep the original audio), the agents' pick, or one track."""
-    if value in (None, "", "off"):
-        return None
+def for_reel(conn: sqlite3.Connection, media_dir: Path) -> list[dict]:
+    """Licensed files available to render, with observed reach/views kept separate by checkpoint."""
+    available = [t for t in tracks(conn) if usable_file(conn, media_dir, t["track_id"]) is not None]
+    by_id = {t["track_id"]: t for t in available}
+    for track in available:
+        track["performance"] = {}
+    if not available:
+        return available
+    rows = conn.execute(
+        "SELECT d.reel,p.checkpoint,p.views,p.reach FROM post_reports p JOIN drafts d ON d.draft_id=p.draft_id "
+        "WHERE d.kind='reel' AND p.captured_at IS NOT NULL"
+    ).fetchall()
+    observed = {}
+    for row in rows:
+        try:
+            track_id = json.loads(row[0] or "{}").get("music", {}).get("track_id")
+        except (ValueError, AttributeError, TypeError):
+            continue
+        if not isinstance(track_id, str) or track_id not in by_id:
+            continue
+        observed.setdefault((track_id, row[1]), []).append(row[2:])
+    for (track_id, checkpoint), values in observed.items():
+        metrics = {"reels": len(values)}
+        for index, name in enumerate(("views", "reach")):
+            measured = [v[index] for v in values if isinstance(v[index], (int, float)) and v[index] >= 0]
+            metrics[f"mean_{name}"] = sum(measured) / len(measured) if measured else None
+            metrics[f"{name}_samples"] = len(measured)
+        by_id[track_id]["performance"][checkpoint] = metrics
+    return available
+
+
+def choice(value, mix, conn: sqlite3.Connection | None = None) -> dict:
+    """Default to the agents; preserve Off as an explicit opt-out rather than a missing choice."""
+    if value == "off":
+        return {"pick": "off"}
     if mix not in MIXES:
         raise MusicError("invalid_music")
-    if value == "agents":
+    if value in (None, "", "agents"):
         return {"pick": "agents", "mix": mix}
     if not isinstance(value, str) or not uploads.UPLOAD_ID.fullmatch(value):
         raise MusicError("invalid_music")

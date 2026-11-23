@@ -113,8 +113,12 @@ CREATE_REEL_FROM_PHOTOS = (
     '"on_screen": [{{"start": 0, "end": 2, "text": "..."}}], "cover_seconds": 0, "caption": "..."}}'
 )
 PICK_MUSIC = (
-    " music_tracks are the owner's licensed tracks: set music_track to the track_id that fits the reel best, or "
-    "null for none."
+    " music_tracks are the owner's usable licensed tracks. Set music_track to one of their track_ids: "
+    "choose the style that fits this reel, favouring tracks with the strongest past reel views/reach. "
+    "performance contains observed means and sample counts at separate 24h/72h checkpoints; compare like "
+    "checkpoints, consider sample size, and don't treat association as causation. With no data, choose a style "
+    "suited to top-performing food/coffee reel audio (for example warm lo-fi or mellow acoustic), using the "
+    "titles for stylistic fit, not inventing measured results or claiming knowledge of current trending audio."
 )
 TAGS = (
     "You are the Tags agent for @instafoodielove. For each draft choose up to "
@@ -322,13 +326,13 @@ def _ask_with_photos(ai: AI, system: str, user: str, photos: list[bytes]) -> dic
     return ai.chat_json(system, user)
 
 
-def music_choice(row) -> dict | None:
+def music_choice(row, mix: str = "under") -> dict:
     """The owner's music pick stored with an upload or clip."""
     try:
         picked = json.loads(row["music"]) if "music" in row.keys() and row["music"] else None
     except ValueError:
-        return None
-    return picked if isinstance(picked, dict) else None
+        return {"pick": "off"}
+    return picked if isinstance(picked, dict) else {"pick": "agents", "mix": mix}
 
 
 def _with_render(draft: dict, raw, extra: dict, picked: dict | None, tracks: list[dict]) -> dict:
@@ -336,7 +340,20 @@ def _with_render(draft: dict, raw, extra: dict, picked: dict | None, tracks: lis
     reel = {**draft["reel"], **extra, "render": "pending"}
     by_id = {t["track_id"]: t for t in tracks}
     track_id = (picked or {}).get("track_id") if (picked or {}).get("pick") == "track" else raw.get("music_track")
-    if picked and isinstance(track_id, str) and track_id in by_id:
+    if (
+        picked
+        and picked.get("pick") == "agents"
+        and tracks
+        and (not isinstance(track_id, str) or track_id not in by_id)
+    ):
+
+        def performance(track):
+            history = track.get("performance", {})
+            metrics = history.get("24h", history.get("72h", {}))
+            return (metrics.get("mean_views") or 0, metrics.get("mean_reach") or 0)
+
+        track_id = max(tracks, key=performance)["track_id"]
+    if picked and picked.get("pick") in ("agents", "track") and isinstance(track_id, str) and track_id in by_id:
         song = by_id[track_id]
         reel["music"] = {"track_id": track_id, "mix": picked.get("mix", "under"), "title": song["title"]}
         reel["music"]["licence"] = song["licence"]
@@ -364,7 +381,7 @@ def generate_from_upload(
         except OSError:
             break
     seconds = render.photo_seconds(upload["photos"]) * upload["photos"]
-    picked, tracks = (music_choice(upload), music.tracks(conn)) if as_reel else (None, [])
+    picked, tracks = (music_choice(upload, "replace"), music.for_reel(conn, media_dir)) if as_reel else (None, [])
     if as_reel:
         each = render.photo_seconds(upload["photos"])
         create = CREATE_REEL_FROM_PHOTOS.format(seconds=seconds, each=each)
@@ -384,7 +401,7 @@ def generate_from_upload(
             "feedback_on_weak_drafts": feedback,
         }
         if as_reel and picked and picked.get("pick") == "agents":
-            payload["music_tracks"] = [{k: t[k] for k in ("track_id", "title")} for t in tracks]
+            payload["music_tracks"] = [{k: t[k] for k in ("track_id", "title", "performance")} for t in tracks]
         raw = _ask_with_photos(ai, system, json.dumps(payload, ensure_ascii=False), shown)
         if as_reel:
             draft = normalise_reel_draft(raw, seconds)
@@ -453,7 +470,15 @@ def normalise_reel_draft(raw, seconds: float) -> dict | None:
 
 
 def generate_from_clip(
-    conn, ai: AI, now: datetime, clip, *, rules: str = "", voice: str = "", rendered: bool = False
+    conn,
+    ai: AI,
+    now: datetime,
+    clip,
+    *,
+    rules: str = "",
+    voice: str = "",
+    rendered: bool = False,
+    media_dir: Path = Path("data/instagram/drafts"),
 ) -> dict | None:
     """Create, tag and review a reel from the owner's clip and note, keeping the best of MAX_ROUNDS.
 
@@ -462,7 +487,7 @@ def generate_from_clip(
     facts = json.loads(clip["facts"] or "{}")
     seconds = float(facts.get("seconds") or 0)
     ctx = {**context(conn, now), "owner_note": clip["note"]}
-    picked, tracks = (music_choice(clip), music.tracks(conn)) if rendered else (None, [])
+    picked, tracks = (music_choice(clip), music.for_reel(conn, media_dir)) if rendered else (None, [])
     how, beats_for = RENDERED if rendered else AS_FILMED
     create = CREATE_FROM_CLIP.format(seconds=seconds, how=how, beats_for=beats_for)
     if rendered:
@@ -481,7 +506,7 @@ def generate_from_clip(
             "feedback_on_weak_drafts": feedback,
         }
         if picked and picked.get("pick") == "agents":
-            payload["music_tracks"] = [{k: t[k] for k in ("track_id", "title")} for t in tracks]
+            payload["music_tracks"] = [{k: t[k] for k in ("track_id", "title", "performance")} for t in tracks]
         raw = ai.chat_json(system, json.dumps(payload, ensure_ascii=False))
         draft = normalise_reel_draft(raw, seconds)
         if draft and rendered:

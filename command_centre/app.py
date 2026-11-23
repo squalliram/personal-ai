@@ -1258,7 +1258,7 @@ class CommandCentreApp:
         try:
             try:
                 note = instagram_uploads.clean_note(form[0])
-                picked = instagram_music.choice(options.get("music"), options.get("mix", "under"), conn)
+                picked = instagram_music.choice(options.get("music"), options.get("mix", "replace"), conn)
                 prepared = instagram_uploads.prepare(form[1])
             except (instagram_uploads.PhotoError, instagram_music.MusicError) as exc:
                 self.audit.record("instagram_upload", "refused", actor="owner", reason=exc.code, client=request.client)

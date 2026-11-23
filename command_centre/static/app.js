@@ -1946,8 +1946,8 @@
   function musicChoice(data, id, withMix) {
     const tracks = data.music || [];
     const pick = el("select", { id: `${id}-music`, name: "music" },
-      el("option", { value: "" }, withMix ? "None: keep the original audio" : "None"),
-      tracks.length ? el("option", { value: "agents" }, "Let the agents pick from my library") : null,
+      el("option", { value: "off" }, withMix ? "Off: keep the original audio" : "Off: no music"),
+      el("option", { value: "agents", selected: "" }, "Let the agents pick from my library"),
       ...tracks.map((t) => el("option", { value: t.track_id }, t.title)));
     const mix = el("select", { id: `${id}-mix`, name: "mix" },
       el("option", { value: "under" }, "Mix it under the original audio"),
@@ -1955,7 +1955,7 @@
     const node = el("div", {},
       el("label", { for: `${id}-music` }, tracks.length ? "Music (only tracks with a recorded licence)" : "Music (add licensed tracks to the music library first)"), pick,
       withMix ? el("label", { for: `${id}-mix` }, "Mix") : null, withMix ? mix : null);
-    return { node, values: () => (pick.value ? { music: pick.value, mix: withMix ? mix.value : "replace" } : {}) };
+    return { node, values: () => ({ music: pick.value, mix: withMix ? mix.value : "replace" }) };
   }
 
   function uploadCard(data, canDecide) {
@@ -2353,9 +2353,11 @@
     if (current !== renderCount) return;
     if (background && section[0] === "energy" && energyRefreshOwner !== null) return; // a refresh began while this render loaded
     const editing = document.activeElement && $("view").contains(document.activeElement) && document.activeElement.matches("input, textarea, select");
-    // Photos picked or a note typed in the upload form would be lost if the form were rebuilt.
-    const unsent = [...$("view").querySelectorAll("form.ig-upload input[type=file], form.ig-upload textarea")]
-      .some((field) => (field.files ? field.files.length > 0 : field.value.trim() !== ""));
+    // Unsent uploads and changed music choices would be lost if the form were rebuilt.
+    const unsent = [...$("view").querySelectorAll("form.ig-upload input[type=file], form.ig-upload textarea, form.ig-upload select")]
+      .some((field) => field.matches("select")
+        ? field.value !== ([...field.options].find((option) => option.defaultSelected) || field.options[0]).value
+        : (field.files ? field.files.length > 0 : field.value.trim() !== ""));
     if (background && (editing || unsent)) return;
     const fresh = [...view.childNodes];
     const title = $("view-title").textContent;
