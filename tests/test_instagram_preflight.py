@@ -98,6 +98,7 @@ class PreflightTests(unittest.TestCase):
         self.add()
         graph = FakeGraph()
         report = self.preflight(client=graph)
+        self.validation_mock.assert_called_once_with(self.media / DRAFT / "reel.mp4")
         self.assertTrue(report["ok"], report)
         self.assertFalse(report["auto_publish"])
         self.assertEqual(report["eligible_drafts"], [DRAFT])
@@ -251,6 +252,7 @@ class PreflightTests(unittest.TestCase):
         self.add()
         self.validation_mock.return_value = ({"seconds": 75}, [])
         self.assertTrue(self.preflight()["ok"])
+        self.validation_mock.assert_called_once_with(self.media / DRAFT / "reel.mp4")
 
     def test_old_or_failed_reel_does_not_block_preflight(self):
         self.add()

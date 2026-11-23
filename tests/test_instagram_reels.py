@@ -690,6 +690,25 @@ class ReelCommandCentreTests(Case):
         self.assertEqual(len(shown["slides"]), 7)
         self.assertEqual(shown["slides"][6], {"text": "Photo 7", "format": "jpg"})
 
+    def test_photo_reel_preview_preserves_text_and_existing_file_formats(self):
+        draft = drafts.normalise_reel_draft(REEL, 10.0)
+        draft["reel"].update(source="photos", photos=3)
+        draft.update(
+            draft_id="c" * 16,
+            review_score=95,
+            scheduled_for=SLOT,
+            hashtags=[],
+            slides=[{"text": "First"}, {"text": "Second", "file": "slide-2.png"}, "ignored"],
+        )
+        with self.conn:
+            storage.insert_draft(self.conn, draft, MADE.date().isoformat(), MADE.isoformat())
+        settings = make_settings(self.root, instagram_db=self.db, instagram_media=self.media)
+        [shown] = sources.instagram_drafts(settings)["drafts"]
+        self.assertEqual(
+            shown["slides"],
+            [{"text": "First", "format": "jpg"}, {"text": "Second", "format": "png"}, {"text": "", "format": "jpg"}],
+        )
+
     def test_reel_draft_shows_its_script_and_auto_posts_unless_held(self):
         draft = drafts.normalise_reel_draft(REEL, 10.0)
         draft.update(draft_id="c" * 16, review_score=95, scheduled_for=SLOT, hashtags=[])

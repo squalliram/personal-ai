@@ -43,7 +43,7 @@ class FakeGraph(GraphClient):
 class PublishCase(unittest.TestCase):
     def setUp(self):
         duration = patch.object(publish.video, "read", return_value=({"seconds": 9.0}, []))
-        duration.start()
+        self.duration_mock = duration.start()
         self.addCleanup(duration.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -104,6 +104,9 @@ class PublishTests(PublishCase):
         self.assertTrue(all(not retry for path, _, retry in graph.posts if path.endswith("media_publish")))
         story = json.loads(self.conn.execute("SELECT reel FROM drafts").fetchone()[0])["story"]
         self.assertEqual(story["state"], "published")
+        self.assertEqual(
+            [c.args for c in self.duration_mock.call_args_list], [(self.media / ("a" * 16) / "reel.mp4",)] * 2
+        )
         self.assertEqual(tuple(self.status()), ("published", "9001"))
         self.assertEqual([p.name for p in self.public.iterdir()], ["index.html"])
         self.assertEqual(self.tick(FakeGraph()), "published 0, failed 0")
@@ -167,8 +170,9 @@ class PublishTests(PublishCase):
             with self.subTest(seconds=seconds):
                 draft_id = self.add(str(number) * 16)
                 graph = FakeGraph()
-                with patch.object(publish.video, "read", return_value=({"seconds": seconds}, [])):
+                with patch.object(publish.video, "read", return_value=({"seconds": seconds}, [])) as duration:
                     self.assertEqual(self.tick(graph), "published 1, failed 0")
+                self.assertEqual([c.args for c in duration.call_args_list], [(self.media / draft_id / "reel.mp4",)] * 2)
                 self.assertEqual(sum(path.endswith("media_publish") for path, _, _ in graph.posts), 1)
                 self.assertEqual(graph.posts[0][1]["media_type"], "REELS")
                 self.assertEqual(self.status(draft_id)["status"], "published")
@@ -192,8 +196,9 @@ class PublishTests(PublishCase):
     def test_sixty_second_clip_remains_compatible(self):
         self.add()
         graph = FakeGraph()
-        with patch.object(publish.video, "read", return_value=({"seconds": 60.0}, [])):
+        with patch.object(publish.video, "read", return_value=({"seconds": 60.0}, [])) as duration:
             self.assertEqual(self.tick(graph), "published 1, failed 0")
+        self.assertEqual([c.args for c in duration.call_args_list], [(self.media / ("a" * 16) / "reel.mp4",)] * 2)
         self.assertEqual(sum(path.endswith("media_publish") for path, _, _ in graph.posts), 2)
 
     def test_claimed_story_is_not_repeated_after_crash(self):
