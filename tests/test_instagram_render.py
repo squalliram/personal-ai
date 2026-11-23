@@ -262,6 +262,33 @@ class MusicTests(Case):
 
 
 class ReelDraftRenderTests(Case):
+    def test_fallback_keeps_24h_measurements_when_72h_has_no_measurements(self):
+        tracks = [
+            {
+                "track_id": "a" * 16,
+                "title": "Lo-fi",
+                "licence": "CC0",
+                "performance": {
+                    "24h": {"mean_views": 1000, "mean_reach": 800},
+                    "72h": {"mean_views": None, "mean_reach": None},
+                },
+            },
+            {
+                "track_id": "b" * 16,
+                "title": "Acoustic",
+                "licence": "CC0",
+                "performance": {
+                    "24h": {"mean_views": 100, "mean_reach": 80},
+                },
+            },
+        ]
+        draft = drafts._with_render({"reel": {}}, {}, {}, {"pick": "agents", "mix": "under"}, tracks)
+        self.assertEqual(draft["reel"]["music"]["track_id"], "a" * 16)
+        tracks[0]["performance"]["24h"] = {"mean_views": 0, "mean_reach": 0}
+        tracks[0]["performance"]["72h"] = {"mean_views": 10000, "mean_reach": 8000}
+        draft = drafts._with_render({"reel": {}}, {}, {}, {"pick": "agents", "mix": "under"}, tracks)
+        self.assertEqual(draft["reel"]["music"]["track_id"], "b" * 16)
+
     def test_fallback_prefers_24h_and_uses_72h_only_when_24h_is_missing(self):
         tracks = [
             {
