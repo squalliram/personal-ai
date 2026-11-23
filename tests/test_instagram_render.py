@@ -1,8 +1,11 @@
+import io
 import json
+import shutil
 import sqlite3
 import subprocess
 import tempfile
 import unittest
+import wave
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -138,6 +141,25 @@ class CommandTests(unittest.TestCase):
 
 @unittest.skipUnless(has_ffmpeg(), "needs ffmpeg with libx264, aac, zoompan and a text renderer")
 class RealRenderTests(Case):
+    def test_default_photo_music_is_baked_into_the_reusable_reel_file(self):
+        audio = io.BytesIO()
+        with wave.open(audio, "wb") as track:
+            track.setparams((1, 2, 44100, 0, "NONE", "not compressed"))
+            track.writeframes(b"\0\0" * 44100)
+        track_id = music.save(self.conn, self.media, "Test audio", "CC0", "", audio.getvalue(), NOW)
+        jpeg = photo((600, 800))
+        uploads.save(self.conn, self.media, "Coffee", [(jpeg, jpeg)], NOW, reel=True)
+        upload = uploads.oldest(self.conn)
+        draft = drafts.generate_from_upload(
+            self.conn, ReelAI({**REEL, "music_track": track_id}), NOW, upload, self.media, as_reel=True
+        )
+        draft_id = drafts.store_upload_draft(self.conn, draft, upload, self.media, NOW)
+        reel = render.render(self.conn, self.media, draft_id, draft["reel"], PROBE())
+        self.assertEqual((reel["render"], reel["file"], reel["music"]["mix"]), ("done", "reel.mp4", "replace"))
+        facts, problems = video.check(self.media / draft_id / "reel.mp4")
+        self.assertEqual(problems, [])
+        self.assertEqual(facts["audio_codec"], "aac")
+
     def test_renders_a_reel_that_meets_meta_spec(self):
         folder = self.media / "d1"
         folder.mkdir(parents=True)
@@ -227,7 +249,9 @@ class MusicTests(Case):
         self.assertEqual(music.usable_file(self.conn, self.media, track_id).name, "track.mp3")
         self.assertEqual(music.choice(track_id, "under", self.conn)["track_id"], track_id)
         self.assertEqual(music.choice("agents", "replace"), {"pick": "agents", "mix": "replace"})
-        self.assertIsNone(music.choice("", "under"))
+        self.assertEqual(music.choice("", "under"), {"pick": "agents", "mix": "under"})
+        self.assertEqual(music.choice(None, "replace"), {"pick": "agents", "mix": "replace"})
+        self.assertEqual(music.choice("off", "under"), {"pick": "off"})
         for bad in (("f" * 16, "under"), (track_id, "loud"), ("../x", "under")):
             with self.assertRaises(music.MusicError):
                 music.choice(*bad, conn=self.conn)
@@ -238,6 +262,102 @@ class MusicTests(Case):
 
 
 class ReelDraftRenderTests(Case):
+    def test_missing_photo_choice_defaults_to_agents_and_replace(self):
+        track_id = music.save(self.conn, self.media, "Warm coffee lo-fi", "CC0", "", MP3, NOW)
+        jpeg = photo()
+        uploads.save(self.conn, self.media, "Coffee", [(jpeg, jpeg)], NOW, reel=True)
+        ai = ReelAI({**REEL, "music_track": track_id})
+        with patch.object(ai, "chat_json", wraps=ai.chat_json) as chat:
+            draft = drafts.generate_from_upload(self.conn, ai, NOW, uploads.oldest(self.conn), self.media, as_reel=True)
+        self.assertEqual(
+            draft["reel"]["music"],
+            {"track_id": track_id, "mix": "replace", "title": "Warm coffee lo-fi", "licence": "CC0"},
+        )
+        payload = json.loads(chat.call_args_list[0].args[1])
+        self.assertEqual(
+            payload["music_tracks"], [{"track_id": track_id, "title": "Warm coffee lo-fi", "performance": {}}]
+        )
+        self.assertIn("top-performing food/coffee reel audio", ai.calls[0])
+        self.assertIn("strongest past reel views/reach", ai.calls[0])
+
+    def test_clips_default_to_agents_under_and_explicit_off_survives(self):
+        track_id = music.save(self.conn, self.media, "Lo-fi", "CC0", "", MP3, NOW)
+        clip_id = self.waiting_clip()
+        for choice in (None, music.choice("off", "under")):
+            with self.subTest(choice=choice):
+                self.conn.execute("UPDATE clips SET music=?", (json.dumps(choice) if choice else None,))
+                clip = self.conn.execute("SELECT * FROM clips WHERE clip_id=?", (clip_id,)).fetchone()
+                ai = ReelAI({**REEL, "music_track": track_id})
+                draft = drafts.generate_from_clip(self.conn, ai, NOW, clip, rendered=True, media_dir=self.media)
+                if choice:
+                    self.assertNotIn("music", draft["reel"])
+                    self.assertNotIn("music_tracks", ai.calls[0])
+                else:
+                    self.assertEqual(draft["reel"]["music"]["mix"], "under")
+                    self.assertEqual(draft["reel"]["music"]["track_id"], track_id)
+
+    def test_photo_off_empty_library_and_unusable_tracks_do_not_add_music(self):
+        jpeg = photo()
+        upload_id = uploads.save(self.conn, self.media, "Coffee", [(jpeg, jpeg)], NOW, reel=True)
+        track_id = None
+        for scenario in ("empty", "off", "missing_file", "malformed_choice"):
+            with self.subTest(scenario=scenario):
+                if scenario == "off":
+                    track_id = music.save(self.conn, self.media, "Lo-fi", "CC0", "", MP3, NOW)
+                    self.conn.execute("UPDATE uploads SET music=?", (json.dumps(music.choice("off", "replace")),))
+                elif scenario == "missing_file":
+                    music.usable_file(self.conn, self.media, track_id).unlink()
+                    self.conn.execute("UPDATE uploads SET music=NULL")
+                elif scenario == "malformed_choice":
+                    self.conn.execute("UPDATE uploads SET music='not json'")
+                upload = self.conn.execute("SELECT * FROM uploads WHERE upload_id=?", (upload_id,)).fetchone()
+                ai = ReelAI({**REEL, "music_track": track_id})
+                draft = drafts.generate_from_upload(self.conn, ai, NOW, upload, self.media, as_reel=True)
+                self.assertNotIn("music", draft["reel"])
+                self.assertNotIn("music_tracks are", ai.calls[0])
+
+    def test_performance_is_track_specific_and_separated_by_checkpoint(self):
+        track_id = music.save(self.conn, self.media, "Lo-fi", "CC0", "", MP3, NOW)
+        other_id = music.save(self.conn, self.media, "Acoustic", "CC0", "", MP3, NOW)
+        for number, (track, views, reach, checkpoint, captured) in enumerate(
+            [
+                (track_id, 100, 80, "24h", "today"),
+                (track_id, 300, None, "24h", "today"),
+                (track_id, 900, 700, "72h", "today"),
+                (other_id, 0, 0, "24h", "today"),
+                (track_id, 9999, 9999, "24h", None),
+            ]
+        ):
+            draft = drafts.normalise_reel_draft(REEL, 10)
+            draft.update(draft_id=f"{number:016x}", reel={"music": {"track_id": track}})
+            storage.insert_draft(self.conn, draft, "2026-11-12", NOW.isoformat())
+            self.conn.execute(
+                "INSERT INTO post_reports(media_id,checkpoint,draft_id,views,reach,captured_at) VALUES(?,?,?,?,?,?)",
+                (str(number), checkpoint, draft["draft_id"], views, reach, captured),
+            )
+        by_id = {t["track_id"]: t for t in music.for_reel(self.conn, self.media)}
+        self.assertEqual(
+            by_id[track_id]["performance"]["24h"],
+            {"reels": 2, "mean_views": 200, "views_samples": 2, "mean_reach": 80, "reach_samples": 1},
+        )
+        self.assertEqual(by_id[track_id]["performance"]["72h"]["mean_views"], 900)
+        self.assertEqual(by_id[other_id]["performance"]["24h"]["mean_views"], 0)
+        clip_id = self.waiting_clip()
+        clip = self.conn.execute("SELECT * FROM clips WHERE clip_id=?", (clip_id,)).fetchone()
+        ai = ReelAI({**REEL, "music_track": other_id})
+        with patch.object(ai, "chat_json", wraps=ai.chat_json) as chat:
+            draft = drafts.generate_from_clip(self.conn, ai, NOW, clip, rendered=True, media_dir=self.media)
+        payload = json.loads(chat.call_args_list[0].args[1])
+        self.assertEqual(
+            {t["track_id"]: t for t in payload["music_tracks"]}[track_id]["performance"], by_id[track_id]["performance"]
+        )
+        self.assertEqual(draft["reel"]["music"]["track_id"], other_id)
+        for invalid in (None, "f" * 16, [track_id]):
+            draft = drafts.generate_from_clip(
+                self.conn, ReelAI({**REEL, "music_track": invalid}), NOW, clip, rendered=True, media_dir=self.media
+            )
+            self.assertEqual(draft["reel"]["music"]["track_id"], track_id)
+
     def test_photos_marked_as_a_reel_become_a_rendered_reel_with_the_agents_music_pick(self):
         track_id = music.save(self.conn, self.media, "Lo-fi", "YouTube Audio Library: no attribution", "", MP3, NOW)
         jpeg = photo()
@@ -291,6 +411,66 @@ class ReelDraftRenderTests(Case):
 
 
 class MusicApiTests(Fixture):
+    def test_form_defaults_and_off_are_stored_for_photos_and_clips(self):
+        client = self.client()
+        for choice in (None, "off"):
+            with self.subTest(choice=choice):
+                raw, content_type = form(files=[photo()])
+                fields = [("reel", "1")] + ([("music", choice)] if choice else [])
+                extra = "".join(
+                    f'--XyZ\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n' for k, v in fields
+                ).encode()
+                response = self.post(client, "/api/v1/instagram/uploads", extra + raw, content_type)
+                self.assertEqual(response.status, 200, response.body)
+                with sqlite3.connect(self.db) as conn:
+                    picked = json.loads(
+                        conn.execute(
+                            "SELECT music FROM uploads WHERE upload_id=?", (response.json()["upload_id"],)
+                        ).fetchone()[0]
+                    )
+                self.assertEqual(picked, {"pick": "off"} if choice else {"pick": "agents", "mix": "replace"})
+                body = {"note": "Coffee", "size": 10000, **({"music": choice} if choice else {})}
+                response = client.request(
+                    "POST", "/api/v1/instagram/clips", body=body, headers={"X-CSRF-Token": client.csrf}
+                )
+                self.assertEqual(response.status, 200, response.body)
+                with sqlite3.connect(self.db) as conn:
+                    picked = json.loads(
+                        conn.execute(
+                            "SELECT music FROM clips WHERE clip_id=?", (response.json()["clip_id"],)
+                        ).fetchone()[0]
+                    )
+                self.assertEqual(picked, {"pick": "off"} if choice else {"pick": "agents", "mix": "under"})
+
+    @unittest.skipUnless(shutil.which("node"), "Node.js is required for form checks")
+    def test_forms_preselect_agents_and_submit_explicit_off(self):
+        script = (Path(__file__).resolve().parents[1] / "command_centre/static/app.js").read_text()
+        function = script[script.index("  function musicChoice(") : script.index("  function uploadCard(")]
+        harness = (
+            """
+const assert = require('node:assert/strict');
+function el(tag, attrs, ...children) {
+  const node = {tag, attrs, children};
+  if (tag === 'select') node.value = (children.find(c => c && 'selected' in c.attrs) || children[0]).attrs.value;
+  return node;
+}
+"""
+            + function
+            + """
+for (const music of [[], [{track_id: '123', title: 'Lo-fi'}]]) {
+  for (const clips of [false, true]) {
+    const form = musicChoice({music}, 'test', clips);
+    assert.deepEqual(form.values(), {music: 'agents', mix: clips ? 'under' : 'replace'});
+    const select = form.node.children.find(c => c && c.tag === 'select');
+    select.value = 'off';
+    assert.equal(form.values().music, 'off');
+  }
+}
+"""
+        )
+        result = subprocess.run(["node", "-e", harness], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def client(self):
         settings = make_settings(
             self.root, permission_ceiling=Permission.RECOMMEND, instagram_db=self.db, instagram_media=self.media
