@@ -217,12 +217,26 @@ def _gave_up(conn, post, checkpoint: str, env: dict, now: datetime, page: str) -
             )
 
 
+def _deliver_report(conn, post, checkpoint: str, text: str, link: str | None, env: dict, now: datetime) -> bool:
+    key = f"instagram-post-report:{post['media_id']}:{checkpoint}"
+    if notify("instagram", "info", text, link, key=key, env=env, now=now) is None:
+        return False
+    with conn:
+        conn.execute(
+            "UPDATE post_reports SET notified_at=? WHERE media_id=? AND checkpoint=?",
+            (now.isoformat(timespec="seconds"), post["media_id"], checkpoint),
+        )
+    return True
+
+
 def report_one(conn, client: GraphClient, post, checkpoint: str, env: dict, now: datetime) -> bool:
     page = command_centre_link(env, "instagram")
     previous = conn.execute(
-        f"SELECT attempts,{','.join(CONVERSION_METRICS)} FROM post_reports WHERE media_id=? AND checkpoint=?",
+        "SELECT attempts,captured_at,summary,permalink FROM post_reports WHERE media_id=? AND checkpoint=?",
         (post["media_id"], checkpoint),
     ).fetchone()
+    if previous and previous["captured_at"]:
+        return _deliver_report(conn, post, checkpoint, previous["summary"], previous["permalink"] or page, env, now)
     if previous and previous["attempts"] >= MAX_ATTEMPTS:
         _gave_up(conn, post, checkpoint, env, now, page)
         return False
@@ -231,10 +245,6 @@ def report_one(conn, client: GraphClient, post, checkpoint: str, env: dict, now:
     except (GraphAPIError, ValueError, KeyError, TypeError, AttributeError):
         _attempt_failed(conn, post, checkpoint, env, now, page)
         return False
-    if previous:
-        for metric in CONVERSION_METRICS:
-            if values.get(metric) is None and previous[metric] is not None:
-                values[metric] = previous[metric]
     fmt = media_format(media.get("media_product_type"), media.get("media_type"))
     if post["kind"] == "reel":
         fmt = "reel"
@@ -266,15 +276,7 @@ def report_one(conn, client: GraphClient, post, checkpoint: str, env: dict, now:
                 *(values.get(m) for m in METRICS),
             ),
         )
-    key = f"instagram-post-report:{post['media_id']}:{checkpoint}"
-    if notify("instagram", "info", text, link or page, key=key, env=env, now=now) is None:
-        return False  # not stored: the next tick tries again while the checkpoint is due
-    with conn:
-        conn.execute(
-            "UPDATE post_reports SET notified_at=? WHERE media_id=? AND checkpoint=?",
-            (stamp, post["media_id"], checkpoint),
-        )
-    return True
+    return _deliver_report(conn, post, checkpoint, text, link or page, env, now)
 
 
 def tick(conn, env: dict, now: datetime | None = None, client: GraphClient | None = None) -> str:
