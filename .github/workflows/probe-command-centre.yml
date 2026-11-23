@@ -2,7 +2,7 @@ name: Inspect command centre hosting
 
 on:
   push:
-    branches: [droid/command-centre-live]
+    branches: [droid/command-centre-live, devin/1763910000-ig-state-probe]
     paths:
       - .github/workflows/probe-command-centre.yml
       - deploy/command-centre/probe_host.py
