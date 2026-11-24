@@ -123,6 +123,7 @@ CREATE TABLE IF NOT EXISTS story_insights (
     attempted_at TEXT,
     refresh_complete INTEGER NOT NULL DEFAULT 1,
     metrics TEXT NOT NULL DEFAULT '{}',
+    earlier_metrics TEXT NOT NULL DEFAULT '{}',
     navigation_breakdown TEXT NOT NULL DEFAULT '{}'
 );
 

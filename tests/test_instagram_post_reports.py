@@ -275,6 +275,7 @@ class StoryInsightsTests(Case):
             "navigation 12",
             "follows 2",
             "profile visits unavailable",
+            "Earlier profile visits 1 at 1h 0m",
             "forward 12",
             "back 0",
         ):

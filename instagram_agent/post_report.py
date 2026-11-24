@@ -112,11 +112,12 @@ def published(conn: sqlite3.Connection) -> list:
     """Published drafts and Stories, with their publish times."""
     return conn.execute(
         "SELECT d.draft_id, d.media_id, d.topic, d.kind, MIN(r.started_at) AS published_at, "
-        "NULL AS story_captured_at, NULL AS story_metrics, NULL AS story_navigation FROM drafts d "
+        "NULL AS story_captured_at, NULL AS story_metrics, NULL AS story_navigation, NULL AS story_earlier FROM drafts d "
         "JOIN publish_runs r ON r.draft_id=d.draft_id AND r.outcome='published' AND r.media_id=d.media_id "
         "WHERE d.status='published' AND d.media_id IS NOT NULL GROUP BY d.draft_id "
         "UNION ALL SELECT s.draft_id, s.media_id, COALESCE(d.topic,'Instagram Story'), 'story', s.posted_at, "
-        "s.captured_at, s.metrics, s.navigation_breakdown FROM story_insights s LEFT JOIN drafts d USING(draft_id)"
+        "s.captured_at, s.metrics, s.navigation_breakdown, s.earlier_metrics "
+        "FROM story_insights s LEFT JOIN drafts d USING(draft_id)"
     ).fetchall()
 
 
@@ -267,6 +268,18 @@ def _story_summary(post, checkpoint: str, posted: datetime, stamp: datetime, val
         if metric in values or metric in CONVERSION_METRICS
     )
     text = f"{head} {stats}."
+    earlier = json.loads(post["story_earlier"])
+    for metric, label in labels:
+        if metric not in earlier:
+            continue
+        reading = earlier[metric]
+        at = parse_time(reading["captured_at"])
+        if at is None:
+            continue
+        age = int((at - posted).total_seconds() // 60)
+        extra = f" Earlier {label} {reading['value']:,} at {age // 60}h {age % 60}m."
+        if len(text) + len(extra) <= TITLE_LIMIT:
+            text += extra
     actions = json.loads(post["story_navigation"])
     labels = {"tap_forward": "forward", "tap_back": "back", "tap_exit": "exits", "swipe_forward": "next story"}
     for key, label in labels.items():
