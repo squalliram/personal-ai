@@ -354,6 +354,26 @@ class DailyTickTests(unittest.TestCase):
 
 
 class SlidePromptTests(unittest.TestCase):
+    def test_negated_people_preserve_the_scene_but_affirmative_mentions_do_not(self):
+        for scene in (
+            "café interior with no people in frame",
+            "café interior without people",
+            "café interior free of any people",
+            "café interior empty of people",
+            "café interior devoid of people",
+            "people-free café interior",
+            "unpeopled café interior",
+        ):
+            with self.subTest(scene=scene):
+                prompt = drafts.slide_prompt({"text": "Coffee", "image_prompt": scene}, draws_text=False)
+                self.assertTrue(prompt.startswith(scene + "\n"))
+        with self.assertLogs("instagram_agent.drafts", level="WARNING"):
+            prompt = drafts.slide_prompt(
+                {"text": "Coffee", "image_prompt": "a barista pouring latte"}, draws_text=False
+            )
+        self.assertNotIn("a barista pouring latte", prompt)
+        self.assertIn("photorealistic close-up", prompt)
+
     def test_no_people_and_insight_instructions(self):
         self.assertIn("Each has 4-6 slides", drafts.CREATE)
         self.assertIn("slide count within 4-6", drafts.CREATE)
