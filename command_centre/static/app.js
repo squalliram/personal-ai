@@ -2236,50 +2236,240 @@
       }));
   }
 
-  // Measured results of past posts. Every finding carries its sample size; nothing here is a fact about a venue.
+  // Compact suggestions; detailed reports live with the published media, not in a second feed.
   function learningsCard(learned) {
-    const list = (items, empty) => (items && items.length
-      ? el("ul", {}, items.map((f) => el("li", {}, f.text)))
-      : muted(empty));
-    const postLink = (p) => (typeof p.permalink === "string" && p.permalink.startsWith("https://")
-      ? el("a", { href: p.permalink, rel: "noopener noreferrer", target: "_blank" }, "Open")
-      : "None");
-    const times = (v) => (typeof v === "number" ? `${v.toFixed(1)}x` : "Unavailable");
-    const posts = (rows, empty) => table([["Post", (p) => p.topic || "Unknown"], ["Hook", (p) => p.hook || ""],
-      ["Format", (p) => p.format], ["vs median", (p) => times(p.vs_median)], ["Link", postLink]], rows, empty);
-    return card("What's working",
-      muted(`${learned.sample_note} Reports come at 24 and 72 hours. Story reports reuse the latest insights captured while the Story was live. The next drafts and reels use these results; they are suggestions, not facts.`),
-      el("h3", {}, "Beating the median"), list(learned.working, "Nothing clearly above the median yet."),
-      el("h3", {}, "Below the median"), list(learned.not_working, "Nothing clearly below the median yet."),
-      el("h3", {}, "Best posts"), posts(learned.best_posts, "Needs at least two measured posts."),
-      el("h3", {}, "Weakest posts"), posts(learned.weakest_posts, "Needs at least four measured posts."),
-      el("h3", {}, "Latest post reports"),
-      table([["Captured", (r) => when(r.captured_at)], ["Checkpoint", (r) => r.checkpoint], ["Report", (r) => r.summary || ""],
-        ["Link", postLink]], learned.reports, "No post reports yet: the first arrives 24 hours after a post goes live."));
+    const findings = [...(learned.working || []).slice(0, 2), ...(learned.not_working || []).slice(0, 2)];
+    return card("Ideas for the next reel / Story", muted(learned.sample_note),
+      findings.length ? el("ul", { class: "compact" }, findings.map((f) => el("li", {}, f.text)))
+        : muted("No dependable pattern yet. Test one change at a time: opening hook, posting hour or caption ask; compare the same format at the same checkpoint."),
+      muted("These are associations, not proof of what caused a result. The next drafts use the stored learnings."));
+  }
+
+  const igView = { section: "performance", days: "30", format: "all", metric: "views", checkpoint: "24h" };
+  const IG_FORMATS = { reel: "Reel", story: "Story", post: "Post" };
+  const IG_METRICS = { views: "Views", reach: "Accounts reached", follows: "Follows gained", profile_visits: "Profile visits",
+    saved: "Saves", shares: "Shares", likes: "Likes", comments: "Comments", replies: "Replies" };
+  const igNumber = (value) => typeof value === "number" && Number.isFinite(value);
+  const igCount = (value) => igNumber(value) ? value.toLocaleString("en-GB", { maximumFractionDigits: 1 }) : "Unavailable";
+  const igMedian = (values) => {
+    const sorted = values.filter(igNumber).sort((a, b) => a - b);
+    const middle = Math.floor(sorted.length / 2);
+    return sorted.length ? (sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2) : null;
+  };
+  const igDate = (value) => new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/London", day: "numeric", month: "short" }).format(new Date(value));
+  const igLink = (item) => typeof item.permalink === "string" && item.permalink.startsWith("https://")
+    ? el("a", { href: item.permalink, target: "_blank", rel: "noopener noreferrer" }, "Open on Instagram") : null;
+
+  function igSelect(key, label, options, change) {
+    const select = el("select", { id: `ig-filter-${key}` }, options.map(([value, text]) => {
+      const option = el("option", { value }, text);
+      option.selected = igView[key] === value;
+      return option;
+    }));
+    select.addEventListener("change", () => { igView[key] = select.value; change(); });
+    return el("div", {}, el("label", { for: `ig-filter-${key}` }, label), select);
+  }
+
+  // Visible values and descriptions are the accessible chart; the bars are decoration.
+  function igBar(label, value, max, note, format = "reel", result = "") {
+    return el("li", { class: `ig-bar-row ${result}` },
+      el("div", { class: "ig-bar-label" }, el("span", {}, label), el("strong", {}, igCount(value))),
+      igNumber(value) ? svg("svg", { viewBox: "0 0 400 12", class: `ig-bar ig-${format}`, "aria-hidden": "true", focusable: "false", preserveAspectRatio: "none" },
+        svg("rect", { width: "400", height: "12", class: "ig-bar-track" }),
+        svg("rect", { width: String(value / Math.max(1, max) * 400), height: "12" })) : null,
+      el("p", { class: "muted" }, note));
+  }
+
+  function igPerformance(data) {
+    const history = data.performance || { items: [], window_days: 90 };
+    const content = el("div", { "aria-live": "polite" });
+    const filters = el("div", { class: "ig-filters" },
+      igSelect("days", "Published in", [["30", "Last 30 days"], ["90", "Last 90 days"]], draw),
+      igSelect("format", "Format", [["all", "All formats"], ["reel", "Reels"], ["story", "Stories"], ["post", "Posts"]], draw),
+      igSelect("metric", "Measure", Object.entries(IG_METRICS), draw),
+      igSelect("checkpoint", "Report checkpoint", [["24h", "24-hour report"], ["72h", "72-hour report"]], draw));
+    function draw() {
+      const since = Date.now() - Number(igView.days) * 86400000;
+      const items = history.items.filter((p) => Date.parse(p.posted_at) >= since && (igView.format === "all" || p.format === igView.format));
+      const snapshot = (p) => p.snapshots[igView.checkpoint];
+      const value = (p) => snapshot(p) && snapshot(p)[igView.metric];
+      const measured = items.filter((p) => igNumber(value(p)));
+      const metric = IG_METRICS[igView.metric];
+      const stat = (heading, number, note) => el("div", {}, el("span", { class: "muted" }, heading),
+        el("strong", { class: "big-number" }, number), el("span", { class: "muted" }, note));
+      const stats = el("div", { class: "ig-stats" }, stat("Published", String(items.length), "reels, Stories and posts"),
+        stat(`${metric} · median`, igCount(igMedian(measured.map(value))), `${measured.length} measured / ${items.length} published`),
+        stat("Missing this measure", String(items.length - measured.length), "not zero, not a failed post"));
+
+      const weeks = new Map();
+      // ISO Monday buckets in London, rather than the browser's timezone.
+      for (let day = Number(igView.days) - 1; day >= 0; day--) {
+        const date = new Date(Date.now() - day * 86400000);
+        const key = new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/London", year: "numeric", month: "2-digit", day: "2-digit" }).format(date);
+        const monday = new Date(`${key}T12:00:00Z`);
+        monday.setUTCDate(monday.getUTCDate() - (monday.getUTCDay() + 6) % 7);
+        weeks.set(monday.toISOString().slice(0, 10), { reel: 0, story: 0, post: 0 });
+      }
+      for (const item of items) {
+        const date = new Date(new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/London", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(item.posted_at)) + "T12:00:00Z");
+        date.setUTCDate(date.getUTCDate() - (date.getUTCDay() + 6) % 7);
+        const week = weeks.get(date.toISOString().slice(0, 10));
+        if (week) week[item.format]++;
+      }
+      const totals = [...weeks.values()].map((w) => w.reel + w.story + w.post);
+      const maxWeek = Math.max(1, ...totals);
+      const cadence = card("When content went live", muted("Weekly counts · London time. Edge weeks cover only the selected period; reel and matching Story count separately."),
+        el("ul", { class: "ig-bars" }, [...weeks].map(([week, counts]) => {
+          let x = 0;
+          return el("li", { class: "ig-bar-row" }, el("div", { class: "ig-bar-label" },
+            el("span", {}, `Week of ${igDate(`${week}T12:00:00Z`)}`),
+            el("strong", {}, String(counts.reel + counts.story + counts.post))),
+          svg("svg", { viewBox: "0 0 400 12", class: "ig-bar", "aria-hidden": "true", focusable: "false", preserveAspectRatio: "none" },
+            svg("rect", { width: "400", height: "12", class: "ig-bar-track" }),
+            ...Object.keys(IG_FORMATS).map((format) => {
+              const width = counts[format] / maxWeek * 400;
+              const rect = svg("rect", { x: String(x), width: String(width), height: "12", class: `ig-${format}` });
+              x += width;
+              return rect;
+            })),
+          el("p", { class: "muted" }, `${counts.reel} reels · ${counts.story} Stories · ${counts.post} posts`));
+        })));
+
+      function comparison(p) {
+        if (!igNumber(value(p))) return ["Not measured", ""];
+        if (p.format === "story") return ["Live capture; not graded against reels or other Story ages", ""];
+        const peers = measured.filter((other) => other.format === p.format);
+        const median = igMedian(peers.map(value));
+        if (peers.length < 3 || !median) return ["Need 3 measured peers and a non-zero median to compare", ""];
+        const lift = value(p) / median;
+        const label = lift >= 1.2 ? "Above typical" : lift <= 0.8 ? "Below typical" : "Typical";
+        return [`${label} · ${lift.toFixed(1)}× ${IG_FORMATS[p.format].toLowerCase()} median · n=${peers.length}`, lift >= 1.2 ? "ig-above" : lift <= 0.8 ? "ig-below" : ""];
+      }
+      const max = Math.max(1, ...measured.map(value));
+      const recent = card(`${metric} by published content`, muted(`Newest 12 shown. “Above / below typical” means at least 20% from the same-format median at this checkpoint, not a verdict on conversion.`),
+        items.length ? el("ul", { class: "ig-bars" }, items.slice(0, 12).map((p) => {
+          const [label, result] = comparison(p);
+          return igBar(`${igDate(p.posted_at)} · ${IG_FORMATS[p.format]} · ${p.topic}`, value(p), max,
+            `${label}${snapshot(p) ? ` · Captured ${when(snapshot(p).captured_at)}` : " · Report pending or metric unavailable"}`, p.format, result);
+        })) : muted("No published media in this selection. Try 90 days or a different format."));
+      const byFormat = card(`Which format earns ${metric.toLowerCase()}?`, muted("Median per published item, not total volume. Different formats serve different goals; Stories use live captures of varying ages."),
+        el("ul", { class: "ig-bars" }, Object.entries(IG_FORMATS).filter(([fmt]) => igView.format === "all" || igView.format === fmt).map(([fmt, label]) => {
+          const peers = measured.filter((p) => p.format === fmt);
+          return igBar(label, igMedian(peers.map(value)), max, `${peers.length} measured · ${peers.length < 5 ? "small sample, test rather than conclude" : "observed association"}`, fmt);
+        })));
+      const hours = new Map();
+      for (const p of measured.filter((p) => p.format !== "story")) {
+        const hour = new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/London", hour: "2-digit", hourCycle: "h23" }).format(new Date(p.posted_at));
+        const key = `${p.format}:${hour}`;
+        if (!hours.has(key)) hours.set(key, { format: p.format, hour, values: [] });
+        hours.get(key).values.push(value(p));
+      }
+      const groups = [...hours.values()].sort((a, b) => igMedian(b.values) - igMedian(a.values));
+      const timing = card(`Posting hours to test`, muted(`London time · median ${metric.toLowerCase()} per item, grouped by format and hour. Not proof of a best time: topic and hook also differ. Stories excluded because capture ages vary.`),
+        groups.length ? el("ul", { class: "ig-bars" }, groups.slice(0, 6).map((g) => igBar(`${IG_FORMATS[g.format]} · ${g.hour}:00–${g.hour}:59`, igMedian(g.values), max,
+          `n=${g.values.length} · ${g.values.length < 5 ? "small sample; collect more before changing the schedule" : "candidate for a controlled timing test"}`, g.format))) : muted("No measured reels or posts for this selection yet."));
+      content.replaceChildren(...[stats,
+        muted(`${history.last_synced_at ? `Last media sync ${when(history.last_synced_at)}.` : "No media sync recorded."} Stored data only; refreshing this page does not fetch Instagram insights.${history.truncated ? ` Showing only the newest ${history.limit} items.` : ""}`),
+        el("details", { class: "ig-method" }, el("summary", {}, "How to read these results"),
+          muted("24h and 72h select separate report checkpoints, never added together. Capture times show when values were actually read; delayed reports may be older than the nominal checkpoint. Stories can reuse the same live snapshot at both checkpoints. Missing/unsupported metrics stay unavailable."),
+          muted("Follows gained are only the follows Instagram attributes to individual media, where supported—not total followers or net account growth. Views are not unique people or sales. A zero is shown only when it was measured.")),
+        cadence, recent, el("div", { class: "ig-chart-grid" }, byFormat, timing),
+        data.learnings ? learningsCard(data.learnings) : null].filter(Boolean));
+    }
+    draw();
+    return el("div", {}, card("Performance", filters), content);
+  }
+
+  function igPublished(data, canDecide) {
+    const items = (data.performance && data.performance.items) || [];
+    const body = el("div", {});
+    let shown = 0;
+    const more = el("button", { type: "button" }, "Show more published content");
+    function showMore() {
+      for (const item of items.slice(shown, shown + 20)) {
+        const reports = Object.entries(item.snapshots).map(([checkpoint, values]) => el("div", {},
+          el("h3", {}, `${checkpoint} report · captured ${when(values.captured_at)}`),
+          keyValues(Object.entries(IG_METRICS).map(([key, label]) => [label, igCount(values[key])]))));
+        const draft = data.drafts.find((d) => d.draft_id === item.draft_id);
+        body.append(card(`${IG_FORMATS[item.format]} · ${item.topic}`, muted(`Live ${when(item.posted_at)}${item.time_basis === "publish_record" ? " (publishing record; awaiting media sync)" : ""}`),
+          igLink(item), el("details", {}, el("summary", {}, "Results and content"),
+            reports.length ? reports : muted("No checkpoint report yet. This does not mean the content failed."),
+            item.format === "story" ? muted("Story figures are the latest captured while live, not a full 72-hour observation.") : null,
+            draft && item.format !== "story" ? draftCard(draft, canDecide, data.auto_publish) : null)));
+      }
+      shown += 20;
+      more.hidden = shown >= items.length;
+    }
+    more.addEventListener("click", showMore);
+    showMore();
+    const unpublishedHistory = data.drafts.filter((d) => d.status === "published" && !items.some((p) => p.draft_id === d.draft_id));
+    return el("div", {}, card("Published", muted("Reels, Stories and posts in the stored 90-day history. Open an item for its checkpoint metrics and content.")), body,
+      !items.length ? muted("No published media captured yet.") : null, more,
+      unpublishedHistory.length ? el("details", {}, el("summary", {}, "Other published drafts (no synced media in this window)"),
+        unpublishedHistory.map((d) => draftCard(d, canDecide, data.auto_publish))) : null);
   }
 
   async function instagram(view) {
     const data = await load("api/v1/instagram/drafts");
     if (!data) return;
     const canDecide = Boolean(session) && ["recommend", "execute"].includes(session.permission);
-    const last = data.runs[0];
-    view.append(tokenCard(data.token));
-    view.append(card("Daily drafts",
-      muted(data.auto_publish
-        ? "One reel draft for @instafoodielove is ready by 12:00 London time. If it passes review it posts automatically at its publish time, at least an hour after it's made. Reject it before then to stop it; approve a weaker one to post it."
-        : "One reel draft for @instafoodielove is ready by 12:00 London time. Automatic posting is off, so nothing is posted from here: approve it if you like it, then post it yourself."),
-      last ? keyValues([["Last run", when(last.started_at)], ["Result", last.outcome], ["Drafts made", last.drafts],
-        ...(last.error ? [["Error", last.error]] : [])])
-        : muted(data.state === "not_configured" ? "Not connected: there is no Instagram database on this server yet." : "No daily run recorded yet.")));
-    if (data.learnings) view.append(learningsCard(data.learnings));
-    view.append(uploadCard(data, canDecide));
-    const waiting = waitingCard(data.uploads || [], canDecide);
-    if (waiting) view.append(waiting);
-    view.append(clipCard(data, canDecide));
-    view.append(musicCard(data, canDecide));
-    const waitingClips = waitingClipsCard(data.clips || [], canDecide);
-    if (waitingClips) view.append(waitingClips);
-    for (const draft of data.drafts) view.append(draftCard(draft, canDecide, data.auto_publish));
+    const needsReview = (d) => d.status === "pending" && !d.publishing
+      && (!data.auto_publish || (d.reel && d.reel.hold) || !igNumber(d.review_score) || d.review_score < 70);
+    const review = data.drafts.filter(needsReview);
+    const drafts = data.drafts.filter((d) => ["pending", "approved"].includes(d.status) && !needsReview(d));
+    const sections = [["performance", "Performance"], ["review", `Awaiting review (${review.length})`], ["drafts", `Drafts (${drafts.length})`],
+      ["published", "Published"], ["uploads", "Uploads & music"], ["activity", "Activity & audit"]];
+    const panels = new Map();
+    const buttons = new Map();
+    const nav = el("div", { class: "ig-sections", role: "group", "aria-label": "Instagram sections" });
+    const root = el("div", { class: "ig-dashboard" },
+      card("@instafoodielove", muted(`${data.auto_publish ? "Automatic posting on" : "Automatic posting off"} · ${review.length} awaiting review · All times London`)), nav);
+    if (data.state !== "available") root.append(card("Instagram data unavailable", muted(data.state === "not_configured"
+      ? "No Instagram database is connected yet. Graphs will appear after media and reports are captured." : "The Instagram database could not be read. Empty graphs are not evidence of zero performance.")));
+    const tokenWarning = data.token && ["expired", "expiring", "refresh_failed", "not_configured"].includes(data.token.state) ? tokenCard(data.token) : null;
+    if (tokenWarning) root.append(tokenWarning);
+    const fills = {
+      performance: () => igPerformance(data),
+      review: () => el("div", {}, card("Awaiting review", muted("Held or unapproved drafts that will not post automatically. Approve or reject below.")),
+        review.length ? review.map((d) => draftCard(d, canDecide, data.auto_publish)) : muted("Nothing needs a decision.")),
+      drafts: () => el("div", {}, card("Drafts & scheduled", muted(data.auto_publish
+        ? "Ready or approved drafts. Each card shows whether and when it will post; reject a pending draft to stop it."
+        : "Automatic posting is off. Approved drafts stay here until posted manually.")),
+        drafts.length ? drafts.map((d) => draftCard(d, canDecide, data.auto_publish)) : muted("No drafts waiting to publish.")),
+      published: () => igPublished(data, canDecide),
+      uploads: () => el("div", {}, uploadCard(data, canDecide), waitingCard(data.uploads || [], canDecide),
+        clipCard(data, canDecide), waitingClipsCard(data.clips || [], canDecide), musicCard(data, canDecide)),
+      activity: () => el("div", {}, tokenCard(data.token), card("Daily generation runs",
+        muted("One reel draft is due by 12:00 London time. Skipped ticks are normal when today's draft is already made."),
+        table([["When", (r) => when(r.started_at)], ["Result", (r) => r.outcome], ["Drafts", (r) => r.drafts], ["Detail", (r) => r.error || "—"]], data.runs)),
+        el("details", {}, el("summary", {}, "Rejected drafts"), data.drafts.filter((d) => d.status === "rejected").map((d) => draftCard(d, canDecide, data.auto_publish))))
+    };
+    for (const [id, label] of sections) {
+      const button = el("button", { type: "button", "aria-controls": `ig-section-${id}`, "aria-pressed": "false" }, label);
+      const panel = el("section", { id: `ig-section-${id}`, "aria-label": label, hidden: "" });
+      buttons.set(id, button);
+      panels.set(id, panel);
+      button.addEventListener("click", () => show(id));
+      nav.append(button);
+      root.append(panel);
+    }
+    const filled = new Set();
+    function show(id) {
+      igView.section = id;
+      if (tokenWarning) tokenWarning.hidden = id === "activity";
+      for (const [key, panel] of panels) {
+        panel.hidden = key !== id;
+        buttons.get(key).setAttribute("aria-pressed", String(key === id));
+      }
+      if (!filled.has(id)) {
+        filled.add(id);
+        const panel = panels.get(id);
+        panel.append(fills[id]());
+        if (id === "activity") auditCard().then((audit) => { if (audit) panel.append(audit); });
+      }
+    }
+    show(igView.section);
+    view.append(root);
   }
 
 
