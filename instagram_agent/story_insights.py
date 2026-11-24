@@ -82,16 +82,21 @@ def _save(conn, media_id, draft_id, posted, permalink, attempted, values, breakd
             if attempted > (previous["attempted_at"] or ""):
                 conn.execute("UPDATE story_insights SET attempted_at=? WHERE media_id=?", (attempted, media_id))
             return
-        if previous:
-            values = {**json.loads(previous["metrics"]), **values}
-            breakdown = breakdown or json.loads(previous["navigation_breakdown"])
+        earlier = json.loads(previous["earlier_metrics"]) if previous else {}
+        if previous and previous["captured_at"]:
+            earlier.update(
+                (metric, {"value": value, "captured_at": previous["captured_at"]})
+                for metric, value in json.loads(previous["metrics"]).items()
+            )
+        earlier = {metric: reading for metric, reading in earlier.items() if metric not in values}
         conn.execute(
             "INSERT INTO story_insights(media_id,draft_id,posted_at,permalink,captured_at,metrics,navigation_breakdown,"
-            "refresh_complete,attempted_at) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(media_id) DO UPDATE SET "
+            "refresh_complete,attempted_at,earlier_metrics) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(media_id) DO UPDATE SET "
             "draft_id=COALESCE(excluded.draft_id,story_insights.draft_id), "
             "permalink=COALESCE(excluded.permalink,story_insights.permalink), captured_at=excluded.captured_at, "
             "metrics=excluded.metrics, navigation_breakdown=excluded.navigation_breakdown, "
-            "refresh_complete=excluded.refresh_complete, attempted_at=excluded.attempted_at",
+            "refresh_complete=excluded.refresh_complete, attempted_at=excluded.attempted_at, "
+            "earlier_metrics=excluded.earlier_metrics",
             (
                 media_id,
                 draft_id,
@@ -102,6 +107,7 @@ def _save(conn, media_id, draft_id, posted, permalink, attempted, values, breakd
                 json.dumps(breakdown),
                 refresh_complete,
                 attempted,
+                json.dumps(earlier),
             ),
         )
 

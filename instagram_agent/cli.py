@@ -321,6 +321,27 @@ def make_drafts(conn, env: dict, media_dir: Path, now: datetime | None = None) -
     return outcome
 
 
+def _capture_followers(conn, env: dict, now: datetime) -> str:
+    if not (env.get("INSTAGRAM_ACCESS_TOKEN") and env.get("INSTAGRAM_USER_ID")):
+        return "follower snapshot off"
+    day = now.astimezone(LONDON).date().isoformat()
+    try:
+        if conn.execute("SELECT 1 FROM account_followers WHERE captured_on=?", (day,)).fetchone():
+            return "follower snapshot current"
+        client = graph_client(env)
+        count = client.get(client.user_id, {"fields": "followers_count"}).get("followers_count")
+        if type(count) is not int or count < 0:
+            return "follower snapshot unavailable"
+        with conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO account_followers(captured_on,captured_at,followers) VALUES(?,?,?)",
+                (day, now.isoformat(timespec="seconds"), count),
+            )
+        return "follower snapshot captured"
+    except (GraphAPIError, sqlite3.Error) as exc:
+        return f"follower snapshot failed ({type(exc).__name__})"
+
+
 def _capture_stories(conn, env: dict) -> str:
     if not (env.get("INSTAGRAM_ACCESS_TOKEN") and env.get("INSTAGRAM_USER_ID")):
         return "Story insights off"
@@ -394,6 +415,7 @@ def main(argv: list[str] | None = None) -> int:
                 render.render_due(conn, args.media, _notify_render(env, _now()))
                 published = publish.tick(conn, env, args.media, _now())
                 reports = _post_reports(conn, env)
+                followers = _capture_followers(conn, env, _now())
             with open(args.media / ".story-insights.lock", "w") as lock:
                 try:
                     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -401,7 +423,7 @@ def main(argv: list[str] | None = None) -> int:
                     stories = "Story insights busy"
                 else:
                     stories = _capture_stories(conn, env)
-            print(outcome, refreshed, published, stories, reports, sep="; ")
+            print(outcome, refreshed, published, stories, reports, followers, sep="; ")
             return 0 if outcome in ("ok", "partial", "skipped", "gave_up") else 1
         env = {**load_env(env_file), **os.environ}
         token, user_id = env.get("INSTAGRAM_ACCESS_TOKEN", ""), env.get("INSTAGRAM_USER_ID", "")

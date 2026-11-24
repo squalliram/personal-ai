@@ -108,6 +108,12 @@ CREATE TABLE IF NOT EXISTS token_state (
     last_outcome TEXT NOT NULL,
     last_error TEXT
 );
+CREATE TABLE IF NOT EXISTS account_followers (
+    captured_on TEXT PRIMARY KEY,
+    captured_at TEXT NOT NULL,
+    followers INTEGER NOT NULL CHECK (followers >= 0)
+);
+
 CREATE TABLE IF NOT EXISTS story_insights (
     media_id TEXT PRIMARY KEY,
     draft_id TEXT,
@@ -117,6 +123,7 @@ CREATE TABLE IF NOT EXISTS story_insights (
     attempted_at TEXT,
     refresh_complete INTEGER NOT NULL DEFAULT 1,
     metrics TEXT NOT NULL DEFAULT '{}',
+    earlier_metrics TEXT NOT NULL DEFAULT '{}',
     navigation_breakdown TEXT NOT NULL DEFAULT '{}'
 );
 
@@ -143,6 +150,7 @@ CREATE TABLE IF NOT EXISTS post_reports (
     profile_visits INTEGER,
     replies INTEGER,
     navigation INTEGER,
+    creative TEXT,
     summary TEXT,
     notified_at TEXT,
     PRIMARY KEY (media_id, checkpoint)
