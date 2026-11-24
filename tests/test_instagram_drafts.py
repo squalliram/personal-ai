@@ -91,6 +91,17 @@ class DraftTests(unittest.TestCase):
         self.assertEqual(len(tags), 20)
         self.assertEqual(drafts.clean_hashtags(["#a" * 1, "#b"], "x" * 2197), [])
 
+    def test_ai_slide_count_is_three_or_four_and_meets_minimum_duration(self):
+        for count in (0, 2, 3, 4, 5, 8):
+            with self.subTest(count=count):
+                draft = drafts.normalise(raw_draft("coffee", slides=count))
+                if count in (3, 4):
+                    self.assertEqual(len(draft["slides"]), count)
+                    self.assertEqual(drafts.render.photo_duration(count), count * 3)
+                    self.assertGreaterEqual(drafts.render.photo_duration(count), 7)
+                else:
+                    self.assertIsNone(draft)
+
     def test_publish_slots_start_at_noon_and_use_audience_hours(self):
         storage.replace_audience_hours(self.conn, {19: 500, 8: 400, 13: 300}, "now")
         self.assertEqual(
@@ -381,8 +392,12 @@ class SlidePromptTests(unittest.TestCase):
                 self.assertIn("photorealistic close-up", prompt)
 
     def test_no_people_and_insight_instructions(self):
-        self.assertIn("Each has 4-6 slides", drafts.CREATE)
-        self.assertIn("slide count within 4-6", drafts.CREATE)
+        self.assertIn("Each has 3-4 slides", drafts.CREATE)
+        self.assertIn("slide count within 3-4", drafts.CREATE)
+        self.assertIn("finished, plated dish", drafts.CREATE)
+        self.assertIn("first second", drafts.CREATE)
+        self.assertIn("outside 3-4 slides", drafts.REVIEW)
+        self.assertIn("finished, plated dish", drafts.REVIEW)
         self.assertIn(drafts.NO_PEOPLE, drafts.CREATE)
         self.assertIn("watch-time lift, reach, follows", drafts.CREATE)
         self.assertIn("reel duration findings", drafts.CREATE_REEL_FROM_PHOTOS)
