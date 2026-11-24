@@ -170,7 +170,12 @@ def _reschedule_series_reels(conn, env: dict, now: datetime, *, day_full: bool =
             off_day = (
                 slot.date() < today and recipe_series.active(conn, slot) and not recipe_series.posting_day(env, slot)
             )
-            overflow = day_full and slot.date() == today and _eligible(row)
+            overflow = (
+                day_full
+                and slot.date() == today
+                and _eligible(row)
+                and now <= posts_at(row["scheduled_for"], row["created_at"]) + STALE_AFTER
+            )
             if not (off_day or overflow):
                 continue
             target = datetime.combine(first_open, slot.time(), LONDON)

@@ -126,6 +126,21 @@ class PublishTests(PublishCase):
         self.assertEqual(self.tick(FakeGraph(), friday + timedelta(days=3)), "published 1, failed 0")
         self.assertEqual([self.status(d)[0] for d in (carryover, fresh)], ["published", "published"])
 
+    def test_late_approval_does_not_reschedule_an_expired_reel(self):
+        friday = DUE + timedelta(days=1)
+        slot = (friday - timedelta(minutes=5)).isoformat()
+        late = self.add("a" * 16, slot=slot)
+        self.add("b" * 16, slot=slot)
+        recipe_series.start(self.conn, MADE)
+        with self.conn:
+            self.conn.execute("UPDATE drafts SET reel=? WHERE draft_id=?", ('{"file":"reel.mp4","hold":true}', late))
+        self.assertEqual(self.tick(FakeGraph(), friday), "published 1, failed 0")
+        with self.conn:
+            self.conn.execute("UPDATE drafts SET status='approved' WHERE draft_id=?", (late,))
+        self.assertEqual(self.tick(FakeGraph(), friday + publish.STALE_AFTER), "published 0, failed 0")
+        self.assertEqual(self.tick(FakeGraph(), friday + timedelta(days=3)), "published 0, failed 0")
+        self.assertEqual(self.status(late)[0], "approved")
+
     def test_recipe_series_enforces_posting_days_and_one_reel_story_pair_per_day(self):
         self.add()
         recipe_series.start(self.conn, MADE)
