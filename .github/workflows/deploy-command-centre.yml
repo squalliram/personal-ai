@@ -56,7 +56,11 @@ jobs:
             [[ "$TEST_RUN_ID" =~ ^[0-9]+$ ]] || exit 1
             proof=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$TEST_RUN_ID" --jq '[.head_sha, .head_branch, .event, .conclusion, .head_repository.full_name, .path] | @tsv')
             expected=$(printf '%s\tmain\tpush\tsuccess\t%s\t.github/workflows/test.yml' "$DEPLOY_SHA" "$GITHUB_REPOSITORY")
-            test "$proof" = "$expected" || { echo "Successful main push tests required."; exit 1; }
+            # GitHub can qualify a run's workflow path with its source branch.
+            case "$proof" in
+              "$expected"|"$expected@main"|"$expected@refs/heads/main") ;;
+              *) echo "Successful main push tests required."; exit 1 ;;
+            esac
           else
             successes=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/test.yml/runs?branch=main&event=push&head_sha=$DEPLOY_SHA&status=success" --jq '.workflow_runs | length')
             test "$successes" -gt 0 || { echo "Successful main push tests required."; exit 1; }

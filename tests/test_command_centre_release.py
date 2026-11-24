@@ -476,10 +476,12 @@ class WorkflowGateTests(unittest.TestCase):
         self.assertIn("github.ref == 'refs/heads/main'", workflow)
 
     def test_triggering_run_does_not_depend_on_indexing(self):
-        proof = f"{SHA}\tmain\tpush\tsuccess\towner/repo\t.github/workflows/test.yml"
-        result, output = self.gate(SHA, 0, "12345", proof)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("ready=true", output)
+        for suffix in ("", "@main", "@refs/heads/main"):
+            with self.subTest(suffix=suffix):
+                proof = f"{SHA}\tmain\tpush\tsuccess\towner/repo\t.github/workflows/test.yml{suffix}"
+                result, output = self.gate(SHA, 0, "12345", proof)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("ready=true", output)
 
     def test_triggering_run_must_prove_exact_successful_main_tests(self):
         fields = [SHA, "main", "push", "success", "owner/repo", ".github/workflows/test.yml"]
