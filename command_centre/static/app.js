@@ -2257,6 +2257,17 @@
     return sorted.length ? (sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2) : null;
   };
   const igDate = (value) => new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/London", day: "numeric", month: "short" }).format(new Date(value));
+  // Locale output is for display, never for parsing (en-CA is not ISO on every browser).
+  const igDay = (value) => {
+    const parts = new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/London", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date(value));
+    const part = (type) => parts.find((p) => p.type === type).value;
+    return `${part("year")}-${part("month")}-${part("day")}`;
+  };
+  const igWeek = (value) => {
+    const monday = new Date(`${igDay(value)}T12:00:00Z`);
+    monday.setUTCDate(monday.getUTCDate() - (monday.getUTCDay() + 6) % 7);
+    return monday.toISOString().slice(0, 10);
+  };
   const igLink = (item) => typeof item.permalink === "string" && item.permalink.startsWith("https://")
     ? el("a", { href: item.permalink, target: "_blank", rel: "noopener noreferrer" }, "Open on Instagram") : null;
 
@@ -2305,15 +2316,10 @@
       // ISO Monday buckets in London, rather than the browser's timezone.
       for (let day = Number(igView.days) - 1; day >= 0; day--) {
         const date = new Date(Date.now() - day * 86400000);
-        const key = new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/London", year: "numeric", month: "2-digit", day: "2-digit" }).format(date);
-        const monday = new Date(`${key}T12:00:00Z`);
-        monday.setUTCDate(monday.getUTCDate() - (monday.getUTCDay() + 6) % 7);
-        weeks.set(monday.toISOString().slice(0, 10), { reel: 0, story: 0, post: 0 });
+        weeks.set(igWeek(date), { reel: 0, story: 0, post: 0 });
       }
       for (const item of items) {
-        const date = new Date(new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/London", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(item.posted_at)) + "T12:00:00Z");
-        date.setUTCDate(date.getUTCDate() - (date.getUTCDay() + 6) % 7);
-        const week = weeks.get(date.toISOString().slice(0, 10));
+        const week = weeks.get(igWeek(item.posted_at));
         if (week) week[item.format]++;
       }
       const totals = [...weeks.values()].map((w) => w.reel + w.story + w.post);
