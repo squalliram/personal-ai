@@ -221,7 +221,10 @@ class PreflightTests(unittest.TestCase):
         self.add()
         self.add(OTHER, slot="2026-11-15T19:00+00:00", approved=False)
         with self.conn:
-            self.conn.execute("UPDATE drafts SET kind='reel', reel=? WHERE draft_id=?", ('{"hold":true}', OTHER))
+            self.conn.execute(
+                "UPDATE drafts SET kind='reel', reel=? WHERE draft_id=?",
+                ('{"hold":true,"image_review":{"status":"passed"}}', OTHER),
+            )
         self.assertEqual(self.preflight()["eligible_drafts"], [DRAFT])
         with self.conn:
             storage.decide_draft(self.conn, OTHER, "approved", NOW.isoformat(timespec="seconds"))

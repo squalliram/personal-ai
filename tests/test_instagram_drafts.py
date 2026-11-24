@@ -183,14 +183,15 @@ class DraftTests(unittest.TestCase):
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM drafts").fetchone()[0], 0)
         self.assertEqual(list(media.iterdir()), [])
 
-    def test_decisions_only_move_pending_drafts_and_feed_memory(self):
+    def test_decisions_remember_withdrawn_approval(self):
         draft = {**drafts.normalise(raw_draft("flat white")), "draft_id": "a" * 16, "hashtags": ["#coffee"]}
         with self.conn:
             storage.insert_draft(self.conn, draft, "2026-11-12", "2026-11-12T10:00:00+00:00")
         self.assertTrue(storage.decide_draft(self.conn, "a" * 16, "approved", "t1"))
-        self.assertFalse(storage.decide_draft(self.conn, "a" * 16, "rejected", "t2"))
+        self.assertTrue(storage.decide_draft(self.conn, "a" * 16, "rejected", "t2"))
+        self.assertFalse(storage.decide_draft(self.conn, "a" * 16, "approved", "t3"))
         example = self.conn.execute("SELECT decision, topic, hashtags FROM examples").fetchone()
-        self.assertEqual(tuple(example), ("approved", "flat white", "#coffee"))
+        self.assertEqual(tuple(example), ("rejected", "flat white", "#coffee"))
 
 
 class CliStartupTests(unittest.TestCase):

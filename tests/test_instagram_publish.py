@@ -118,7 +118,10 @@ class PublishTests(PublishCase):
         reel = self.add(slot=monday.isoformat(), approved=False)
         recipe_series.start(self.conn, monday, defer_first_day=True)
         with self.conn:
-            self.conn.execute("UPDATE drafts SET reel=? WHERE draft_id=?", ('{"file":"reel.mp4","hold":true}', reel))
+            self.conn.execute(
+                "UPDATE drafts SET reel=? WHERE draft_id=?",
+                ('{"file":"reel.mp4","hold":true,"image_review":{"status":"passed"}}', reel),
+            )
         self.assertEqual(self.tick(FakeGraph(), monday), "published 0, failed 0")
         storage.decide_draft(self.conn, reel, "approved", (monday + timedelta(hours=1)).isoformat())
         self.assertEqual(self.tick(FakeGraph(), monday + timedelta(hours=1)), "published 0, failed 0")
@@ -223,7 +226,8 @@ class PublishTests(PublishCase):
         friday = DUE + timedelta(days=1)
         with self.conn:
             self.conn.execute(
-                "UPDATE drafts SET reel=? WHERE draft_id=?", ('{"file":"reel.mp4","hold":true}', carryover)
+                "UPDATE drafts SET reel=? WHERE draft_id=?",
+                ('{"file":"reel.mp4","hold":true,"image_review":{"status":"passed"}}', carryover),
             )
         self.assertEqual(self.tick(FakeGraph(), friday - timedelta(hours=7)), "published 0, failed 0")
         slot = self.conn.execute("SELECT scheduled_for FROM drafts WHERE draft_id=?", (carryover,)).fetchone()[0]
@@ -241,7 +245,10 @@ class PublishTests(PublishCase):
         self.add("b" * 16, slot=slot)
         recipe_series.start(self.conn, MADE)
         with self.conn:
-            self.conn.execute("UPDATE drafts SET reel=? WHERE draft_id=?", ('{"file":"reel.mp4","hold":true}', late))
+            self.conn.execute(
+                "UPDATE drafts SET reel=? WHERE draft_id=?",
+                ('{"file":"reel.mp4","hold":true,"image_review":{"status":"passed"}}', late),
+            )
         self.assertEqual(self.tick(FakeGraph(), friday), "published 1, failed 0")
         with self.conn:
             self.conn.execute("UPDATE drafts SET status='approved' WHERE draft_id=?", (late,))
@@ -254,7 +261,10 @@ class PublishTests(PublishCase):
         reel = self.add(slot=friday.isoformat(), approved=False)
         recipe_series.start(self.conn, MADE)
         with self.conn:
-            self.conn.execute("UPDATE drafts SET reel=? WHERE draft_id=?", ('{"file":"reel.mp4","hold":true}', reel))
+            self.conn.execute(
+                "UPDATE drafts SET reel=? WHERE draft_id=?",
+                ('{"file":"reel.mp4","hold":true,"image_review":{"status":"passed"}}', reel),
+            )
         self.assertEqual(self.tick(FakeGraph(), friday), "published 0, failed 0")
         storage.decide_draft(self.conn, reel, "approved", (friday + timedelta(hours=1)).isoformat())
         self.assertEqual(self.tick(FakeGraph(), friday + timedelta(hours=1)), "published 0, failed 0")
