@@ -23,7 +23,8 @@ from urllib.request import Request, urlopen
 
 from notifications import command_centre_link, notify
 
-from . import storage, video
+from . import recipe_series, storage, video
+from .analysis import LONDON
 from .drafts import PASS_SCORE
 from .graph import GraphAPIError, GraphClient
 
@@ -364,8 +365,13 @@ def tick(conn, env: dict, media_dir: Path, now: datetime, client: GraphClient | 
             key=f"instagram-legacy-skipped:{old['draft_id']}",
             env=env,
         )
+    series = recipe_series.active(conn, now)
+    if series and (not recipe_series.posting_day(env, now) or recipe_series.already_published(conn, now)):
+        return "published 0, failed 0"
     for row in due(conn, now):
         if kind(row) != "reel":
+            continue
+        if series and _instant(row["scheduled_for"]).astimezone(LONDON).date() != now.astimezone(LONDON).date():
             continue
         stamp = now.isoformat(timespec="seconds")
 
@@ -431,4 +437,6 @@ def tick(conn, env: dict, media_dir: Path, now: datetime, client: GraphClient | 
         except Exception:
             notify("instagram", "failed", "Reel is live; Story recording failed, check Instagram", page, env=env)
         published += 1
+        if series:
+            break
     return f"published {published}, failed {failed}"

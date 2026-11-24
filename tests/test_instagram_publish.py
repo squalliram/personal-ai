@@ -10,7 +10,7 @@ from unittest.mock import patch
 from urllib.error import HTTPError
 
 import notifications
-from instagram_agent import cli, env_install, publish, storage
+from instagram_agent import cli, env_install, publish, recipe_series, storage
 from instagram_agent.graph import GraphAPIError, GraphClient
 
 JPEG = b"\xff\xd8\xff" + b"1" * 32
@@ -93,6 +93,22 @@ class PublishCase(unittest.TestCase):
 
 
 class PublishTests(PublishCase):
+    def test_recipe_series_enforces_posting_days_and_one_reel_story_pair_per_day(self):
+        self.add()
+        recipe_series.start(self.conn, MADE)
+        graph = FakeGraph()
+        self.assertEqual(self.tick(graph), "published 0, failed 0")
+        self.assertEqual(graph.posts, [])
+        self.env["INSTAGRAM_RECIPE_SERIES_DAYS"] = "tue,thu,sat"
+        self.add("b" * 16)
+        self.assertEqual(self.tick(graph), "published 1, failed 0")
+        self.assertEqual(
+            [params["media_type"] for path, params, _ in graph.posts if path.endswith("/media")],
+            ["REELS", "STORIES"],
+        )
+        self.assertEqual(tuple(self.status("b" * 16)), ("pending", None))
+        self.assertEqual(self.tick(FakeGraph()), "published 0, failed 0")
+
     def test_publishes_reel_then_same_video_story_once(self):
         self.add()
         graph = FakeGraph(statuses=("IN_PROGRESS", "FINISHED"))

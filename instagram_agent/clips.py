@@ -242,12 +242,13 @@ def delete(conn: sqlite3.Connection, media_dir: Path, clip_id: str) -> bool:
     return bool(changed)
 
 
-def oldest(conn: sqlite3.Connection):
+def oldest(conn: sqlite3.Connection, *, note_matches=None):
     with conn:
         uploads.add_columns(conn, "clips")
-    return conn.execute(
+    rows = conn.execute(
         "SELECT clip_id, created_at, note, facts, music FROM clips WHERE status='waiting' ORDER BY created_at, clip_id"
-    ).fetchone()
+    )
+    return next((row for row in rows if note_matches is None or note_matches(row["note"])), None)
 
 
 def is_waiting(conn: sqlite3.Connection, clip_id: str) -> bool:

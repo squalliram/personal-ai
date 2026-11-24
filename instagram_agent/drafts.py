@@ -533,7 +533,7 @@ def generate_from_clip(
     return best
 
 
-def store_clip_draft(conn, draft: dict, clip, media_dir: Path, now: datetime) -> str | None:
+def store_clip_draft(conn, draft: dict, clip, media_dir: Path, now: datetime, *, slot: str | None = None) -> str | None:
     """Move the clip in as the draft's video and mark it used, in one go. None if the owner deleted it meanwhile."""
     _private_dir(media_dir)
     day = now.astimezone(LONDON).date().isoformat()
@@ -558,7 +558,8 @@ def store_clip_draft(conn, draft: dict, clip, media_dir: Path, now: datetime) ->
             clips.delete(conn, media_dir, clip["clip_id"])
             shutil.rmtree(folder, ignore_errors=True)
             return None
-        [slot] = _free_slots(conn, now, 1)
+        if slot is None:
+            (slot,) = _free_slots(conn, now, 1)
         reel = {**draft["reel"], "source_file": name} if rendered else {**draft["reel"], "file": name}
         with conn:
             claimed = conn.execute(
@@ -587,7 +588,9 @@ def _free_slots(conn, now: datetime, count: int) -> list[str]:
     return [s for s in publish_slots(conn, now, count + len(taken)) if s not in taken][:count]
 
 
-def store_upload_draft(conn, draft: dict, upload, media_dir: Path, now: datetime) -> str | None:
+def store_upload_draft(
+    conn, draft: dict, upload, media_dir: Path, now: datetime, *, slot: str | None = None
+) -> str | None:
     """Copy the upload's photos in as the draft's slides and mark the upload used, in one go.
 
     Returns the draft ID, or None if the owner deleted the upload meanwhile.
@@ -609,7 +612,8 @@ def store_upload_draft(conn, draft: dict, upload, media_dir: Path, now: datetime
             flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
             with os.fdopen(os.open(folder / f"slide-{number}.jpg", flags, 0o600), "wb") as stream:
                 stream.write(data)
-        [slot] = _free_slots(conn, now, 1)
+        if slot is None:
+            (slot,) = _free_slots(conn, now, 1)
         with conn:
             claimed = conn.execute(
                 "UPDATE uploads SET status='used', draft_id=?, used_at=? WHERE upload_id=? AND status='waiting'",
@@ -644,6 +648,16 @@ def publish_slots(conn, now: datetime, count: int) -> list[str]:
     while len(slots) < count:
         slots.append(slots[-len(hours)] + timedelta(days=1))
     return [s.isoformat(timespec="minutes") for s in slots[:count]]
+
+
+def recipe_slot(conn, now: datetime) -> str | None:
+    local = now.astimezone(LONDON)
+    hours = [*learnings.growth_hours(conn, now), 16]
+    for hour in hours:
+        at = datetime.combine(local.date(), time(hour), LONDON)
+        if at >= local and at.time() >= READY_BY:
+            return at.isoformat(timespec="minutes")
+    return None
 
 
 def _mentions_people(prompt: str) -> bool:
@@ -683,12 +697,19 @@ def _image(ai: AI, slide: dict) -> bytes:
 
 
 def render_and_store(
-    conn, ai: AI, drafts: list[dict], media_dir: Path, now: datetime, dropped: list[str] | None = None
+    conn,
+    ai: AI,
+    drafts: list[dict],
+    media_dir: Path,
+    now: datetime,
+    dropped: list[str] | None = None,
+    *,
+    slot: str | None = None,
 ) -> int:
     """An image for each slide, then the draft row. A draft whose images fail is dropped and its reason kept."""
     _private_dir(media_dir)
     day = now.astimezone(LONDON).date().isoformat()
-    slots = _free_slots(conn, now, len(drafts))
+    slots = [slot] if slot else _free_slots(conn, now, len(drafts))
     stored = 0
     for draft, slot in zip(drafts, slots, strict=False):
         draft_id = secrets.token_hex(8)

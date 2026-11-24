@@ -2,7 +2,7 @@ import io
 import json
 import tempfile
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -11,7 +11,7 @@ from test_instagram_drafts import MORNING, FakeAI, raw_draft
 
 import notifications
 from command_centre.security import Permission
-from instagram_agent import cli, drafts, storage, uploads
+from instagram_agent import cli, drafts, recipe_series, storage, uploads
 from instagram_agent.openai_client import OpenAIError
 
 try:
@@ -366,6 +366,35 @@ class DailyFromUploadTests(Fixture):
         self.assertEqual(json.loads(row["reel"])["source"], "photos")
         self.assertEqual(self.titles(), [f'Your photos ("{NOTE}") are now a reel draft, posting is manual'])
         self.assertEqual(self.tick(PhotoAI([], [])), "skipped")
+
+    def test_recipe_series_prefers_recipe_upload_then_reverts_to_regular_queue(self):
+        restaurant = self.add_upload()
+        recipe = self.add_upload(
+            "Recipe: homemade squash soup. Roast for 45 minutes.", when="2026-11-11T12:00:00+00:00"
+        )
+        recipe_series.start(self.conn, MORNING)
+        ai = PhotoAI([photo_draft()], [[85]])
+        self.assertEqual(self.tick(ai), "skipped")  # Thursday
+        self.assertEqual(ai.calls, [])
+        friday = MORNING + timedelta(days=1)
+        self.assertEqual(self.tick(ai, now=friday), "ok")
+        self.assertEqual(ai.calls[0][1]["owner_note"], "Recipe: homemade squash soup. Roast for 45 minutes.")
+        self.assertIn("finished dish", ai.calls[0][0])
+        self.assertIn("never promise a total shorter than a step", ai.calls[0][0])
+        self.assertEqual(self.conn.execute("SELECT scheduled_for FROM drafts").fetchone()[0], "2026-11-13T16:00+00:00")
+        self.assertEqual(uploads.oldest(self.conn)["upload_id"], restaurant)
+        self.assertFalse(uploads.is_waiting(self.conn, recipe))
+        fallback = PhotoAI([photo_draft()], [[85]])
+        self.assertEqual(self.tick(fallback, now=friday + timedelta(days=3)), "ok")
+        self.assertEqual(fallback.calls[0][1]["owner_note"], NOTE)
+        self.assertNotIn(recipe_series.GUIDANCE, fallback.calls[0][0])
+        expired = MORNING + timedelta(weeks=4)
+        recipe_series.start(self.conn, expired)
+        self.assertFalse(recipe_series.active(self.conn, expired))
+        self.add_upload()
+        next_ai = PhotoAI([photo_draft()], [[85]])
+        self.assertEqual(self.tick(next_ai, now=expired), "ok")
+        self.assertEqual(next_ai.calls[0][1]["owner_note"], NOTE)
 
     def test_unrenderable_photos_stay_queued_without_an_ai_fallback(self):
         upload_id = self.add_upload()
