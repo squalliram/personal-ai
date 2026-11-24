@@ -398,6 +398,7 @@ class SlidePromptTests(unittest.TestCase):
         self.assertIn("first second", drafts.CREATE)
         self.assertIn("outside 3-4 slides", drafts.REVIEW)
         self.assertIn("finished, plated dish", drafts.REVIEW)
+        self.assertIn("For both AI-generated and owner media, score under 50", drafts.REVIEW)
         self.assertIn(drafts.NO_PEOPLE, drafts.CREATE)
         self.assertIn("watch-time lift, reach, follows", drafts.CREATE)
         self.assertIn("reel duration findings", drafts.CREATE_REEL_FROM_PHOTOS)
