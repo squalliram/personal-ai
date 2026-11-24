@@ -1936,7 +1936,13 @@
     ];
     const note = publishNote(draft, auto);
     if (note) children.push(note);
-    if (draft.status === "pending" && draft.publishing) {
+    if (draft.status === "approved" && !draft.publishing && canDecide) {
+      const reject = el("button", { type: "button" }, "Reject");
+      const status = el("p", { class: "muted", role: "status" });
+      reject.addEventListener("click", () => decide(draft, "reject", [reject], status));
+      children.push(el("div", { class: "ig-actions" }, reject), status);
+    }
+    if (["pending", "approved"].includes(draft.status) && draft.publishing) {
       // The publisher is mid-post; a decision would be refused.
     } else if (draft.status === "pending" && canDecide) {
       const approve = el("button", { type: "button", class: "primary" }, "Approve");

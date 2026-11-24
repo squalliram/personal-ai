@@ -276,7 +276,7 @@ def hold_reel(conn: sqlite3.Connection, draft_id: str, hold: bool, version: int 
 
 
 def decide_draft(conn: sqlite3.Connection, draft_id: str, decision: str, decided_at: str) -> bool:
-    """Move a pending draft to approved/rejected and remember it. False if it was not pending."""
+    """Approve a pending draft or reject a pending/approved draft before publishing starts."""
     if decision not in ("approved", "rejected"):
         raise ValueError("decision must be approved or rejected")
     with conn:
@@ -288,7 +288,7 @@ def decide_draft(conn: sqlite3.Connection, draft_id: str, decision: str, decided
                     return False
                 if (
                     row
-                    and row["kind"] == "reel"
+                    and row[1] == "reel"
                     and (
                         not isinstance(reel.get("image_review"), dict) or reel["image_review"].get("status") != "passed"
                     )
@@ -299,10 +299,10 @@ def decide_draft(conn: sqlite3.Connection, draft_id: str, decision: str, decided
         changed = conn.execute(
             "UPDATE drafts SET status=?, decided_at=?, scheduled_for=CASE "
             "WHEN ?='approved' AND (scheduled_for IS NULL OR julianday(scheduled_for)<julianday(?)) THEN ? ELSE scheduled_for END "
-            "WHERE draft_id=? AND status='pending' AND NOT EXISTS "
+            "WHERE draft_id=? AND (status='pending' OR (?='rejected' AND status='approved')) AND NOT EXISTS "
             "(SELECT 1 FROM publish_runs r WHERE r.draft_id=drafts.draft_id AND r.outcome='started' AND r.id="
             "(SELECT MAX(id) FROM publish_runs s WHERE s.draft_id=r.draft_id))",
-            (decision, decided_at, decision, decided_at, decided_at, draft_id),
+            (decision, decided_at, decision, decided_at, decided_at, draft_id, decision),
         ).rowcount
         if not changed:
             return False

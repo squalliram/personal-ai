@@ -283,6 +283,21 @@ class CreationTests(unittest.TestCase):
 
 
 class ApprovalTests(PublishCase):
+    def test_approval_can_be_withdrawn_until_publication_starts(self):
+        draft_id = self.add()
+        self.assertTrue(storage.decide_draft(self.conn, draft_id, "rejected", DUE.isoformat()))
+        self.assertEqual(self.tick(FakeGraph()), "published 0, failed 0")
+        with self.conn:
+            self.conn.execute("UPDATE drafts SET status='approved' WHERE draft_id=?", (draft_id,))
+            self.conn.execute(
+                "INSERT INTO publish_runs(draft_id,started_at,outcome) VALUES(?,?,'started')",
+                (draft_id, DUE.isoformat()),
+            )
+        self.assertFalse(storage.decide_draft(self.conn, draft_id, "rejected", DUE.isoformat()))
+        with self.conn:
+            self.conn.execute("UPDATE drafts SET status='published' WHERE draft_id=?", (draft_id,))
+        self.assertFalse(storage.decide_draft(self.conn, draft_id, "rejected", DUE.isoformat()))
+
     def test_unapproved_drafts_never_publish_with_any_switch_or_source(self):
         draft_id = self.add(approved=False)
         for flag in (None, "0", "1", "on"):

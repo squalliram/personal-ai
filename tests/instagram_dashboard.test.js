@@ -65,6 +65,23 @@ class Element {
   find(id) { return this.attrs.id === id ? this : this.children.map(child => child instanceof Element ? child.find(id) : null).find(Boolean); }
 }
 
+const cards = vm.createContext({
+  el: (tag, attrs, ...children) => new Element(tag, attrs, children),
+  card: (title, ...children) => new Element('article', {}, children),
+  muted: text => text, keyValues: () => '', when: () => '', publishNote: () => '',
+  reelScript: () => '', postKit: () => '', DRAFT_STATUS: {}, decide: () => {},
+});
+vm.runInContext(source.slice(source.indexOf('  function draftCard('), source.indexOf('  const MAX_PHOTOS =')), cards);
+cards.draft = {status: 'approved', kind: 'reel', reel: {source: 'clip'}, hashtags: [], slides: []};
+function buttonLabels(node) {
+  if (!(node instanceof Element)) return [];
+  return (node.tag === 'button' ? node.children : []).concat(node.children.flatMap(buttonLabels));
+}
+assert.ok(buttonLabels(vm.runInContext('draftCard(draft, true, true)', cards)).includes('Reject'));
+assert.ok(!buttonLabels(vm.runInContext('draftCard(draft, false, true)', cards)).includes('Reject'));
+cards.draft.publishing = true;
+assert.ok(!buttonLabels(vm.runInContext('draftCard(draft, true, true)', cards)).includes('Reject'));
+
 async function dashboard(savedHolds = {}, permission = 'recommend', holdFailures = new Map()) {
   const renderedDrafts = [];
   const sentHolds = [];
