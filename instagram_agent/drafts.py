@@ -19,7 +19,7 @@ from .analysis import LONDON
 from .openai_client import AIError, image_extension
 
 CATEGORIES = ("food", "coffee", "restaurant")
-MIN_SLIDES, MAX_SLIDES = 3, 8
+MIN_SLIDES, MAX_SLIDES = 3, 4
 MAX_HASHTAGS = 20
 MAX_CAPTION = 2200
 PASS_SCORE = 70
@@ -58,9 +58,11 @@ CREATE = (
     "Write {count} carousel drafts in the account's own voice. Every draft's category must be food, coffee or "
     "restaurant, and its topic must be specific (a dish, a drink, a technique, a type of place or a named city "
     "area), never generic like 'dining out'. "
-    "Each has 4-6 slides. Use performance_learnings, including watch-time lift, reach, follows and "
-    "reel duration findings when present, to choose the topic, hook and slide count within 4-6. "
+    "Each has 3-4 slides (9-12 seconds at 3 seconds per slide). Use performance_learnings, including watch-time lift, reach, follows and "
+    "reel duration findings when present, to choose the topic, hook and slide count within 3-4. "
     "Slide 1 is the hook: a specific promise or surprise in at most 6 words. "
+    "Slide 1's image_prompt must show the finished, plated dish or ready-to-drink drink (the payoff), "
+    "so the result is visible in the first second. "
     "Every other slide's text is one concrete tip, fact or pick in at most 6 words, because it is drawn onto the "
     "photo. Each image prompt describes one appetising, well-lit photograph of food, drinks or a beautiful venue "
     "that matches that slide, with no text, logos, rubbish or anything unappetising. "
@@ -143,7 +145,9 @@ REVIEW = (
     "slides are not data, so a claim that appears only in a draft does not count. When the data has an "
     "owner_note, the draft is about the owner's own photos or clip and the note is the only evidence: score under 50 a "
     "draft that names a venue, dish, rating or price the note doesn't, or changes its rating. "
-    "For AI-generated slides only, score under 50 any slide or image_prompt implying people, faces, hands, "
+    "For AI-generated slides only, score under 50 a draft outside 3-4 slides or whose first image_prompt "
+    "does not show the finished, plated dish or ready-to-drink drink as the payoff. "
+    "Also score under 50 any AI slide or image_prompt implying people, faces, hands, "
     "arms, bodies, silhouettes or reflections of people. Never suggest people in owner photos or clips either. "
     "Be strict; 70 means "
     'ready to post. Reply with JSON: {"reviews": [{"score": 0, "notes": "one or two sentences"}]}, in order.'
@@ -662,7 +666,10 @@ def slide_prompt(slide: dict, *, draws_text: bool) -> str:
     base = f"{image_prompt}\n\nA 4:5 portrait Instagram carousel photo for a food, coffee and restaurant account."
     if draws_text:
         return (
-            base + f' Overlay this text in large, clean, legible type, spelled exactly: "{slide["text"]}" ' + NO_PEOPLE
+            base
+            + f' Overlay this text in large, clean, legible type, spelled exactly: "{slide["text"]}" '
+            + "Keep all lettering inside the central 60% of the image width and middle 80% of its height, "
+            "safe for a centered 9:16 crop. " + NO_PEOPLE
         )
     return base + " No text, words, letters or logos anywhere in the image. " + NO_PEOPLE
 
@@ -732,7 +739,7 @@ def render_and_store(
             draft = _with_render(
                 draft,
                 selected,
-                {"source": "photos", "photos": len(draft["slides"])},
+                {"source": "photos", "photos": len(draft["slides"]), "framing": "cover"},
                 {"pick": "agents", "mix": "replace"},
                 tracks,
             )
