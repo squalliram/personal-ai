@@ -1,4 +1,4 @@
-name: Real reel preview (no Instagram writes)
+name: Real reel preview v2 (no Instagram writes)
 on:
   push:
     branches: [devin/1795538089-real-reel-preview]

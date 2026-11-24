@@ -40,13 +40,14 @@ def render_preview(checkout, root):
         conn.execute("PRAGMA query_only=ON")
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            "SELECT draft_id,topic,slides,reel,created_on FROM drafts WHERE kind='reel' ORDER BY created_at DESC LIMIT 100"
+            "SELECT draft_id,topic,slides,reel,created_on FROM drafts WHERE kind='reel' "
+            "AND NOT EXISTS (SELECT 1 FROM uploads WHERE uploads.draft_id=drafts.draft_id) "
+            "ORDER BY created_at DESC LIMIT 100"
         ).fetchall()
         selected = next(
             row
             for row in rows
-            if json.loads(row["reel"] or "{}").get("source") == "photos"
-            and any("image_prompt" in slide for slide in json.loads(row["slides"]))
+            if json.loads(row["reel"] or "{}").get("source") == "photos" and 3 <= len(json.loads(row["slides"])) <= 8
         )
         reel = json.loads(selected["reel"])
         slides = json.loads(selected["slides"])
