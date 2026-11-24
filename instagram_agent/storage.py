@@ -189,7 +189,9 @@ def link_published(conn: sqlite3.Connection, draft_id: str, media_id: str) -> No
     conn.execute("UPDATE examples SET media_id=? WHERE draft_id=? AND decision='approved'", (media_id, draft_id))
 
 
-def insert_draft(conn: sqlite3.Connection, draft: dict, created_on: str, created_at: str) -> None:
+def insert_draft(
+    conn: sqlite3.Connection, draft: dict, created_on: str, created_at: str, *, status: str = "pending"
+) -> None:
     plan_id = draft.get("plan_id")
     reel = (
         {"image_review": {"status": "pending", "slides": [], "frames": []}, **(draft.get("reel") or {}), "hold": True}
@@ -198,7 +200,7 @@ def insert_draft(conn: sqlite3.Connection, draft: dict, created_on: str, created
     )
     conn.execute(
         "INSERT INTO drafts(draft_id,created_on,created_at,category,topic,angle,slides,caption,hashtags,"
-        "review_score,review_notes,scheduled_for,kind,reel,plan_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "review_score,review_notes,scheduled_for,kind,reel,plan_id,status) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             draft["draft_id"],
             created_on,
@@ -215,9 +217,10 @@ def insert_draft(conn: sqlite3.Connection, draft: dict, created_on: str, created
             draft.get("kind", "carousel"),
             json.dumps(reel, ensure_ascii=False) if reel else None,
             plan_id,
+            status,
         ),
     )
-    if plan_id is not None:
+    if plan_id is not None and status == "pending":
         conn.execute("UPDATE content_plan SET status='Scripted' WHERE id=? AND status='Idea'", (plan_id,))
 
 

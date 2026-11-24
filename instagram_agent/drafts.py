@@ -811,10 +811,11 @@ def render_and_store(
                     {**draft, "draft_id": draft_id, "scheduled_for": slot, "plan_id": plan_id},
                     day,
                     now.isoformat(timespec="seconds"),
+                    status="pending" if verdict["status"] == "passed" else "rejected",
                 )
                 if verdict["status"] != "passed":
                     conn.execute(
-                        "UPDATE drafts SET status='rejected', review_notes=?, decided_at=? WHERE draft_id=?",
+                        "UPDATE drafts SET review_notes=?, decided_at=? WHERE draft_id=?",
                         ("Image review: " + "; ".join(verdict["reasons"]), now.isoformat(timespec="seconds"), draft_id),
                     )
                     if dropped is not None:
