@@ -73,7 +73,7 @@ def _drafts_by_story(conn) -> dict[str, str]:
     return found
 
 
-def _save(conn, media_id, draft_id, posted, permalink, stamp, values, breakdown):
+def _save(conn, media_id, draft_id, posted, permalink, stamp, values, breakdown, *, refresh_complete):
     with conn:
         previous = conn.execute("SELECT * FROM story_insights WHERE media_id=?", (media_id,)).fetchone()
         if previous and previous["captured_at"] and (stamp is None or stamp < previous["captured_at"]):
@@ -82,12 +82,22 @@ def _save(conn, media_id, draft_id, posted, permalink, stamp, values, breakdown)
             values = {**json.loads(previous["metrics"]), **values}
             breakdown = breakdown or json.loads(previous["navigation_breakdown"])
         conn.execute(
-            "INSERT INTO story_insights(media_id,draft_id,posted_at,permalink,captured_at,metrics,navigation_breakdown) "
-            "VALUES(?,?,?,?,?,?,?) ON CONFLICT(media_id) DO UPDATE SET "
+            "INSERT INTO story_insights(media_id,draft_id,posted_at,permalink,captured_at,metrics,navigation_breakdown,"
+            "refresh_complete) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(media_id) DO UPDATE SET "
             "draft_id=COALESCE(excluded.draft_id,story_insights.draft_id), "
             "permalink=COALESCE(excluded.permalink,story_insights.permalink), captured_at=excluded.captured_at, "
-            "metrics=excluded.metrics, navigation_breakdown=excluded.navigation_breakdown",
-            (media_id, draft_id, posted.isoformat(), permalink, stamp, json.dumps(values), json.dumps(breakdown)),
+            "metrics=excluded.metrics, navigation_breakdown=excluded.navigation_breakdown, "
+            "refresh_complete=excluded.refresh_complete",
+            (
+                media_id,
+                draft_id,
+                posted.isoformat(),
+                permalink,
+                stamp,
+                json.dumps(values),
+                json.dumps(breakdown),
+                refresh_complete,
+            ),
         )
 
 
@@ -95,7 +105,10 @@ def capture(conn, client, now: datetime | None = None) -> int:
     from .post_report import parse_time
 
     drafts = _drafts_by_story(conn)
-    latest = {row[0]: parse_time(row[1]) for row in conn.execute("SELECT media_id,captured_at FROM story_insights")}
+    latest = {
+        row[0]: parse_time(row[1])
+        for row in conn.execute("SELECT media_id,captured_at FROM story_insights WHERE refresh_complete=1")
+    }
     captured = 0
     deadline = monotonic() + CAPTURE_BUDGET
     stories = client.paginated(
@@ -114,8 +127,12 @@ def capture(conn, client, now: datetime | None = None) -> int:
         if previous and current - previous < interval and not previous - posted < FINAL_WINDOW <= age:
             continue
 
+        truncated = False
+
         def get(params, media_id=media_id, posted=posted):
+            nonlocal truncated
             if monotonic() >= deadline:
+                truncated = True
                 return None
             if now is None and datetime.now(timezone.utc) - posted >= LIFETIME:
                 return None
@@ -126,7 +143,17 @@ def capture(conn, client, now: datetime | None = None) -> int:
 
         values, breakdown = read_metrics(get)
         stamp = current.isoformat(timespec="seconds") if values else None
-        _save(conn, media_id, drafts.get(media_id), posted, safe_link(media.get("permalink")), stamp, values, breakdown)
+        _save(
+            conn,
+            media_id,
+            drafts.get(media_id),
+            posted,
+            safe_link(media.get("permalink")),
+            stamp,
+            values,
+            breakdown,
+            refresh_complete=not truncated,
+        )
         latest[media_id] = current
         captured += bool(values)
     return captured

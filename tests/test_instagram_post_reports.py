@@ -88,7 +88,7 @@ class Case(unittest.TestCase):
 
 
 class StoryInsightsTests(Case):
-    def test_capture_stops_requesting_metrics_at_budget_and_keeps_partial_snapshot(self):
+    def test_capture_keeps_budget_truncated_snapshot_and_retries_on_next_tick(self):
         graph = mock.Mock(user_id="123")
         graph.paginated.return_value = iter([{"id": "42", "timestamp": PUBLISHED.isoformat()}])
         elapsed = 0
@@ -106,6 +106,14 @@ class StoryInsightsTests(Case):
             json.loads(self.conn.execute("SELECT metrics FROM story_insights WHERE media_id='42'").fetchone()[0]),
             {"reach": 10},
         )
+        graph.paginated.side_effect = lambda *args, **kwargs: iter([{"id": "42", "timestamp": PUBLISHED.isoformat()}])
+        graph.get.side_effect = lambda path, params: {"data": [{"name": params["metric"], "values": [{"value": 12}]}]}
+        next_tick = PUBLISHED + timedelta(hours=23, minutes=15)
+        self.assertEqual(story_insights.capture(self.conn, graph, next_tick), 1)
+        row = self.conn.execute("SELECT captured_at, metrics FROM story_insights WHERE media_id='42'").fetchone()
+        self.assertEqual(row["captured_at"], next_tick.isoformat())
+        self.assertEqual(json.loads(row["metrics"])["views"], 12)
+        self.assertEqual(story_insights.capture(self.conn, graph, next_tick + timedelta(minutes=15)), 0)
 
     def test_new_story_report_ranks_above_newer_captures(self):
         captured = PUBLISHED + timedelta(hours=23)
