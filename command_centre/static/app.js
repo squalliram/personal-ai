@@ -1749,11 +1749,20 @@
     try { const saved = unconfirmedHold(id); if (saved && saved.token === token) sessionStorage.removeItem(`ig-hold:${id}`); } catch { /* best effort */ }
   };
 
-  function holdToggle(draft, status, auto) {
-    const box = el("input", {
-      type: "checkbox", id: `ig-hold-${draft.draft_id}`, "data-hold": String(draft.reel.hold), "data-hold-version": String(draft.reel.hold_version),
-    });
-    box.checked = draft.reel.hold;
+  const holdRequests = new Map();
+  const pendingHold = (draft) => {
+    const pending = unconfirmedHold(draft.draft_id);
+    return pending && pending.body && pending.body.draft_id === draft.draft_id
+      && typeof pending.body.hold === "boolean" && typeof pending.token === "string" ? pending : null;
+  };
+
+  // Shared by dashboard recovery and visible controls: a lazy panel must never delay a saved hold.
+  function sendHold(draft, body, token, notify = () => {}) {
+    const key = JSON.stringify([signInCount, draft.draft_id, token]);
+    const active = holdRequests.get(key);
+    if (active) { active.listeners.add(notify); return active.promise; }
+    const request = { listeners: new Set([notify]) };
+    holdRequests.set(key, request);
     const definite = (r) => r.ok || [400, 401, 404, 409].includes(r.status);
     // A request that hangs counts as unanswered, so the retries and the unknown-state warning still happen.
     const deadline = () => {
@@ -1763,15 +1772,14 @@
       setTimeout(() => controller.abort(), 15000);
       return controller.signal;
     };
-    async function send(body, token = `${Date.now()}-${Math.random()}`) {
-      box.disabled = true;
+    request.promise = (async () => {
       // Saved before sending, so a reload while this is in flight resends it rather than trusting the old state.
       const saved = rememberHold(draft.draft_id, { token, body });
       const signIn = signInCount;
       let result = await api("api/v1/instagram/hold", { method: "POST", body, signal: deadline() });
       // Resending the same versioned hold is harmless, so resend until the server gives a definite answer.
       for (let tries = 0; !definite(result) && tries < 3 && signIn === signInCount; tries++) {
-        status.textContent = "Couldn't confirm the hold change. Trying again…";
+        for (const update of request.listeners) update("Couldn't confirm the hold change. Trying again…");
         await new Promise((resolve) => setTimeout(resolve, 2000));
         if (signIn !== signInCount) break;
         result = await api("api/v1/instagram/hold", { method: "POST", body, signal: deadline() });
@@ -1779,33 +1787,44 @@
       if (signIn !== signInCount) { if (result.ok) clearCache(); return; } // an older sign-in's reply
       if (result.status === 401) { showLogin("Your session has ended. Sign in again."); return; }
       if (!definite(result)) {
-        box.indeterminate = true;
-        status.textContent = saved
+        const message = saved
           ? "The hold state is unknown: the server didn't answer. It will be resent when this page reloads."
           : "The hold state is unknown: the server didn't answer and this browser can't remember the change. Set it again before relying on it.";
-        return;
+        return { unknown: true, message };
       }
       forgetHold(draft.draft_id, token);
       if (!result.ok) {
         const code = (result.data && result.data.error) || result.status;
-        status.textContent = `Could not change the hold. ${DECISION_ERRORS[code] || `(${code})`}`;
-        box.indeterminate = false;
-        box.checked = draft.reel.hold;
         if (code === "hold_changed") { clearCache(); render(); } // rebuild with the current hold and version
-        else box.disabled = false;
-        return;
+        return { ok: false, message: `Could not change the hold. ${DECISION_ERRORS[code] || `(${code})`}` };
       }
       clearCache();
       render();
+      return { ok: true, message: "Hold change confirmed." };
+    })().finally(() => { holdRequests.delete(key); });
+    return request.promise;
+  }
+
+  function holdToggle(draft, status, auto) {
+    const box = el("input", {
+      type: "checkbox", id: `ig-hold-${draft.draft_id}`, "data-hold": String(draft.reel.hold), "data-hold-version": String(draft.reel.hold_version),
+    });
+    box.checked = draft.reel.hold;
+    async function send(body, token = `${Date.now()}-${Math.random()}`) {
+      box.disabled = true;
+      const result = await sendHold(draft, body, token, (message) => { status.textContent = message; });
+      if (!result) return; // signed out while the request was pending
+      status.textContent = result.message;
+      box.indeterminate = Boolean(result.unknown);
+      if (!result.ok && !result.unknown) { box.checked = draft.reel.hold; box.disabled = false; }
     }
     box.addEventListener("change", () => send({ draft_id: draft.draft_id, hold: box.checked, version: draft.reel.hold_version }));
-    const pending = unconfirmedHold(draft.draft_id);
-    const body = pending && pending.body;
-    if (body && body.draft_id === draft.draft_id && typeof body.hold === "boolean" && typeof pending.token === "string") {
+    const pending = pendingHold(draft);
+    if (pending) {
       box.indeterminate = true;
       queueMicrotask(() => {
         status.textContent = "Confirming an earlier hold change…";
-        send(body, pending.token);
+        send(pending.body, pending.token);
       });
     }
     return el("p", {}, box, " ", el("label", { for: box.id }, auto
@@ -2236,13 +2255,12 @@
       }));
   }
 
-  // Compact suggestions; detailed reports live with the published media, not in a second feed.
-  function learningsCard(learned) {
-    const findings = [...(learned.working || []).slice(0, 2), ...(learned.not_working || []).slice(0, 2)];
-    return card("Ideas for the next reel / Story", muted(learned.sample_note),
-      findings.length ? el("ul", { class: "compact" }, findings.map((f) => el("li", {}, f.text)))
-        : muted("No dependable pattern yet. Test one change at a time: opening hook, posting hour or caption ask; compare the same format at the same checkpoint."),
-      muted("These are associations, not proof of what caused a result. The next drafts use the stored learnings."));
+  function learningsCard(learned, next) {
+    const findings = [...(learned.working || []).slice(0, 1), ...(learned.not_working || []).slice(0, 1)];
+    return card("What to test next", keyValues(Object.entries(next)),
+      muted("Suggested tests, not proven causes. Hour and format use the selected filters; stored learnings below use their own 90-day sample."),
+      findings.length ? el("details", {}, el("summary", {}, "Stored learnings behind the suggestion"), muted(learned.sample_note),
+        el("ul", { class: "compact" }, findings.map((f) => el("li", {}, f.text)))) : null);
   }
 
   const igView = { section: "performance", days: "30", format: "all", metric: "views", checkpoint: "24h" };
@@ -2256,6 +2274,30 @@
     const middle = Math.floor(sorted.length / 2);
     return sorted.length ? (sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2) : null;
   };
+  const igFormatCount = (format, count) => `${count} ${count === 1 ? format === "story" ? "Story" : IG_FORMATS[format].toLowerCase() : {reel: "reels", story: "Stories", post: "posts"}[format]}`;
+  function igNextTest(measured, value, groups, metric, learned) {
+    const formats = ["reel", "post"].map((format) => {
+      const peers = measured.filter((p) => p.format === format);
+      return { format, n: peers.length, median: igMedian(peers.map(value)) };
+    }).filter((g) => g.n >= 5).sort((a, b) => b.median - a.median);
+    const hour = groups.find((g) => g.values.length >= 5 && igMedian(g.values) > 0);
+    // General learnings combine formats/checkpoints; do not turn a timing or format association
+    // from that separate sample into a claim about the selected chart cohort.
+    const contentFeatures = new Set(["hook length", "caption length", "caption ask", "hashtag count", "hashtag", "reel length"]);
+    const change = (learned.not_working || []).find((f) => contentFeatures.has(f.feature));
+    const keep = (learned.working || []).find((f) => contentFeatures.has(f.feature));
+    return {
+      "Format to test": formats.length === 2 && formats[0].median > formats[1].median
+        ? `${IG_FORMATS[formats[0].format]} leads on median ${metric.toLowerCase()} (${igCount(formats[0].median)}, n=${formats[0].n}); test it again, not a conversion verdict. Stories are separate.`
+        : "No clear format winner: need at least 5 measured reels and 5 posts at this checkpoint, with different medians. Stories are separate.",
+      "Posting hour": hour ? `${IG_FORMATS[hour.format]} at ${hour.hour}:00 London: median ${igCount(igMedian(hour.values))} ${metric.toLowerCase()}, n=${hour.values.length}. Test this slot with the same hook and caption.`
+        : "No dependable hour yet. Keep the current slot while collecting 5 matched results per hour; change only the hook next.",
+      "Next reel": change ? `Test an alternative to ${change.feature}: ${change.value}; keep timing and other content choices fixed.`
+        : keep ? `Repeat ${keep.feature}: ${keep.value}; change only the opening hook, then compare the same checkpoint.`
+        : "Test a clearer opening hook; keep timing and caption fixed. Compare reach and follows at the same checkpoint.",
+      "Next Story": "Test first-frame wording; keep the slot fixed. Compare live reach and replies at matched capture ages, not against reels.",
+    };
+  }
   const igDate = (value) => new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/London", day: "numeric", month: "short" }).format(new Date(value));
   // Locale output is for display, never for parsing (en-CA is not ISO on every browser).
   const igDay = (value) => {
@@ -2293,6 +2335,7 @@
 
   function igPerformance(data) {
     const history = data.performance || { items: [], window_days: 90 };
+    const takeaway = el("div", { "aria-live": "polite" });
     const content = el("div", { "aria-live": "polite" });
     const filters = el("div", { class: "ig-filters" },
       igSelect("days", "Published in", [["30", "Last 30 days"], ["90", "Last 90 days"]], draw),
@@ -2339,7 +2382,7 @@
               x += width;
               return rect;
             })),
-          el("p", { class: "muted" }, `${counts.reel} reels · ${counts.story} Stories · ${counts.post} posts`));
+          el("p", { class: "muted" }, Object.keys(IG_FORMATS).map((format) => igFormatCount(format, counts[format])).join(" · ")));
         })));
 
       function comparison(p) {
@@ -2372,6 +2415,8 @@
         hours.get(key).values.push(value(p));
       }
       const groups = [...hours.values()].sort((a, b) => igMedian(b.values) - igMedian(a.values));
+      const learned = data.learnings || {};
+      takeaway.replaceChildren(learningsCard(learned, igNextTest(measured, value, groups, metric, learned)));
       const timing = card(`Posting hours to test`, muted(`London time · median ${metric.toLowerCase()} per item, grouped by format and hour. Not proof of a best time: topic and hook also differ. Stories excluded because capture ages vary.`),
         groups.length ? el("ul", { class: "ig-bars" }, groups.slice(0, 6).map((g) => igBar(`${IG_FORMATS[g.format]} · ${g.hour}:00–${g.hour}:59`, igMedian(g.values), max,
           `n=${g.values.length} · ${g.values.length < 5 ? "small sample; collect more before changing the schedule" : "candidate for a controlled timing test"}`, g.format))) : muted("No measured reels or posts for this selection yet."));
@@ -2380,11 +2425,10 @@
         el("details", { class: "ig-method" }, el("summary", {}, "How to read these results"),
           muted("24h and 72h select separate report checkpoints, never added together. Capture times show when values were actually read; delayed reports may be older than the nominal checkpoint. Stories can reuse the same live snapshot at both checkpoints. Missing/unsupported metrics stay unavailable."),
           muted("Follows gained are only the follows Instagram attributes to individual media, where supported—not total followers or net account growth. Views are not unique people or sales. A zero is shown only when it was measured.")),
-        cadence, recent, el("div", { class: "ig-chart-grid" }, byFormat, timing),
-        data.learnings ? learningsCard(data.learnings) : null].filter(Boolean));
+        cadence, recent, el("div", { class: "ig-chart-grid" }, byFormat, timing)].filter(Boolean));
     }
     draw();
-    return el("div", {}, card("Performance", filters), content);
+    return el("div", {}, takeaway, card("Explore performance", filters), content);
   }
 
   function igPublished(data, canDecide) {
@@ -2477,14 +2521,23 @@
         if (id === "activity") auditCard().then((audit) => { if (audit) panel.append(audit); });
       }
     }
-    // Reloading must replay saved hold changes even though draft cards are now lazy.
-    // Open the affected section so both the retry and any unknown-state warning stay visible.
-    const pendingHoldDraft = canDecide && data.drafts.find((draft) => {
-      if (draft.status !== "pending" || draft.publishing || !draft.reel) return false;
-      const pending = unconfirmedHold(draft.draft_id);
-      return pending && pending.body && pending.body.draft_id === draft.draft_id
-        && typeof pending.body.hold === "boolean" && typeof pending.token === "string";
-    });
+    // Recover ALL saved changes without constructing hidden draft panels. In particular, an
+    // unanswered release in Review must not prevent a saved hold in Drafts from being sent.
+    const pendingHoldDrafts = canDecide ? data.drafts.filter((draft) => draft.kind === "reel"
+      && draft.status === "pending" && !draft.publishing && draft.reel && pendingHold(draft)) : [];
+    if (pendingHoldDrafts.length) {
+      const recovery = card("Confirming saved hold changes");
+      root.append(recovery);
+      for (const draft of pendingHoldDrafts) {
+        const pending = pendingHold(draft);
+        const line = el("p", { class: "muted", role: "status" });
+        const update = (message) => { line.textContent = `${draft.topic || draft.draft_id}: ${message}`; };
+        update("Confirming an earlier hold change…");
+        recovery.append(line);
+        sendHold(draft, pending.body, pending.token, update).then((result) => { if (result) update(result.message); });
+      }
+    }
+    const pendingHoldDraft = pendingHoldDrafts[0];
     show(pendingHoldDraft ? needsReview(pendingHoldDraft) ? "review" : "drafts" : igView.section);
     view.append(root);
   }
