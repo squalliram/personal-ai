@@ -58,7 +58,7 @@ class Element {
   find(id) { return this.attrs.id === id ? this : this.children.map(child => child instanceof Element ? child.find(id) : null).find(Boolean); }
 }
 
-async function dashboard(savedHolds = {}, permission = 'recommend') {
+async function dashboard(savedHolds = {}, permission = 'recommend', holdFailures = new Map()) {
   const renderedDrafts = [];
   const sentHolds = [];
   const data = {
@@ -71,7 +71,7 @@ async function dashboard(savedHolds = {}, permission = 'recommend') {
     ],
   };
   const context = vm.createContext({
-    session: {permission}, load: async () => data,
+    session: {permission}, load: async () => data, holdFailures, render: () => {},
     igView: {section: 'performance'}, igNumber: Number.isFinite,
     el: (tag, attrs, ...children) => new Element(tag, attrs, children),
     card: (title, ...children) => new Element('card', {title}, children), muted: text => text,
@@ -122,6 +122,13 @@ async function sender() {
   context.api = async () => { context.signInCount++; return {ok: false, status: 409}; };
   await vm.runInContext(expr, context);
   assert.equal(JSON.parse(storage.get('ig-hold:a')).token, 'same-token');
+
+  context.api = async () => ({ok: false, status: 409, data: {error: 'hold_changed'}});
+  await vm.runInContext(expr, context);
+  assert.match(vm.runInContext('holdFailures.get("a").message', context), /Could not change the hold/);
+  context.api = async () => ({ok: true, status: 200});
+  await vm.runInContext('sendHold({draft_id:"b"}, {draft_id:"b", hold:true, version:0}, "b-token")', context);
+  assert.equal(vm.runInContext('holdFailures.has("a")', context), true, 'another replay success cannot erase an unacknowledged failure');
 }
 
 (async () => {
@@ -148,6 +155,12 @@ async function sender() {
   assert.equal(readonly.sentHolds.length, 0, 'read-only sessions cannot replay mutations');
   const invalid = await dashboard({scheduled: {token: 123, body: {draft_id: 'wrong', hold: 'yes'}}});
   assert.equal(invalid.sentHolds.length, 0, 'malformed saved bodies cannot be replayed');
+  const failures = new Map([['scheduled', {topic:'Earlier reel', message:'The hold was changed elsewhere. Refresh to see it.'}]]);
+  const recovered = await dashboard({}, 'recommend', failures);
+  const notice = recovered.root.children[0].children.find(node => node instanceof Element && node.attrs.title === 'Hold changes needing attention');
+  assert.ok(notice, 'completed hold failures remain visible with no saved request');
+  notice.children[0].children.find(node => node instanceof Element && node.tag === 'button').events.click();
+  assert.equal(failures.size, 0, 'only explicit acknowledgement clears the notice');
   await sender();
   console.log('Instagram calendar and section routing regressions passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -99,6 +99,7 @@
   function showLogin(message) {
     session = null; csrf = null;
     signInCount += 1;
+    holdFailures.clear();
     sessionsNotice = "";
     clearCache();
     auditView.page = 1; auditView.action = "";
@@ -1750,6 +1751,7 @@
   };
 
   const holdRequests = new Map();
+  const holdFailures = new Map(); // survive dashboard refreshes until acknowledged; cleared on sign-out
   const pendingHold = (draft) => {
     const pending = unconfirmedHold(draft.draft_id);
     return pending && pending.body && pending.body.draft_id === draft.draft_id
@@ -1795,8 +1797,11 @@
       forgetHold(draft.draft_id, token);
       if (!result.ok) {
         const code = (result.data && result.data.error) || result.status;
+        const message = `Could not change the hold. ${DECISION_ERRORS[code] || `(${code})`}`;
+        // Save before render(): this card may be hidden or replaced by another replay's success.
+        holdFailures.set(draft.draft_id, { topic: draft.topic || draft.draft_id, message });
         if (code === "hold_changed") { clearCache(); render(); } // rebuild with the current hold and version
-        return { ok: false, message: `Could not change the hold. ${DECISION_ERRORS[code] || `(${code})`}` };
+        return { ok: false, message };
       }
       clearCache();
       render();
@@ -2487,6 +2492,14 @@
       ? "No Instagram database is connected yet. Graphs will appear after media and reports are captured." : "The Instagram database could not be read. Empty graphs are not evidence of zero performance.")));
     const tokenWarning = data.token && ["expired", "expiring", "refresh_failed", "not_configured"].includes(data.token.state) ? tokenCard(data.token) : null;
     if (tokenWarning) root.append(tokenWarning);
+    if (holdFailures.size) root.append(card("Hold changes needing attention", [...holdFailures].map(([id, notice]) => {
+      const acknowledge = el("button", { type: "button" }, "Dismiss notice");
+      acknowledge.addEventListener("click", () => {
+        if (holdFailures.get(id) === notice) holdFailures.delete(id);
+        render();
+      });
+      return el("div", {}, el("p", { role: "status" }, `${notice.topic}: ${notice.message}`), acknowledge);
+    })));
     const fills = {
       performance: () => igPerformance(data),
       review: () => el("div", {}, card("Awaiting review", muted("Held or unapproved drafts that will not post automatically. Approve or reject below.")),
