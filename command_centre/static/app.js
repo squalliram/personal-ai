@@ -2288,10 +2288,10 @@
     const keep = (learned.working || []).find((f) => contentFeatures.has(f.feature));
     return {
       "Format to test": formats.length === 2 && formats[0].median > formats[1].median
-        ? `${IG_FORMATS[formats[0].format]} leads on median ${metric.toLowerCase()} (${igCount(formats[0].median)}, n=${formats[0].n}); test it again, not a conversion verdict. Stories are separate.`
+        ? `${IG_FORMATS[formats[0].format]} leads on median ${metric.toLowerCase()} (${igCount(formats[0].median)}, n=${formats[0].n}); candidate for a separate format-only test, not a conversion verdict. Stories are separate.`
         : "No clear format winner: need at least 5 measured reels and 5 posts at this checkpoint, with different medians. Stories are separate.",
-      "Posting hour": hour ? `${IG_FORMATS[hour.format]} at ${hour.hour}:00 London: median ${igCount(igMedian(hour.values))} ${metric.toLowerCase()}, n=${hour.values.length}. Test this slot with the same hook and caption.`
-        : "No dependable hour yet. Keep the current slot while collecting 5 matched results per hour; change only the hook next.",
+      "Posting hour": hour ? `${IG_FORMATS[hour.format]} at ${hour.hour}:00 London: median ${igCount(igMedian(hour.values))} ${metric.toLowerCase()}, n=${hour.values.length}. Candidate for a separate timing-only test; don't combine it with the content test below.`
+        : "No dependable hour yet. Keep the current slot while collecting 5 matched results per hour; follow the single content test below.",
       "Next reel": change ? `Test an alternative to ${change.feature}: ${change.value}; keep timing and other content choices fixed.`
         : keep ? `Repeat ${keep.feature}: ${keep.value}; change only the opening hook, then compare the same checkpoint.`
         : "Test a clearer opening hook; keep timing and caption fixed. Compare reach and follows at the same checkpoint.",

@@ -36,6 +36,10 @@ next = vm.runInContext('igNextTest([{format:"story", views:9999}], p => p.views,
 assert.match(next['Format to test'], /No clear format winner/);
 assert.match(next['Posting hour'], /No dependable hour/);
 assert.match(next['Next Story'], /matched capture ages/);
+next = vm.runInContext('igNextTest(items, p => p.views, [], "Views", learned)', insights);
+assert.match(next['Posting hour'], /single content test below/);
+assert.doesNotMatch(next['Posting hour'], /change only the hook/);
+assert.match(next['Next reel'], /caption length/);
 
 // Test section routing without a browser. Real DOM interactions are covered by UI testing.
 class Element {
