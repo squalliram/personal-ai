@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
+from time import monotonic
 
 from notifications import safe_link
 
@@ -13,6 +14,8 @@ METRICS = ("reach", "views", "replies", "navigation", *CONVERSION_METRICS, "shar
 NAVIGATION = {"metric": "navigation", "breakdown": "story_navigation_action_type"}
 LIFETIME = timedelta(hours=24)
 FINAL_WINDOW = timedelta(hours=22)
+CAPTURE_BUDGET = 30
+DISCOVERY_BUDGET = 10
 
 
 def parse_metric(payload: dict, metric: str) -> tuple[int | None, dict[str, int]]:
@@ -71,34 +74,69 @@ def _drafts_by_story(conn) -> dict[str, str]:
     return found
 
 
-def _save(conn, media_id, draft_id, posted, permalink, stamp, values, breakdown):
+def _save(conn, media_id, draft_id, posted, permalink, attempted, values, breakdown, *, refresh_complete):
+    stamp = attempted if values else None
     with conn:
         previous = conn.execute("SELECT * FROM story_insights WHERE media_id=?", (media_id,)).fetchone()
         if previous and previous["captured_at"] and (stamp is None or stamp < previous["captured_at"]):
+            if attempted > (previous["attempted_at"] or ""):
+                conn.execute("UPDATE story_insights SET attempted_at=? WHERE media_id=?", (attempted, media_id))
             return
         conn.execute(
-            "INSERT INTO story_insights(media_id,draft_id,posted_at,permalink,captured_at,metrics,navigation_breakdown) "
-            "VALUES(?,?,?,?,?,?,?) ON CONFLICT(media_id) DO UPDATE SET "
+            "INSERT INTO story_insights(media_id,draft_id,posted_at,permalink,captured_at,metrics,navigation_breakdown,"
+            "refresh_complete,attempted_at) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(media_id) DO UPDATE SET "
             "draft_id=COALESCE(excluded.draft_id,story_insights.draft_id), "
             "permalink=COALESCE(excluded.permalink,story_insights.permalink), captured_at=excluded.captured_at, "
-            "metrics=excluded.metrics, navigation_breakdown=excluded.navigation_breakdown",
-            (media_id, draft_id, posted.isoformat(), permalink, stamp, json.dumps(values), json.dumps(breakdown)),
+            "metrics=excluded.metrics, navigation_breakdown=excluded.navigation_breakdown, "
+            "refresh_complete=excluded.refresh_complete, attempted_at=excluded.attempted_at",
+            (
+                media_id,
+                draft_id,
+                posted.isoformat(),
+                permalink,
+                stamp,
+                json.dumps(values),
+                json.dumps(breakdown),
+                refresh_complete,
+                attempted,
+            ),
         )
+
+
+def _candidates(client, deadline, attempts):
+    from .post_report import parse_time
+
+    candidates = {}
+    try:
+        for media in client.paginated(
+            f"{client.user_id}/stories",
+            {"fields": "id,timestamp,permalink", "limit": "100"},
+            limit=None,
+            continue_fetch=lambda: monotonic() < deadline,
+        ):
+            media_id, posted = media.get("id"), parse_time(media.get("timestamp"))
+            if isinstance(media_id, str) and media_id.isdigit() and posted:
+                candidates[media_id] = (posted, media.get("permalink"))
+    except GraphAPIError:
+        if not candidates:
+            raise
+    return sorted(candidates.items(), key=lambda story: (attempts.get(story[0], ""), story[1][0]))
 
 
 def capture(conn, client, now: datetime | None = None) -> int:
     from .post_report import parse_time
 
     drafts = _drafts_by_story(conn)
-    latest = {row[0]: parse_time(row[1]) for row in conn.execute("SELECT media_id,captured_at FROM story_insights")}
+    state = conn.execute("SELECT media_id,captured_at,refresh_complete,attempted_at FROM story_insights").fetchall()
+    latest = {row[0]: parse_time(row[1]) for row in state if row[2]}
+    attempts = {row[0]: row[3] or row[1] or "" for row in state}
     captured = 0
-    for media in client.paginated(
-        f"{client.user_id}/stories", {"fields": "id,timestamp,permalink", "limit": "100"}, limit=None
-    ):
-        media_id, posted = media.get("id"), parse_time(media.get("timestamp"))
+    start = monotonic()
+    deadline = start + CAPTURE_BUDGET
+    for media_id, (posted, permalink) in _candidates(client, start + DISCOVERY_BUDGET, attempts):
+        if monotonic() >= deadline:
+            break
         current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-        if not isinstance(media_id, str) or not media_id.isdigit() or not posted:
-            continue
         age = current - posted
         if not timedelta(0) <= age < LIFETIME:
             continue
@@ -107,7 +145,13 @@ def capture(conn, client, now: datetime | None = None) -> int:
         if previous and current - previous < interval and not previous - posted < FINAL_WINDOW <= age:
             continue
 
+        truncated = False
+
         def get(params, media_id=media_id, posted=posted):
+            nonlocal truncated
+            if monotonic() >= deadline:
+                truncated = True
+                return None
             if now is None and datetime.now(timezone.utc) - posted >= LIFETIME:
                 return None
             try:
@@ -116,8 +160,16 @@ def capture(conn, client, now: datetime | None = None) -> int:
                 return None
 
         values, breakdown = read_metrics(get)
-        stamp = current.isoformat(timespec="seconds") if values else None
-        _save(conn, media_id, drafts.get(media_id), posted, safe_link(media.get("permalink")), stamp, values, breakdown)
-        latest[media_id] = current
+        _save(
+            conn,
+            media_id,
+            drafts.get(media_id),
+            posted,
+            safe_link(permalink),
+            current.isoformat(timespec="seconds"),
+            values,
+            breakdown,
+            refresh_complete=not truncated,
+        )
         captured += bool(values)
     return captured
