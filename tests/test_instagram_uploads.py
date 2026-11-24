@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from command_centre_fixtures import Client, Clock, make_app, make_settings
 from test_instagram_drafts import MORNING, FakeAI, raw_draft
@@ -322,7 +322,14 @@ class DailyFromUploadTests(Fixture):
         (self.root / "voice.md").write_text("Warm, short, first person.")
 
     def tick(self, ai, now=MORNING):
-        with patch.object(cli, "model_client", return_value=ai):
+        with (
+            patch.object(cli, "model_client", return_value=ai),
+            patch.object(
+                cli.image_review,
+                "client",
+                return_value=Mock(chat_json=Mock(return_value={"pass": True, "reasons": []})),
+            ),
+        ):
             return cli.daily(self.conn, self.env, self.media, now=now)
 
     def titles(self):
@@ -470,7 +477,7 @@ class DailyFromUploadTests(Fixture):
         self.assertEqual(self.tick(ai), "ok")
         self.assertEqual(ai.seen, [])
         self.assertEqual(self.conn.execute("SELECT topic FROM drafts").fetchone()[0], "a")
-        self.assertEqual(self.titles(), ["1 Instagram draft ready to review, posting is manual"])
+        self.assertEqual(self.titles(), ["1 Instagram draft created; awaiting image review and your approval"])
 
     def test_a_model_without_vision_still_drafts_from_the_note(self):
         self.add_upload()

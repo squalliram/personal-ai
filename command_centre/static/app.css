@@ -21,6 +21,7 @@ button{color:var(--ink);background:var(--raised);border:1px solid var(--line);bo
 button:hover{border-color:var(--accent);color:var(--accent);box-shadow:0 0 14px rgba(0,229,255,.25);box-shadow:0 0 14px color-mix(in srgb,var(--accent) 30%,transparent)}
 button.primary{background:var(--interface);color:#01060c;border:0;font-weight:700;box-shadow:0 0 22px rgba(0,229,255,.45)}
 button.primary:hover{color:#01060c;box-shadow:0 0 32px rgba(0,229,255,.75)}
+button:disabled,button.primary:disabled{background:#26343b;color:var(--muted);border:1px solid var(--line);opacity:.6;cursor:not-allowed;box-shadow:none}
 button:focus-visible,a:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px solid var(--interface);outline-offset:3px;box-shadow:0 0 0 5px rgba(0,229,255,.18)}
 .skip{position:absolute;left:-999px;display:inline-flex;align-items:center;min-height:44px}.skip:focus{left:8px;top:8px;background:var(--bg);color:var(--link);border:1px solid var(--interface);padding:8px 12px;z-index:30}
 [hidden]{display:none!important}

@@ -55,7 +55,12 @@ class PreflightTests(unittest.TestCase):
             "INSTAGRAM_PUBLIC_URL": "https://iramkhan.com/ig-media",
         }
 
-    def add(self, draft_id=DRAFT, *, score=80, slot="2026-11-15T18:00+00:00", caption="Save this.", slides=3):
+    def add(
+        self, draft_id=DRAFT, *, score=80, slot="2026-11-15T18:00+00:00", caption="Save this.", slides=3, approved=True
+    ):
+        created = min(
+            datetime(2026, 11, 15, 10, tzinfo=timezone.utc), datetime.fromisoformat(slot) - timedelta(hours=2)
+        )
         with self.conn:
             storage.insert_draft(
                 self.conn,
@@ -64,16 +69,18 @@ class PreflightTests(unittest.TestCase):
                     "category": "coffee",
                     "topic": "Flat whites",
                     "kind": "reel",
-                    "reel": {"render": "done", "file": "reel.mp4"},
+                    "reel": {"render": "done", "file": "reel.mp4", "image_review": {"status": "passed"}},
                     "slides": [{"text": f"Slide {n}", "file": f"slide-{n}.jpg"} for n in range(1, slides + 1)],
                     "caption": caption,
                     "hashtags": ["#coffee"],
                     "review_score": score,
                     "scheduled_for": slot,
                 },
-                "2026-11-15",
-                "2026-11-15T10:00:00+00:00",
+                created.date().isoformat(),
+                created.isoformat(),
             )
+            if approved:
+                storage.decide_draft(self.conn, draft_id, "approved", created.isoformat())
         folder = self.media / draft_id
         folder.mkdir(parents=True, exist_ok=True)
         (folder / "reel.mp4").write_bytes(b"rendered video")
@@ -126,7 +133,7 @@ class PreflightTests(unittest.TestCase):
                 self.assertEqual(graph.get_calls, [])
 
     def test_weak_rejected_and_stale_drafts_are_not_candidates(self):
-        self.add(score=60)
+        self.add(score=60, approved=False)
         report = self.preflight()
         self.assertFalse(self.check(report, "draft_eligibility")["ok"])
         self.assertEqual(report["eligible_drafts"], [])
@@ -210,11 +217,23 @@ class PreflightTests(unittest.TestCase):
         report = self.preflight()
         self.assertTrue(report["ok"], report)
 
-    def test_reel_held_for_approval_is_not_a_candidate_until_approved(self):
+    def test_approved_status_without_recorded_decision_does_not_block_another_draft(self):
         self.add()
         self.add(OTHER, slot="2026-11-15T19:00+00:00")
         with self.conn:
-            self.conn.execute("UPDATE drafts SET kind='reel', reel=? WHERE draft_id=?", ('{"hold":true}', OTHER))
+            self.conn.execute("UPDATE drafts SET decided_at=NULL WHERE draft_id=?", (OTHER,))
+        report = self.preflight()
+        self.assertEqual(report["eligible_drafts"], [DRAFT])
+        self.assertTrue(self.check(report, "single_candidate")["ok"])
+
+    def test_reel_held_for_approval_is_not_a_candidate_until_approved(self):
+        self.add()
+        self.add(OTHER, slot="2026-11-15T19:00+00:00", approved=False)
+        with self.conn:
+            self.conn.execute(
+                "UPDATE drafts SET kind='reel', reel=? WHERE draft_id=?",
+                ('{"hold":true,"image_review":{"status":"passed"}}', OTHER),
+            )
         self.assertEqual(self.preflight()["eligible_drafts"], [DRAFT])
         with self.conn:
             storage.decide_draft(self.conn, OTHER, "approved", NOW.isoformat(timespec="seconds"))
@@ -234,7 +253,10 @@ class PreflightTests(unittest.TestCase):
         self.assertEqual(report["eligible_drafts"], [OTHER, DRAFT])
         self.assertEqual([row["draft_id"] for row in publish.due(self.conn, now)], [DRAFT])
 
-        with patch.object(render, "render", return_value={"render": "done"}) as made:
+        with (
+            patch.object(render, "render", return_value={"render": "done", "file": "reel.mp4", "seconds": 9}) as made,
+            patch.object(render.image_review, "frames", return_value={"status": "passed", "reasons": [], "frames": []}),
+        ):
             self.assertEqual(render.render_due(self.conn, self.media, now=now), "rendered 1, failed 0")
         made.assert_called_once_with(self.conn, self.media, OTHER, {"render": "pending"})
         self.assertCountEqual([row["draft_id"] for row in publish.due(self.conn, now)], [DRAFT, OTHER])

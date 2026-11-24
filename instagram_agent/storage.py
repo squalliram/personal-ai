@@ -188,6 +188,11 @@ def link_published(conn: sqlite3.Connection, draft_id: str, media_id: str) -> No
 
 
 def insert_draft(conn: sqlite3.Connection, draft: dict, created_on: str, created_at: str) -> None:
+    reel = (
+        {"image_review": {"status": "pending", "slides": [], "frames": []}, **(draft.get("reel") or {}), "hold": True}
+        if draft.get("kind") == "reel"
+        else draft.get("reel")
+    )
     conn.execute(
         "INSERT INTO drafts(draft_id,created_on,created_at,category,topic,angle,slides,caption,hashtags,"
         "review_score,review_notes,scheduled_for,kind,reel) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -205,13 +210,32 @@ def insert_draft(conn: sqlite3.Connection, draft: dict, created_on: str, created
             draft.get("review_notes"),
             draft.get("scheduled_for"),
             draft.get("kind", "carousel"),
-            json.dumps(draft["reel"], ensure_ascii=False) if draft.get("reel") else None,
+            json.dumps(reel, ensure_ascii=False) if reel else None,
         ),
     )
 
 
 def drafts_on(conn: sqlite3.Connection, day: str) -> int:
-    return conn.execute("SELECT COUNT(*) FROM drafts WHERE created_on=?", (day,)).fetchone()[0]
+    return conn.execute("SELECT COUNT(*) FROM drafts WHERE created_on=?", (day,)).fetchone()[0] - review_rejections_on(
+        conn, day
+    )
+
+
+def image_review_rejected(row) -> bool:
+    if row["status"] != "rejected":
+        return False
+    try:
+        review = json.loads(row["reel"] or "{}").get("image_review")
+        return isinstance(review, dict) and review.get("status") in ("failed", "unavailable")
+    except (ValueError, AttributeError):
+        return False
+
+
+def review_rejections_on(conn: sqlite3.Connection, day: str) -> int:
+    return sum(
+        image_review_rejected(row)
+        for row in conn.execute("SELECT status,reel FROM drafts WHERE created_on=? AND status='rejected'", (day,))
+    )
 
 
 def record_run(
@@ -271,15 +295,33 @@ def hold_reel(conn: sqlite3.Connection, draft_id: str, hold: bool, version: int 
 
 
 def decide_draft(conn: sqlite3.Connection, draft_id: str, decision: str, decided_at: str) -> bool:
-    """Move a pending draft to approved/rejected and remember it. False if it was not pending."""
+    """Approve a pending draft or reject a pending/approved draft before publishing starts."""
     if decision not in ("approved", "rejected"):
         raise ValueError("decision must be approved or rejected")
     with conn:
+        row = conn.execute("SELECT reel, kind FROM drafts WHERE draft_id=?", (draft_id,)).fetchone()
+        if decision == "approved":
+            try:
+                reel = json.loads(row[0] or "{}") if row else {}
+                if reel.get("render") in ("pending", "failed"):
+                    return False
+                if (
+                    row
+                    and row[1] == "reel"
+                    and (
+                        not isinstance(reel.get("image_review"), dict) or reel["image_review"].get("status") != "passed"
+                    )
+                ):
+                    return False
+            except (ValueError, AttributeError):
+                return False
         changed = conn.execute(
-            "UPDATE drafts SET status=?, decided_at=? WHERE draft_id=? AND status='pending' AND NOT EXISTS "
+            "UPDATE drafts SET status=?, decided_at=?, scheduled_for=CASE "
+            "WHEN ?='approved' AND (scheduled_for IS NULL OR julianday(scheduled_for)<julianday(?)) THEN ? ELSE scheduled_for END "
+            "WHERE draft_id=? AND (status='pending' OR (?='rejected' AND status='approved')) AND NOT EXISTS "
             "(SELECT 1 FROM publish_runs r WHERE r.draft_id=drafts.draft_id AND r.outcome='started' AND r.id="
             "(SELECT MAX(id) FROM publish_runs s WHERE s.draft_id=r.draft_id))",
-            (decision, decided_at, draft_id),
+            (decision, decided_at, decision, decided_at, decided_at, draft_id, decision),
         ).rowcount
         if not changed:
             return False

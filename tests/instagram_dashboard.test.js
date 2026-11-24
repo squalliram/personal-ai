@@ -4,6 +4,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const source = fs.readFileSync(require('node:path').join(__dirname, '../command_centre/static/app.js'), 'utf8');
+const css = fs.readFileSync(require('node:path').join(__dirname, '../command_centre/static/app.css'), 'utf8');
+assert.match(css, /button\.primary:disabled\{[^}]*background:#26343b;[^}]*cursor:not-allowed;box-shadow:none/);
 
 // Calendar identity must not depend on a browser's localized date punctuation.
 const dates = vm.createContext({Intl: {DateTimeFormat: function(locale, options) {
@@ -64,6 +66,32 @@ class Element {
   addEventListener(name, fn) { this.events[name] = fn; }
   find(id) { return this.attrs.id === id ? this : this.children.map(child => child instanceof Element ? child.find(id) : null).find(Boolean); }
 }
+
+const cards = vm.createContext({
+  el: (tag, attrs, ...children) => new Element(tag, attrs, children),
+  card: (title, ...children) => new Element('article', {}, children),
+  muted: text => text, keyValues: () => '', when: () => '', publishNote: () => '',
+  reelScript: () => '', postKit: () => '', DRAFT_STATUS: {}, decide: () => {},
+});
+vm.runInContext(source.slice(source.indexOf('  function draftCard('), source.indexOf('  const MAX_PHOTOS =')), cards);
+cards.draft = {status: 'approved', kind: 'reel', reel: {source: 'clip'}, hashtags: [], slides: []};
+function buttonLabels(node) {
+  if (!(node instanceof Element)) return [];
+  return (node.tag === 'button' ? node.children : []).concat(node.children.flatMap(buttonLabels));
+}
+assert.ok(buttonLabels(vm.runInContext('draftCard(draft, true, true)', cards)).includes('Reject'));
+assert.ok(!buttonLabels(vm.runInContext('draftCard(draft, false, true)', cards)).includes('Reject'));
+cards.draft.publishing = true;
+assert.ok(!buttonLabels(vm.runInContext('draftCard(draft, true, true)', cards)).includes('Reject'));
+
+vm.runInContext(source.slice(source.indexOf('  function visualReview('), source.indexOf('  function draftCard(')), cards);
+function textNodes(node) {
+  return node instanceof Element ? node.children.flatMap(textNodes) : typeof node === 'string' ? [node] : [];
+}
+cards.review = {status:'unavailable', reasons:['image review unavailable'], frames:[]};
+assert.ok(textNodes(vm.runInContext('visualReview(review)', cards)).includes('image review unavailable'));
+cards.review.frames = [{second:0,status:'unavailable',reasons:['image review unavailable']}];
+assert.equal(textNodes(vm.runInContext('visualReview(review)', cards)).filter(text => text.includes('image review unavailable')).length, 1);
 
 async function dashboard(savedHolds = {}, permission = 'recommend', holdFailures = new Map()) {
   const renderedDrafts = [];
@@ -155,7 +183,7 @@ async function sender() {
     scheduled: {token: 'saved-hold', body: {draft_id: 'scheduled', hold: true, version: 0}},
   };
   const pending = await dashboard(saved);
-  assert.equal(pending.context.igView.section, 'drafts', 'a reload must instantiate the saved hold retry immediately');
+  assert.equal(pending.context.igView.section, 'review', 'unapproved drafts stay in review while saved hold requests recover');
   assert.ok(pending.renderedDrafts.some(draft => draft.draft_id === 'scheduled'));
   assert.equal(pending.root.find('ig-section-performance').hidden, true);
   assert.deepEqual(pending.sentHolds.map(call => call.id).sort(), ['held', 'scheduled'], 'both cross-section holds must be sent, even if the first never answers');

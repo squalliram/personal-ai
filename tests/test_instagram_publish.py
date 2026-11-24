@@ -55,7 +55,7 @@ class PublishCase(unittest.TestCase):
         self.env = {**ENV, "INSTAGRAM_PUBLIC_DIR": str(self.public), "COMMAND_CENTRE_NOTIFICATIONS_DB": str(self.notes)}
         self.checked = []
 
-    def add(self, draft_id="a" * 16, *, score=80, slot=SLOT, made=MADE, slides=3, data=JPEG):
+    def add(self, draft_id="a" * 16, *, score=80, slot=SLOT, made=MADE, slides=3, data=JPEG, approved=True):
         with self.conn:
             storage.insert_draft(
                 self.conn,
@@ -64,7 +64,7 @@ class PublishCase(unittest.TestCase):
                     "category": "coffee",
                     "topic": "Flat whites",
                     "kind": "reel",
-                    "reel": {"file": "reel.mp4"},
+                    "reel": {"file": "reel.mp4", "image_review": {"status": "passed"}},
                     "slides": [{"text": f"s{n}", "file": f"slide-{n}.jpg"} for n in range(1, slides + 1)],
                     "caption": "Save this.",
                     "hashtags": ["#coffee", "#london"],
@@ -74,6 +74,8 @@ class PublishCase(unittest.TestCase):
                 made.date().isoformat(),
                 made.isoformat(timespec="seconds"),
             )
+            if approved:
+                storage.decide_draft(self.conn, draft_id, "approved", made.isoformat())
         (self.media / draft_id).mkdir(parents=True)
         if data == JPEG:
             (self.media / draft_id / "reel.mp4").write_bytes(b"video")
@@ -113,15 +115,17 @@ class PublishTests(PublishCase):
 
     def test_deferred_launch_reel_approved_after_midnight_is_carried_forward(self):
         monday = (DUE + timedelta(days=4)).replace(hour=23, minute=30)
-        reel = self.add(slot=monday.isoformat())
+        reel = self.add(slot=monday.isoformat(), approved=False)
         recipe_series.start(self.conn, monday, defer_first_day=True)
         with self.conn:
-            self.conn.execute("UPDATE drafts SET reel=? WHERE draft_id=?", ('{"file":"reel.mp4","hold":true}', reel))
+            self.conn.execute(
+                "UPDATE drafts SET reel=? WHERE draft_id=?",
+                ('{"file":"reel.mp4","hold":true,"image_review":{"status":"passed"}}', reel),
+            )
         self.assertEqual(self.tick(FakeGraph(), monday), "published 0, failed 0")
-        with self.conn:
-            self.conn.execute("UPDATE drafts SET status='approved' WHERE draft_id=?", (reel,))
+        storage.decide_draft(self.conn, reel, "approved", (monday + timedelta(hours=1)).isoformat())
         self.assertEqual(self.tick(FakeGraph(), monday + timedelta(hours=1)), "published 0, failed 0")
-        self.assertEqual(self.tick(FakeGraph(), monday + timedelta(days=2)), "published 1, failed 0")
+        self.assertEqual(self.tick(FakeGraph(), monday + timedelta(days=1, hours=1)), "published 1, failed 0")
 
     def test_a_deferred_launch_with_a_publication_counts_as_series_day_one(self):
         monday = (DUE + timedelta(days=4)).replace(hour=20)
@@ -150,7 +154,7 @@ class PublishTests(PublishCase):
                 "published 0, failed 0",
             )
         self.assertFalse(any(path.endswith("/media_publish") for path, _, _ in graph.posts))
-        self.assertEqual(self.status(reel)[0], "pending")
+        self.assertEqual(self.status(reel)[0], "approved")
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM publish_runs").fetchone()[0], 0)
         self.assertEqual(self.tick(FakeGraph(), friday + timedelta(minutes=1)), "published 0, failed 0")
         self.assertEqual(self.tick(FakeGraph(), friday + timedelta(days=3)), "published 1, failed 0")
@@ -189,7 +193,7 @@ class PublishTests(PublishCase):
             self.assertEqual(
                 cli.main(["--database", str(self.root / "instagram.sqlite3"), "daily", "--media", str(self.media)]), 0
             )
-        self.assertEqual([self.status(d)[0] for d in ("a" * 16, "b" * 16)], ["published", "pending"])
+        self.assertEqual([self.status(d)[0] for d in ("a" * 16, "b" * 16)], ["published", "approved"])
         self.assertEqual(self.tick(FakeGraph(), monday + timedelta(days=2)), "published 1, failed 0")
 
     def test_series_carries_an_off_day_reel_to_the_next_posting_day(self):
@@ -222,7 +226,8 @@ class PublishTests(PublishCase):
         friday = DUE + timedelta(days=1)
         with self.conn:
             self.conn.execute(
-                "UPDATE drafts SET reel=? WHERE draft_id=?", ('{"file":"reel.mp4","hold":true}', carryover)
+                "UPDATE drafts SET reel=? WHERE draft_id=?",
+                ('{"file":"reel.mp4","hold":true,"image_review":{"status":"passed"}}', carryover),
             )
         self.assertEqual(self.tick(FakeGraph(), friday - timedelta(hours=7)), "published 0, failed 0")
         slot = self.conn.execute("SELECT scheduled_for FROM drafts WHERE draft_id=?", (carryover,)).fetchone()[0]
@@ -233,32 +238,40 @@ class PublishTests(PublishCase):
         self.assertEqual(self.tick(FakeGraph(), friday + timedelta(days=3)), "published 1, failed 0")
         self.assertEqual([self.status(d)[0] for d in (carryover, fresh)], ["published", "published"])
 
-    def test_late_approval_does_not_reschedule_an_expired_reel(self):
+    def test_late_approval_reschedules_with_a_recorded_decision(self):
         friday = DUE + timedelta(days=1)
         slot = (friday - timedelta(minutes=5)).isoformat()
-        late = self.add("a" * 16, slot=slot)
+        late = self.add("a" * 16, slot=slot, approved=False)
         self.add("b" * 16, slot=slot)
         recipe_series.start(self.conn, MADE)
         with self.conn:
-            self.conn.execute("UPDATE drafts SET reel=? WHERE draft_id=?", ('{"file":"reel.mp4","hold":true}', late))
+            self.conn.execute(
+                "UPDATE drafts SET reel=? WHERE draft_id=?",
+                ('{"file":"reel.mp4","hold":true,"image_review":{"status":"passed"}}', late),
+            )
         self.assertEqual(self.tick(FakeGraph(), friday), "published 1, failed 0")
-        with self.conn:
-            self.conn.execute("UPDATE drafts SET status='approved' WHERE draft_id=?", (late,))
+        stamp = friday.isoformat(timespec="seconds")
+        self.assertTrue(storage.decide_draft(self.conn, late, "approved", stamp))
+        self.assertEqual(
+            self.conn.execute("SELECT scheduled_for FROM drafts WHERE draft_id=?", (late,)).fetchone()[0], stamp
+        )
         self.assertEqual(self.tick(FakeGraph(), friday + publish.STALE_AFTER), "published 0, failed 0")
-        self.assertEqual(self.tick(FakeGraph(), friday + timedelta(days=3)), "published 0, failed 0")
-        self.assertEqual(self.status(late)[0], "approved")
+        self.assertEqual(self.tick(FakeGraph(), friday + timedelta(days=3)), "published 1, failed 0")
+        self.assertEqual(self.status(late)[0], "published")
 
     def test_after_midnight_approval_within_grace_moves_to_a_posting_day(self):
         friday = (DUE + timedelta(days=1)).replace(hour=23, minute=30)
-        reel = self.add(slot=friday.isoformat())
+        reel = self.add(slot=friday.isoformat(), approved=False)
         recipe_series.start(self.conn, MADE)
         with self.conn:
-            self.conn.execute("UPDATE drafts SET reel=? WHERE draft_id=?", ('{"file":"reel.mp4","hold":true}', reel))
+            self.conn.execute(
+                "UPDATE drafts SET reel=? WHERE draft_id=?",
+                ('{"file":"reel.mp4","hold":true,"image_review":{"status":"passed"}}', reel),
+            )
         self.assertEqual(self.tick(FakeGraph(), friday), "published 0, failed 0")
-        with self.conn:
-            self.conn.execute("UPDATE drafts SET status='approved' WHERE draft_id=?", (reel,))
+        storage.decide_draft(self.conn, reel, "approved", (friday + timedelta(hours=1)).isoformat())
         self.assertEqual(self.tick(FakeGraph(), friday + timedelta(hours=1)), "published 0, failed 0")
-        self.assertEqual(self.tick(FakeGraph(), friday + timedelta(days=3)), "published 1, failed 0")
+        self.assertEqual(self.tick(FakeGraph(), friday + timedelta(days=2, hours=1)), "published 1, failed 0")
 
     def test_recipe_series_enforces_posting_days_and_one_reel_story_pair_per_day(self):
         self.add()
@@ -273,7 +286,7 @@ class PublishTests(PublishCase):
             [params["media_type"] for path, params, _ in graph.posts if path.endswith("/media")],
             ["REELS", "STORIES"],
         )
-        self.assertEqual(tuple(self.status("b" * 16)), ("pending", None))
+        self.assertEqual(tuple(self.status("b" * 16)), ("approved", None))
         self.assertEqual(self.tick(FakeGraph()), "published 0, failed 0")
 
     def test_publishes_reel_then_same_video_story_once(self):
@@ -415,8 +428,8 @@ class PublishTests(PublishCase):
         )
 
     def test_rejected_weak_and_future_drafts_are_not_posted(self):
-        self.add("a" * 16)
-        self.add("b" * 16, score=60)
+        self.add("a" * 16, approved=False)
+        self.add("b" * 16, score=60, approved=False)
         self.add("c" * 16, slot="2026-11-12T20:00+00:00")
         with self.conn:
             storage.decide_draft(self.conn, "a" * 16, "rejected", "2026-11-12T17:00:00+00:00")
@@ -425,7 +438,7 @@ class PublishTests(PublishCase):
         self.assertEqual(graph.posts, [])
 
     def test_an_approved_weak_draft_is_posted(self):
-        self.add(score=40)
+        self.add(score=40, approved=False)
         with self.conn:
             storage.decide_draft(self.conn, "a" * 16, "approved", "2026-11-12T12:00:00+00:00")
         self.assertEqual(self.tick(FakeGraph()), "published 1, failed 0")
@@ -463,7 +476,7 @@ class PublishTests(PublishCase):
     def test_processing_error_is_recorded_and_folder_removed(self):
         self.add()
         self.assertEqual(self.tick(FakeGraph(statuses=("ERROR",))), "published 0, failed 1")
-        self.assertEqual(self.status()["status"], "pending")
+        self.assertEqual(self.status()["status"], "approved")
         self.assertEqual([p.name for p in self.public.iterdir()], ["index.html"])
 
     def test_failed_publish_call_is_not_retried(self):
@@ -483,7 +496,7 @@ class PublishTests(PublishCase):
 
         def reject_while_checking(url, size):
             if not self.checked:
-                storage.decide_draft(other, draft_id, "rejected", "2026-11-12T18:04:00+00:00")
+                self.assertTrue(storage.decide_draft(other, draft_id, "rejected", "2026-11-12T18:04:00+00:00"))
             self.checked.append(url)
 
         graph = FakeGraph()
@@ -507,7 +520,7 @@ class PublishTests(PublishCase):
 
         def reject_while_checking(url, size):
             if not self.checked:
-                storage.decide_draft(other, draft_id, "rejected", "2026-11-12T18:04:00+00:00")
+                self.assertTrue(storage.decide_draft(other, draft_id, "rejected", "2026-11-12T18:04:00+00:00"))
             self.checked.append(url)
 
         publish.tick(

@@ -1658,7 +1658,7 @@
           : muted(`Agents: ${unavailable}`),
         keyValues([["Instagram draft approvals", canDecide ? "You can approve or reject drafts on the Instagram page." : "Read-only: your permission cannot approve drafts."],
           ["Instagram automatic posting", !instagramData ? unavailable : instagramData.state !== "available" ? "Unknown: no Instagram database on this server"
-            : instagramData.auto_publish ? "On: drafts that pass review post at their publish time" : "Off: nothing posts automatically"],
+            : instagramData.auto_publish ? "On: only drafts you approve can post at their publish time" : "Off: nothing posts automatically"],
           ["Posting kill switch", "Repository variable INSTAGRAM_AUTO_PUBLISH (0 stops posting); applies on the next deploy"]])),
       audit);
   }
@@ -1880,7 +1880,7 @@
     if (!auto) return null;
     if (draft.will_post && draft.posts_at) return muted(`Posts to Instagram automatically at ${when(draft.posts_at)} unless you reject it before then.`);
     if (draft.kind === "reel" && draft.reel && draft.reel.hold && draft.status === "pending") return muted("Held for your approval: it only posts once you approve it.");
-    if (draft.status === "pending") return muted("Scored under 70, so it only posts if you approve it.");
+    if (draft.status === "pending") return muted("Your approval is required before this reel or its Story can post.");
     return null;
   }
 
@@ -1901,6 +1901,17 @@
     return `${from}, with the text burned in and ${sound}. ${cover}`;
   }
 
+  function visualReview(review) {
+    const slides = Array.isArray(review.slides) ? review.slides : [];
+    const frames = Array.isArray(review.frames) ? review.frames : [];
+    const notes = slides.flatMap(slide => (Array.isArray(slide.attempts) ? slide.attempts : []).map((v, i) =>
+      `Slide ${slide.slide}, attempt ${i + 1}: ${v.status}. ${(v.reasons || []).join("; ")}`));
+    notes.push(...frames.map(v => `Frame ${v.second} s: ${v.status}. ${(v.reasons || []).join("; ")}`));
+    if (!frames.length && Array.isArray(review.reasons)) notes.push(...review.reasons);
+    return el("details", {}, el("summary", {}, `Image sanity review: ${review.status}`),
+      el("ul", {}, notes.map(note => el("li", {}, note))));
+  }
+
   function draftCard(draft, canDecide, auto) {
     const isReel = draft.kind === "reel" && draft.reel;
     const images = !isReel || draft.reel.source === "photos" ? el("div", { class: "ig-slides" }, draft.slides.map((slide, i) => el("figure", {},
@@ -1912,6 +1923,7 @@
     const slides = isReel ? el("div", {}, images, reelScript(draft.reel)) : images;
     const children = [
       slides,
+      draft.reel && draft.reel.image_review ? visualReview(draft.reel.image_review) : null,
       draft.note ? el("p", { class: "muted" }, `From your ${draft.kind === "reel" && !(draft.reel && draft.reel.source === "photos") ? "clip" : "photos"}. Your note: ${draft.note}`) : null,
       el("p", { class: "ig-caption" }, draft.caption),
       el("p", { class: "muted" }, draft.hashtags.length ? `${draft.hashtags.length} hashtags: ${draft.hashtags.join(" ")}` : "No hashtags"),
@@ -1925,16 +1937,24 @@
     ];
     const note = publishNote(draft, auto);
     if (note) children.push(note);
-    if (draft.status === "pending" && draft.publishing) {
+    if (draft.status === "approved" && !draft.publishing && canDecide) {
+      const reject = el("button", { type: "button" }, "Reject");
+      const status = el("p", { class: "muted", role: "status" });
+      reject.addEventListener("click", () => decide(draft, "reject", [reject], status));
+      children.push(el("div", { class: "ig-actions" }, reject), status);
+    }
+    if (["pending", "approved"].includes(draft.status) && draft.publishing) {
       // The publisher is mid-post; a decision would be refused.
     } else if (draft.status === "pending" && canDecide) {
       const approve = el("button", { type: "button", class: "primary" }, "Approve");
+      const visual = draft.reel && draft.reel.image_review;
+      if ((draft.kind === "reel" && (!visual || visual.status !== "passed")) || (draft.reel && ["pending", "failed"].includes(draft.reel.render))) approve.disabled = true;
       const reject = el("button", { type: "button" }, "Reject");
       const status = el("p", { class: "muted", role: "status" });
       approve.addEventListener("click", () => decide(draft, "approve", [approve, reject], status));
       reject.addEventListener("click", () => decide(draft, "reject", [approve, reject], status));
       children.push(el("div", { class: "ig-actions" }, approve, reject), status);
-      if (draft.kind === "reel" && draft.reel) children.push(holdToggle(draft, status, auto));
+      if (draft.kind === "reel" && draft.reel) children.push(muted("Approval is mandatory for the reel and its Story."));
     } else if (draft.status === "pending") {
       children.push(muted("Approving or rejecting needs RECOMMEND permission."));
     } else if (draft.status === "approved" && !auto) {
@@ -2098,7 +2118,7 @@
 
   function clipCard(data, canDecide) {
     const renders = Boolean(data.renders && data.renders.clip);
-    const intro = muted(`Add one of your own clips (3-90 seconds, raw or edited) and a short note. The next daily run turns the oldest waiting clip into the day's reel; ${renders ? "the agents trim it and burn in the on-screen text" : "it posts as filmed"}. ${data.auto_publish ? "It publishes as a reel and Story automatically if it scores 70 or more, unless you reject it or hold it for your approval." : "Automatic posting is off, so it won't post on its own."} The note is the only source for the place, dish, rating or price.`);
+    const intro = muted(`Add one of your own clips (3-90 seconds, raw or edited) and a short note. The next daily run turns the oldest waiting clip into the day's reel; ${renders ? "the agents trim it and burn in the on-screen text" : "it keeps the original footage"}. It must pass visual review and receive your approval before the reel and Story can post. ${data.auto_publish ? "" : "Automatic posting is also off."} The note is the only source for the place, dish, rating or price.`);
     if (!canDecide) return card("Add a reel clip", intro, muted("Adding clips needs RECOMMEND permission."));
     if (data.state !== "available") return card("Add a reel clip", intro, muted("Not available until the Instagram agent has run on this server."));
     const clip = el("input", { id: "ig-clip", type: "file", name: "clip", accept: "video/mp4,video/quicktime", required: "" });
@@ -2491,8 +2511,7 @@
     const data = await load("api/v1/instagram/drafts");
     if (!data) return;
     const canDecide = Boolean(session) && ["recommend", "execute"].includes(session.permission);
-    const needsReview = (d) => d.status === "pending" && !d.publishing
-      && (!data.auto_publish || (d.reel && d.reel.hold) || !igNumber(d.review_score) || d.review_score < 70);
+    const needsReview = (d) => d.status === "pending" && !d.publishing;
     const review = data.drafts.filter(needsReview);
     const drafts = data.drafts.filter((d) => ["pending", "approved", "failed"].includes(d.status) && !needsReview(d));
     const sections = [["performance", "Performance"], ["review", `Awaiting review (${review.length})`], ["drafts", `Drafts (${drafts.length})`],
@@ -2511,7 +2530,7 @@
     root.append(el("div", { id: "ig-hold-notices" }, ...holdFailureCards()));
     const fills = {
       performance: () => igPerformance(data),
-      review: () => el("div", {}, card("Awaiting review", muted("Held or unapproved drafts that will not post automatically. Approve or reject below.")),
+      review: () => el("div", {}, card("Awaiting review", muted("Nothing posts without your approval. Image sanity review must finish first. Approve or reject below.")),
         review.length ? review.map((d) => draftCard(d, canDecide, data.auto_publish)) : muted("Nothing needs a decision.")),
       drafts: () => el("div", {}, card("Drafts, scheduled & failed", muted("Failed attempts stay here with their last error. Check Instagram before taking any further action; publishing is never retried here."), muted(data.auto_publish
         ? "Ready or approved drafts. Each card shows whether and when it will post; reject a pending draft to stop it."
