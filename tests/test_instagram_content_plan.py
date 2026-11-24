@@ -170,6 +170,22 @@ class ContentPlanTests(unittest.TestCase):
         self.assertIn(f"pillar {matched['pillar_name']}.", parts[1])
         self.assertIsNone(worst)
 
+    def test_sunday_report_does_not_single_out_either_reel_tied_for_last(self):
+        content_plan.ensure_week(self.conn, MONDAY)
+        entries = content_plan.rows(self.conn, MONDAY)
+        for entry, ident, views in zip(entries, ("winner", "tied-a", "tied-b"), (100, 10, 10), strict=True):
+            self.add_draft(entry, ident, ident)
+            with self.conn:
+                self.conn.execute(
+                    "INSERT INTO post_reports(media_id,draft_id,checkpoint,format,posted_at,captured_at,views,avg_watch_ms) "
+                    "VALUES(?,?,'24h','reel',?,?,?,2000)",
+                    (ident, ident, entry["slot"], entry["slot"], views),
+                )
+        parts, worst = weekly_performance._make(self.conn, MONDAY.date())
+        self.assertIn("Bottom: 2 Reels tied at 10 views.", parts[0])
+        self.assertNotIn("lowest-viewed concept", parts[2])
+        self.assertIsNone(worst)
+
     def test_hook_labels(self):
         self.assertEqual(post_report.hook_style("Stop skipping this step"), "mistake-fix")
         self.assertEqual(post_report.hook_style("Attempt 1 was a crime"), "fail-to-win")

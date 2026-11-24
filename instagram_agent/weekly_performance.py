@@ -43,6 +43,16 @@ def _figures(row):
     )
 
 
+def _extreme(rows, target):
+    if target is None:
+        return None, _figures(None)
+    views = target["views"]
+    tied = sum(reel["views"] == views for reel in rows)
+    if tied > 1:
+        return None, f"{tied} Reels tied at {views} views"
+    return target, _figures(target)
+
+
 def _replacement(conn, week, worst):
     if not worst:
         return None
@@ -84,8 +94,8 @@ def _make(conn, week):
         reel["hook_style"] = creative.get("hook_style") or hook_style(creative.get("hook"))
         reels.append(reel)
     measured = sorted((r for r in reels if r["views"] is not None), key=lambda r: (-r["views"], r["media_id"]))
-    top = measured[0] if measured else None
-    bottom = measured[-1] if len(measured) > 1 else None
+    _, top_summary = _extreme(measured, measured[0] if measured else None)
+    bottom, bottom_summary = _extreme(measured, measured[-1] if len(measured) > 1 else None)
     hooks, pillars = _ranking(reels, "hook_style"), _ranking(reels, "pillar")
     best_hook = hooks[0][1] if hooks and (len(hooks) == 1 or hooks[0][0] > hooks[1][0]) else None
     best_pillar = pillars[0][1] if pillars and (len(pillars) == 1 or pillars[0][0] > pillars[1][0]) else None
@@ -97,10 +107,10 @@ def _make(conn, week):
         "SELECT followers FROM account_followers WHERE captured_on=?", ((end.date() - timedelta(days=1)).isoformat(),)
     ).fetchone()
     change = f"{current[0] - baseline[0]:+d}" if baseline and current else "unavailable"
-    if bottom and top["views"] == bottom["views"]:
-        results = f"Reels tied at {top['views']} views; no unique top/bottom."
+    if len(measured) > 1 and measured[0]["views"] == measured[-1]["views"]:
+        results = f"{top_summary}; no unique top/bottom."
     else:
-        results = f"Top: {_figures(top)}. Bottom: {_figures(bottom)}."
+        results = f"Top: {top_summary}. Bottom: {bottom_summary}."
     if best_hook and best_hook != "none":
         hook_advice = f"Repeat the {best_hook} hook in a second test."
     else:
