@@ -7,9 +7,11 @@ import glob
 import json
 import re
 import shutil
+import sqlite3
 import stat
 import subprocess
 import sys
+from contextlib import closing
 from pathlib import Path
 
 
@@ -92,6 +94,42 @@ def app_diagnostics(app):
     return result
 
 
+def story_insights(checkout):
+    database = checkout / "data" / "instagram.sqlite3"
+    if not database.is_file():
+        return {"status": "database_missing"}
+    with closing(sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True)) as conn:
+        conn.execute("PRAGMA query_only=ON")
+        rows = conn.execute(
+            "SELECT media_id, strftime('%Y-%m-%dT%H:%M:%SZ', posted_at), "
+            "strftime('%Y-%m-%dT%H:%M:%SZ', captured_at), metrics, navigation_breakdown "
+            "FROM story_insights WHERE datetime(captured_at)>=? "
+            "AND datetime(captured_at)>=datetime(posted_at) "
+            "AND datetime(captured_at)<datetime(posted_at,'+24 hours') "
+            "AND (datetime(posted_at)=? OR datetime(posted_at)>datetime('now','-24 hours')) "
+            "ORDER BY datetime(posted_at)=? DESC, datetime(captured_at) DESC LIMIT 5",
+            ("2026-11-24 16:40:49", "2026-11-23 18:25:14", "2026-11-23 18:25:14"),
+        ).fetchall()
+    metrics = ("reach", "views", "replies", "navigation", "follows", "profile_visits", "shares", "total_interactions")
+    actions = ("tap_forward", "tap_back", "tap_exit", "swipe_forward")
+    result = []
+    for media_id, posted_at, captured_at, metrics_json, actions_json in rows:
+        values, breakdown = json.loads(metrics_json), json.loads(actions_json)
+        counts = {key: values[key] for key in metrics if type(values.get(key)) is int}
+        if not counts or not re.fullmatch(r"[0-9]+", media_id):
+            continue
+        result.append(
+            {
+                "media_id": media_id,
+                "posted_at": posted_at,
+                "captured_at": captured_at,
+                "metrics": counts,
+                "navigation_breakdown": {key: breakdown[key] for key in actions if type(breakdown.get(key)) is int},
+            }
+        )
+    return {"status": "captured" if result else "no_live_snapshot", "rows": result}
+
+
 def main():
     checkout = Path(sys.argv[1])
     app = checkout.parent / "command-centre-app"
@@ -124,6 +162,7 @@ def main():
         "selector_python312_enabled": None,
         "selector_command_centre_registered": None,
         "app_diagnostics": app_diagnostics(app),
+        "story_insights": story_insights(checkout),
     }
     uapi = shutil.which("uapi") or (
         "/usr/local/cpanel/bin/uapi" if Path("/usr/local/cpanel/bin/uapi").is_file() else None
