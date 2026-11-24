@@ -2489,7 +2489,7 @@
 
   function igCalendar(entries, canDecide, showReview) {
     const content = el("div", {}, card("Content calendar",
-      muted("Monday, Wednesday and Friday · London time. Include a pillar name in your upload note to prioritise it for a matching slot.")));
+      muted("Monday, Wednesday and Friday · London time. Include a pillar name in your upload note to reserve it for a matching slot.")));
     if (!entries.length) content.append(muted("The calendar will appear after the next Instagram run."));
     for (const entry of entries) {
       const feedback = el("p", { role: "status", class: "muted", hidden: "" });

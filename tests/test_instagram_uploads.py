@@ -429,6 +429,24 @@ class DailyFromUploadTests(Fixture):
         draft = self.conn.execute("SELECT reel FROM drafts WHERE draft_id=?", (row["draft_id"],)).fetchone()
         self.assertTrue(json.loads(draft["reel"])["hold"])
 
+    def test_an_earlier_slot_does_not_take_a_later_pillars_upload_as_an_alternate(self):
+        friday = MORNING + timedelta(days=1)
+        monday = friday + timedelta(days=3)
+        content_plan.ensure_week(self.conn, friday)
+        content_plan.ensure_week(self.conn, monday)
+        later = content_plan.slot_today(self.conn, monday)
+        tagged_note = f"{content_plan.PILLARS[later['pillar']]}: homemade squash soup."
+        tagged = self.add_upload(tagged_note, when="2026-11-11T12:00:00+00:00")
+        ordinary = self.add_upload("A cosy autumn dinner.", when="2026-11-12T12:00:00+00:00")
+        earlier_ai = PhotoAI([photo_draft()], [[85]])
+        self.assertEqual(self.tick(earlier_ai, now=friday), "ok")
+        self.assertTrue(uploads.is_waiting(self.conn, tagged))
+        self.assertFalse(uploads.is_waiting(self.conn, ordinary))
+        later_ai = PhotoAI([photo_draft()], [[85]])
+        self.assertEqual(self.tick(later_ai, now=monday), "ok")
+        self.assertEqual(later_ai.calls[0][1]["owner_note"], tagged_note)
+        self.assertFalse(uploads.is_waiting(self.conn, tagged))
+
     def test_unapproved_carryovers_do_not_stop_the_next_recipe_draft(self):
         recipe_series.start(self.conn, MORNING)
         friday = MORNING + timedelta(days=1)
