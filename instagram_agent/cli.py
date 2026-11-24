@@ -27,6 +27,7 @@ from . import (
     publish,
     render,
     storage,
+    story_insights,
     token_refresh,
     uploads,
 )
@@ -318,6 +319,15 @@ def make_drafts(conn, env: dict, media_dir: Path, now: datetime | None = None) -
     return outcome
 
 
+def _capture_stories(conn, env: dict) -> str:
+    if not (env.get("INSTAGRAM_ACCESS_TOKEN") and env.get("INSTAGRAM_USER_ID")):
+        return "Story insights off"
+    try:
+        return f"Story insights {story_insights.capture(conn, graph_client(env))}"
+    except Exception as exc:  # noqa: BLE001
+        return f"Story insights failed ({type(exc).__name__})"
+
+
 def _post_reports(conn, env: dict) -> str:
     """24h/72h post reports after publishing; a problem here never fails the tick."""
     try:
@@ -378,11 +388,12 @@ def main(argv: list[str] | None = None) -> int:
                 refreshed = token_refresh.tick(conn, env, env_file, _now())
                 if refreshed in ("refreshed", "failed", "metadata_failed", "token_changed"):
                     env = {**load_env(env_file), **os.environ}
+                stories = _capture_stories(conn, env)
                 outcome = daily(conn, env, args.media)
                 render.render_due(conn, args.media, _notify_render(env, _now()))
                 published = publish.tick(conn, env, args.media, _now())
                 reports = _post_reports(conn, env)
-            print(outcome, refreshed, published, reports, sep="; ")
+            print(outcome, refreshed, published, stories, reports, sep="; ")
             return 0 if outcome in ("ok", "partial", "skipped", "gave_up") else 1
         env = {**load_env(env_file), **os.environ}
         token, user_id = env.get("INSTAGRAM_ACCESS_TOKEN", ""), env.get("INSTAGRAM_USER_ID", "")

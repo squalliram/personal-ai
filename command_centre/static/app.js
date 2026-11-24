@@ -2248,13 +2248,13 @@
     const posts = (rows, empty) => table([["Post", (p) => p.topic || "Unknown"], ["Hook", (p) => p.hook || ""],
       ["Format", (p) => p.format], ["vs median", (p) => times(p.vs_median)], ["Link", postLink]], rows, empty);
     return card("What's working",
-      muted(`${learned.sample_note} Each post is compared with the median of its own format, 24 and 72 hours after it goes live. The next drafts and reels use these results; they are suggestions, not facts.`),
+      muted(`${learned.sample_note} Reports come at 24 and 72 hours. Story reports reuse the latest insights captured while the Story was live. The next drafts and reels use these results; they are suggestions, not facts.`),
       el("h3", {}, "Beating the median"), list(learned.working, "Nothing clearly above the median yet."),
       el("h3", {}, "Below the median"), list(learned.not_working, "Nothing clearly below the median yet."),
       el("h3", {}, "Best posts"), posts(learned.best_posts, "Needs at least two measured posts."),
       el("h3", {}, "Weakest posts"), posts(learned.weakest_posts, "Needs at least four measured posts."),
       el("h3", {}, "Latest post reports"),
-      table([["When", (r) => when(r.captured_at)], ["Checkpoint", (r) => r.checkpoint], ["Report", (r) => r.summary || ""],
+      table([["Captured", (r) => when(r.captured_at)], ["Checkpoint", (r) => r.checkpoint], ["Report", (r) => r.summary || ""],
         ["Link", postLink]], learned.reports, "No post reports yet: the first arrives 24 hours after a post goes live."));
   }
 

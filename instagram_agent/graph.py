@@ -119,7 +119,7 @@ class GraphClient:
             raise GraphAPIError("Token refresh requires an Instagram Login token")
         return self.get(f"{INSTAGRAM_HOST}refresh_access_token", {"grant_type": "ig_refresh_token"})
 
-    def paginated(self, path: str, params: dict[str, str] | None = None, *, limit: int = 100) -> Iterator[dict]:
+    def paginated(self, path: str, params: dict[str, str] | None = None, *, limit: int | None = 100) -> Iterator[dict]:
         page = self.get(path, params)
         seen: set[str] = set()
         count = 0
@@ -127,7 +127,7 @@ class GraphClient:
             for item in page.get("data", []):
                 yield item
                 count += 1
-                if count >= limit:
+                if limit is not None and count >= limit:
                     return
             next_url = (page.get("paging") or {}).get("next")
             if not next_url:
