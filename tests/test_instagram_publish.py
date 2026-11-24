@@ -93,6 +93,32 @@ class PublishCase(unittest.TestCase):
 
 
 class PublishTests(PublishCase):
+    def test_late_series_launch_caps_the_number_of_due_reels(self):
+        monday = (DUE + timedelta(days=4)).replace(hour=20)
+        self.add("a" * 16, slot=monday.isoformat())
+        self.add("b" * 16, slot=monday.isoformat())
+        graph = FakeGraph()
+        tick = publish.tick
+        with (
+            patch.dict(cli.os.environ, self.env, clear=True),
+            patch.object(cli, "_now", return_value=monday),
+            patch.object(cli.token_refresh, "tick", return_value="not_due"),
+            patch.object(publish, "configured", return_value=True),
+            patch.object(
+                publish, "tick", side_effect=lambda *args: tick(*args, graph, check=self.check, sleep=lambda _: None)
+            ),
+            patch.object(cli.render, "render_due"),
+            patch.object(cli, "_capture_followers", return_value="followers_off"),
+            patch.object(cli, "_capture_stories", return_value="stories_off"),
+            patch.object(cli, "_post_reports", return_value="reports_off"),
+            patch("builtins.print"),
+        ):
+            self.assertEqual(
+                cli.main(["--database", str(self.root / "instagram.sqlite3"), "daily", "--media", str(self.media)]), 0
+            )
+        self.assertEqual([self.status(d)[0] for d in ("a" * 16, "b" * 16)], ["published", "pending"])
+        self.assertEqual(self.tick(FakeGraph(), monday + timedelta(days=2)), "published 1, failed 0")
+
     def test_series_carries_an_off_day_reel_to_the_next_posting_day(self):
         self.add()
         recipe_series.start(self.conn, MADE)

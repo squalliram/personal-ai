@@ -442,12 +442,16 @@ def main(argv: list[str] | None = None) -> int:
                 refreshed = token_refresh.tick(conn, env, env_file, _now())
                 if refreshed in ("refreshed", "failed", "metadata_failed", "token_changed"):
                     env = {**load_env(env_file), **os.environ}
-                defer_series = False
+                now = _now()
                 if publish.configured(env) and not recipe_series.started(conn):
-                    now = _now()
-                    defer_series = recipe_series.posting_day(env, now) and drafts.recipe_slot(conn, now) is None
-                    if not defer_series:
-                        recipe_series.start(conn, now)
+                    recipe_series.start(
+                        conn,
+                        now,
+                        defer_first_day=recipe_series.posting_day(env, now) and drafts.recipe_slot(conn, now) is None,
+                    )
+                defer_series = recipe_series.active(conn, now, including_launch_day=True) and not recipe_series.active(
+                    conn, now
+                )
                 outcome = "skipped" if defer_series else daily(conn, env, args.media)
                 render.render_due(conn, args.media, _notify_render(env, _now()))
                 published = publish.tick(conn, env, args.media, _now())

@@ -417,7 +417,7 @@ def tick(conn, env: dict, media_dir: Path, now: datetime, client: GraphClient | 
             key=f"instagram-legacy-skipped:{old['draft_id']}",
             env=env,
         )
-    series = recipe_series.active(conn, now)
+    series = recipe_series.active(conn, now, including_launch_day=True)
     off_day = series and not recipe_series.posting_day(env, now)
     day_full = series and not off_day and recipe_series.already_published(conn, now)
     if recipe_series.started(conn):

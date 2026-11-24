@@ -18,26 +18,30 @@ GUIDANCE = (
 )
 
 
-def start(conn, now: datetime) -> None:
+def start(conn, now: datetime, *, defer_first_day: bool = False) -> None:
+    first = now.astimezone(LONDON).date() + timedelta(days=int(defer_first_day))
     with conn:
         conn.execute(
             "INSERT OR IGNORE INTO publisher_state(key,value,updated_at) VALUES(?,?,?)",
-            (KEY, now.astimezone(LONDON).date().isoformat(), now.isoformat(timespec="seconds")),
+            (KEY, first.isoformat(), now.isoformat(timespec="seconds")),
         )
 
 
-def _start_date(conn) -> date | None:
-    row = conn.execute("SELECT value FROM publisher_state WHERE key=?", (KEY,)).fetchone()
-    return date.fromisoformat(row[0]) if row else None
+def _launch(conn):
+    return conn.execute("SELECT value,updated_at FROM publisher_state WHERE key=?", (KEY,)).fetchone()
 
 
 def started(conn) -> bool:
-    return _start_date(conn) is not None
+    return _launch(conn) is not None
 
 
-def active(conn, now: datetime) -> bool:
-    first = _start_date(conn)
-    return first is not None and first <= now.astimezone(LONDON).date() < first + WINDOW
+def active(conn, now: datetime, *, including_launch_day: bool = False) -> bool:
+    launch = _launch(conn)
+    if launch is None:
+        return False
+    first = date.fromisoformat(launch["value"])
+    begins = datetime.fromisoformat(launch["updated_at"]).astimezone(LONDON).date() if including_launch_day else first
+    return begins <= now.astimezone(LONDON).date() < first + WINDOW
 
 
 def posting_day(env: dict, now: datetime) -> bool:
