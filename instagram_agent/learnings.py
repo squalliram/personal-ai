@@ -232,7 +232,7 @@ def growth_findings(reports: list[dict]) -> dict[str, list[dict]]:
 
 
 def growth_hours(conn: sqlite3.Connection, now: datetime) -> list[int]:
-    findings = growth_findings(_reports(conn, now))
+    findings = growth_findings([report for report in _reports(conn, now) if report["format"] != "story"])
     return list(
         dict.fromkeys(
             int(row["value"])

@@ -356,6 +356,20 @@ class PostReportTests(Case):
 
 
 class LearningsTests(Case):
+    def test_story_conversion_hours_do_not_override_reel_schedule(self):
+        for n in range(10):
+            strong = n < 5
+            posted = (PUBLISHED - timedelta(days=15 - n)).replace(hour=15 if strong else 18)
+            self.conn.execute(
+                "INSERT INTO post_reports(media_id,checkpoint,format,posted_at,captured_at,reach,follows) "
+                "VALUES(?,'24h','story',?,?,100,?)",
+                (str(n), posted.isoformat(), (posted + timedelta(hours=23)).isoformat(), 4 if strong else 0),
+            )
+        findings = learnings.summary(self.conn, PUBLISHED)["growth_findings"]["follows"]
+        self.assertTrue(any(row["feature"] == "London posting hour" and row["value"] == "15" for row in findings))
+        with mock.patch.object(drafts.analysis, "best_hours", return_value=[18]):
+            self.assertEqual(drafts.publish_slots(self.conn, PUBLISHED.replace(hour=9), 1), ["2026-11-12T18:00+00:00"])
+
     def measure(self, media_id, reach, *, days=0, **draft):
         at = PUBLISHED - timedelta(days=days)
         self.publish(media_id, at=at, **draft)
