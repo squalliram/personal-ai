@@ -154,24 +154,26 @@ def recipe_slot_taken(conn, now: datetime) -> bool:
     return False
 
 
-def _carry_off_day_reels(conn, env: dict, now: datetime) -> None:
+def _reschedule_series_reels(conn, env: dict, now: datetime, *, day_full: bool = False) -> None:
     rows = _scheduled_reels(conn)
     local = now.astimezone(LONDON)
+    today = local.date()
+    first_open = today + timedelta(days=1) if day_full else today
     occupied = {
         slot.date()
         for row in rows
-        if _eligible(row) and (slot := _instant(row["scheduled_for"]).astimezone(LONDON)).date() >= local.date()
+        if _eligible(row) and (slot := _instant(row["scheduled_for"]).astimezone(LONDON)).date() >= first_open
     }
     with conn:
         for row in rows:
             slot = _instant(row["scheduled_for"]).astimezone(LONDON)
-            if (
-                slot.date() >= local.date()
-                or not recipe_series.active(conn, slot)
-                or recipe_series.posting_day(env, slot)
-            ):
+            off_day = (
+                slot.date() < today and recipe_series.active(conn, slot) and not recipe_series.posting_day(env, slot)
+            )
+            overflow = day_full and slot.date() == today and _eligible(row)
+            if not (off_day or overflow):
                 continue
-            target = datetime.combine(local.date(), slot.time(), LONDON)
+            target = datetime.combine(first_open, slot.time(), LONDON)
             while (
                 target + STALE_AFTER < now
                 or target.date() in occupied
@@ -412,10 +414,13 @@ def tick(conn, env: dict, media_dir: Path, now: datetime, client: GraphClient | 
             env=env,
         )
     series = recipe_series.active(conn, now)
-    if series and (not recipe_series.posting_day(env, now) or recipe_series.already_published(conn, now)):
+    if series and not recipe_series.posting_day(env, now):
         return "published 0, failed 0"
+    day_full = series and recipe_series.already_published(conn, now)
     if series or recipe_series.active(conn, now.astimezone(LONDON) - timedelta(days=1)):
-        _carry_off_day_reels(conn, env, now)
+        _reschedule_series_reels(conn, env, now, day_full=day_full)
+    if day_full:
+        return "published 0, failed 0"
     for row in due(conn, now):
         if kind(row) != "reel":
             continue
@@ -473,6 +478,8 @@ def tick(conn, env: dict, media_dir: Path, now: datetime, client: GraphClient | 
             conn.execute(
                 "UPDATE drafts SET status='published', media_id=? WHERE draft_id=?", (media_id, row["draft_id"])
             )
+        if series:
+            _reschedule_series_reels(conn, env, now, day_full=True)
         try:
             with conn:
                 storage.link_published(conn, row["draft_id"], media_id)

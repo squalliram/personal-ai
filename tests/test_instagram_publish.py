@@ -109,6 +109,23 @@ class PublishTests(PublishCase):
         self.assertEqual(self.tick(FakeGraph(), sunday), "published 0, failed 0")
         self.assertEqual(self.tick(FakeGraph(), sunday + timedelta(days=1)), "published 1, failed 0")
 
+    def test_approving_a_carryover_does_not_strand_the_other_reel_in_its_slot(self):
+        carryover = self.add("a" * 16)
+        recipe_series.start(self.conn, MADE)
+        friday = DUE + timedelta(days=1)
+        with self.conn:
+            self.conn.execute(
+                "UPDATE drafts SET reel=? WHERE draft_id=?", ('{"file":"reel.mp4","hold":true}', carryover)
+            )
+        self.assertEqual(self.tick(FakeGraph(), friday - timedelta(hours=7)), "published 0, failed 0")
+        slot = self.conn.execute("SELECT scheduled_for FROM drafts WHERE draft_id=?", (carryover,)).fetchone()[0]
+        fresh = self.add("b" * 16, slot=slot, made=friday - timedelta(hours=7))
+        with self.conn:
+            self.conn.execute("UPDATE drafts SET status='approved' WHERE draft_id=?", (carryover,))
+        self.assertEqual(self.tick(FakeGraph(), friday), "published 1, failed 0")
+        self.assertEqual(self.tick(FakeGraph(), friday + timedelta(days=3)), "published 1, failed 0")
+        self.assertEqual([self.status(d)[0] for d in (carryover, fresh)], ["published", "published"])
+
     def test_recipe_series_enforces_posting_days_and_one_reel_story_pair_per_day(self):
         self.add()
         recipe_series.start(self.conn, MADE)
