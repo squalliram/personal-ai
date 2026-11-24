@@ -435,7 +435,7 @@ class TransportTests(unittest.TestCase):
 
 
 class WorkflowGateTests(unittest.TestCase):
-    def gate(self, current, successes):
+    def gate(self, current, successes, run_id="", proof=""):
         workflow = (ROOT / ".github/workflows/deploy-command-centre.yml").read_text()
         script = textwrap.dedent(workflow.split("run: |\n", 1)[1].split("      - name:", 1)[0])
         with tempfile.TemporaryDirectory() as directory:
@@ -443,7 +443,8 @@ class WorkflowGateTests(unittest.TestCase):
             gh = root / "gh"
             gh.write_text(
                 f"#!{sys.executable}\nimport sys\n"
-                f"print({current!r} if '/branches/main' in sys.argv[2] else {str(successes)!r})\n"
+                f"print({current!r} if '/branches/main' in sys.argv[2] else "
+                f"{proof!r} if '/actions/runs/' in sys.argv[2] else {str(successes)!r})\n"
             )
             gh.chmod(0o700)
             output = root / "output"
@@ -451,6 +452,7 @@ class WorkflowGateTests(unittest.TestCase):
                 **os.environ,
                 "PATH": f"{root}:" + os.environ["PATH"],
                 "DEPLOY_SHA": SHA,
+                "TEST_RUN_ID": run_id,
                 "GITHUB_REPOSITORY": "owner/repo",
                 "GITHUB_OUTPUT": str(output),
             }
@@ -472,6 +474,24 @@ class WorkflowGateTests(unittest.TestCase):
         workflow = (ROOT / ".github/workflows/deploy-command-centre.yml").read_text()
         self.assertIn("if: steps.tested.outputs.ready == 'true'", workflow)
         self.assertIn("github.ref == 'refs/heads/main'", workflow)
+
+    def test_triggering_run_does_not_depend_on_indexing(self):
+        for suffix in ("", "@main", "@refs/heads/main"):
+            with self.subTest(suffix=suffix):
+                proof = f"{SHA}\tmain\tpush\tsuccess\towner/repo\t.github/workflows/test.yml{suffix}"
+                result, output = self.gate(SHA, 0, "12345", proof)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("ready=true", output)
+
+    def test_triggering_run_must_prove_exact_successful_main_tests(self):
+        fields = [SHA, "main", "push", "success", "owner/repo", ".github/workflows/test.yml"]
+        for index, invalid in enumerate(["b" * 40, "feature", "pull_request", "failure", "fork/repo", "other.yml"]):
+            with self.subTest(index=index):
+                proof = fields.copy()
+                proof[index] = invalid
+                result, output = self.gate(SHA, 1, "12345", "\t".join(proof))
+                self.assertNotEqual(result.returncode, 0)
+                self.assertNotIn("ready=true", output)
 
 
 class SmokeTests(unittest.TestCase):
