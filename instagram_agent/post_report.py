@@ -97,10 +97,15 @@ def creative_snapshot(conn, post, fmt: str, posted: datetime | None) -> dict:
     reel = json.loads(draft["reel"] or "{}") if draft else {}
     slides = json.loads(draft["slides"] or "[]") if draft else []
     caption = draft["caption"] if draft and fmt != "story" else ""
+    generated_slides = (
+        reel.get("source") == "photos"
+        and not conn.execute("SELECT 1 FROM uploads WHERE draft_id=?", (post["draft_id"],)).fetchone()
+    )
+    opening_slide = slides[0].get("text") if slides else None
     return {
         "publish_slot": posted.astimezone(LONDON).isoformat(timespec="seconds") if posted else None,
-        "hook": reel.get("hook")
-        or (slides[0].get("text") if slides and fmt in ("carousel", "reel") else None)
+        "hook": (opening_slide if generated_slides else reel.get("hook"))
+        or (opening_slide if fmt in ("carousel", "reel") else None)
         or (caption.splitlines()[0].strip() if caption else None),
         "duration_seconds": reel.get("seconds") if fmt in ("reel", "story") else None,
         "cta": caption_ask(caption),
@@ -112,11 +117,12 @@ def published(conn: sqlite3.Connection) -> list:
     """Published drafts and Stories, with their publish times."""
     return conn.execute(
         "SELECT d.draft_id, d.media_id, d.topic, d.kind, MIN(r.started_at) AS published_at, "
-        "NULL AS story_captured_at, NULL AS story_metrics, NULL AS story_navigation FROM drafts d "
+        "NULL AS story_captured_at, NULL AS story_metrics, NULL AS story_navigation, NULL AS story_earlier FROM drafts d "
         "JOIN publish_runs r ON r.draft_id=d.draft_id AND r.outcome='published' AND r.media_id=d.media_id "
         "WHERE d.status='published' AND d.media_id IS NOT NULL GROUP BY d.draft_id "
         "UNION ALL SELECT s.draft_id, s.media_id, COALESCE(d.topic,'Instagram Story'), 'story', s.posted_at, "
-        "s.captured_at, s.metrics, s.navigation_breakdown FROM story_insights s LEFT JOIN drafts d USING(draft_id)"
+        "s.captured_at, s.metrics, s.navigation_breakdown, s.earlier_metrics "
+        "FROM story_insights s LEFT JOIN drafts d USING(draft_id)"
     ).fetchall()
 
 
@@ -267,6 +273,18 @@ def _story_summary(post, checkpoint: str, posted: datetime, stamp: datetime, val
         if metric in values or metric in CONVERSION_METRICS
     )
     text = f"{head} {stats}."
+    earlier = json.loads(post["story_earlier"])
+    for metric, label in labels:
+        if metric not in earlier:
+            continue
+        reading = earlier[metric]
+        at = parse_time(reading["captured_at"])
+        if at is None:
+            continue
+        age = int((at - posted).total_seconds() // 60)
+        extra = f" Earlier {label} {reading['value']:,} at {age // 60}h {age % 60}m."
+        if len(text) + len(extra) <= TITLE_LIMIT:
+            text += extra
     actions = json.loads(post["story_navigation"])
     labels = {"tap_forward": "forward", "tap_back": "back", "tap_exit": "exits", "swipe_forward": "next story"}
     for key, label in labels.items():

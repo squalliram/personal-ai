@@ -45,7 +45,7 @@ DAILY_DRAFTS = 1
 INSIGHT_WINDOW = timedelta(days=30)
 
 
-def graph_client(env: dict) -> GraphClient:
+def graph_client(env: dict, *, timeout: float = 20.0, retries: int = 3) -> GraphClient:
     """Instagram Login tokens (IG...) go to graph.instagram.com, Facebook Login tokens to graph.facebook.com."""
     token = env["INSTAGRAM_ACCESS_TOKEN"]
     return GraphClient(
@@ -53,6 +53,8 @@ def graph_client(env: dict) -> GraphClient:
         env["INSTAGRAM_USER_ID"],
         version=env.get("META_GRAPH_VERSION", GRAPH_VERSION),
         host=INSTAGRAM_HOST if token.startswith("IG") else GRAPH_HOST,
+        timeout=timeout,
+        retries=retries,
     )
 
 
@@ -366,7 +368,7 @@ def _capture_stories(conn, env: dict) -> str:
     if not (env.get("INSTAGRAM_ACCESS_TOKEN") and env.get("INSTAGRAM_USER_ID")):
         return "Story insights off"
     try:
-        return f"Story insights {story_insights.capture(conn, graph_client(env))}"
+        return f"Story insights {story_insights.capture(conn, graph_client(env, timeout=5, retries=0))}"
     except Exception as exc:  # noqa: BLE001
         return f"Story insights failed ({type(exc).__name__})"
 
@@ -431,14 +433,20 @@ def main(argv: list[str] | None = None) -> int:
                 refreshed = token_refresh.tick(conn, env, env_file, _now())
                 if refreshed in ("refreshed", "failed", "metadata_failed", "token_changed"):
                     env = {**load_env(env_file), **os.environ}
-                followers = _capture_followers(conn, env, _now())
-                stories = _capture_stories(conn, env)
                 if publish.configured(env):
                     recipe_series.start(conn, _now())
                 outcome = daily(conn, env, args.media)
                 render.render_due(conn, args.media, _notify_render(env, _now()))
                 published = publish.tick(conn, env, args.media, _now())
                 reports = _post_reports(conn, env)
+                followers = _capture_followers(conn, env, _now())
+            with open(args.media / ".story-insights.lock", "w") as lock:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    stories = "Story insights busy"
+                else:
+                    stories = _capture_stories(conn, env)
             print(outcome, refreshed, published, stories, reports, followers, sep="; ")
             return 0 if outcome in ("ok", "partial", "skipped", "gave_up") else 1
         env = {**load_env(env_file), **os.environ}

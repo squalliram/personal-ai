@@ -88,6 +88,80 @@ class Case(unittest.TestCase):
 
 
 class StoryInsightsTests(Case):
+    def test_story_that_exhausted_budget_does_not_block_an_untried_story_next_tick(self):
+        graph = InsightsGraph({})
+        elapsed = 0
+
+        def read(path, params=None):
+            nonlocal elapsed
+            if path == f"{graph.user_id}/stories":
+                return {"data": [{"id": str(n), "timestamp": PUBLISHED.isoformat()} for n in (42, 43)]}
+            if path == "42/insights":
+                elapsed = story_insights.CAPTURE_BUDGET
+                raise GraphAPIError("Story timed out")
+            return {"data": [{"name": params["metric"], "values": [{"value": 20}]}]}
+
+        with (
+            mock.patch.object(graph, "get", side_effect=read) as get,
+            mock.patch.object(story_insights, "monotonic", side_effect=lambda: elapsed),
+        ):
+            first_tick = PUBLISHED + timedelta(hours=23)
+            self.assertEqual(story_insights.capture(self.conn, graph, first_tick), 0)
+            self.assertEqual([call.args[0] for call in get.call_args_list][1:], ["42/insights"])
+            get.reset_mock()
+            elapsed = 0
+            self.assertEqual(story_insights.capture(self.conn, graph, first_tick + timedelta(minutes=15)), 1)
+            self.assertEqual(get.call_args_list[1].args[0], "43/insights")
+        row = self.conn.execute("SELECT metrics FROM story_insights WHERE media_id='43'").fetchone()
+        self.assertEqual(json.loads(row["metrics"])["reach"], 20)
+
+    def test_story_discovery_stops_after_slow_empty_page_and_keeps_discovered_story(self):
+        graph = InsightsGraph({})
+        elapsed = 0
+
+        def read(path, params=None):
+            nonlocal elapsed
+            if path == f"{graph.user_id}/stories":
+                return {"data": [{"id": "42", "timestamp": PUBLISHED.isoformat()}], "paging": {"next": "empty"}}
+            if path == "empty":
+                elapsed = story_insights.DISCOVERY_BUDGET
+                return {"data": [], "paging": {"next": "must-not-fetch"}}
+            self.assertEqual(path, "42/insights")
+            return {"data": [{"name": params["metric"], "values": [{"value": 10}]}]}
+
+        with (
+            mock.patch.object(graph, "get", side_effect=read),
+            mock.patch.object(story_insights, "monotonic", side_effect=lambda: elapsed),
+        ):
+            self.assertEqual(story_insights.capture(self.conn, graph, PUBLISHED + timedelta(hours=23)), 1)
+
+    def test_capture_keeps_budget_truncated_snapshot_and_retries_on_next_tick(self):
+        graph = mock.Mock(user_id="123")
+        graph.paginated.return_value = iter([{"id": "42", "timestamp": PUBLISHED.isoformat()}])
+        elapsed = 0
+
+        def read(path, params):
+            nonlocal elapsed
+            elapsed = story_insights.CAPTURE_BUDGET
+            return {"data": [{"name": params["metric"], "values": [{"value": 10}]}]}
+
+        graph.get.side_effect = read
+        with mock.patch.object(story_insights, "monotonic", side_effect=lambda: elapsed):
+            self.assertEqual(story_insights.capture(self.conn, graph, PUBLISHED + timedelta(hours=23)), 1)
+        graph.get.assert_called_once_with("42/insights", {"metric": "reach"})
+        self.assertEqual(
+            json.loads(self.conn.execute("SELECT metrics FROM story_insights WHERE media_id='42'").fetchone()[0]),
+            {"reach": 10},
+        )
+        graph.paginated.side_effect = lambda *args, **kwargs: iter([{"id": "42", "timestamp": PUBLISHED.isoformat()}])
+        graph.get.side_effect = lambda path, params: {"data": [{"name": params["metric"], "values": [{"value": 12}]}]}
+        next_tick = PUBLISHED + timedelta(hours=23, minutes=15)
+        self.assertEqual(story_insights.capture(self.conn, graph, next_tick), 1)
+        row = self.conn.execute("SELECT captured_at, metrics FROM story_insights WHERE media_id='42'").fetchone()
+        self.assertEqual(row["captured_at"], next_tick.isoformat())
+        self.assertEqual(json.loads(row["metrics"])["views"], 12)
+        self.assertEqual(story_insights.capture(self.conn, graph, next_tick + timedelta(minutes=15)), 0)
+
     def test_new_story_report_ranks_above_newer_captures(self):
         captured = PUBLISHED + timedelta(hours=23)
         with self.conn:
@@ -201,6 +275,7 @@ class StoryInsightsTests(Case):
             "navigation 12",
             "follows 2",
             "profile visits unavailable",
+            "Earlier profile visits 1 at 1h 0m",
             "forward 12",
             "back 0",
         ):
@@ -298,6 +373,18 @@ class PostReportTests(Case):
         post_report.tick(self.conn, self.env, PUBLISHED + timedelta(hours=73), client=graph)
         latest = learnings.summary(self.conn, PUBLISHED + timedelta(hours=73))["reports"][0]
         self.assertEqual(latest["creative"], report["creative"])
+
+    def test_generated_reel_snapshot_uses_opening_overlay_not_topic(self):
+        draft_id = self.publish(kind="reel", topic="Squash soup", hook="Roast it for deeper flavour")
+        self.conn.execute(
+            "UPDATE drafts SET reel=? WHERE draft_id=?",
+            (json.dumps({"source": "photos", "hook": "Squash soup", "seconds": 9}), draft_id),
+        )
+        at = PUBLISHED + timedelta(hours=25)
+        post_report.tick(self.conn, self.env, at, client=InsightsGraph({"reach": 50}, product="REELS"))
+        self.assertEqual(
+            learnings.summary(self.conn, at)["reports"][0]["creative"]["hook"], "Roast it for deeper flavour"
+        )
 
     def test_follower_snapshot_retries_missing_and_uses_london_calendar_days(self):
         graph = mock.Mock(user_id="123")
