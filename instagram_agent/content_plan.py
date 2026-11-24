@@ -18,14 +18,18 @@ def monday(now):
     return day - timedelta(days=day.weekday())
 
 
+def replacements(conn, week):
+    return dict(
+        conn.execute("SELECT old_pillar,new_pillar FROM content_pillar_replacements WHERE effective_on<=?", (week,))
+    )
+
+
 def ensure_week(conn, now: datetime) -> None:
     first = monday(now)
     week = first.isoformat()
     if conn.execute("SELECT 1 FROM content_plan WHERE week=? LIMIT 1", (week,)).fetchone():
         return
-    replacement = dict(
-        conn.execute("SELECT old_pillar,new_pillar FROM content_pillar_replacements WHERE effective_on<=?", (week,))
-    )
+    replacement = replacements(conn, week)
     rotation = [replacement.get(p, p) for p in PILLARS if p not in RESERVE]
     start = conn.execute("SELECT MIN(week) FROM content_plan").fetchone()[0]
     index = (first - date.fromisoformat(start)).days // 7 if start else 0

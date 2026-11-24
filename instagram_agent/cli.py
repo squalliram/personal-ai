@@ -339,10 +339,12 @@ def make_drafts(conn, env: dict, media_dir: Path, now: datetime | None = None) -
             if clip is None and render.can_render("photos"):
                 recipe_upload = uploads.oldest(conn, note_matches=matches)
             if clip is None and recipe_upload is None:
+                retired = content_plan.replacements(conn, entry["week"])
+                protected_names = [name.casefold() for key, name in PILLARS.items() if key not in retired]
 
                 def untagged(note):
                     folded = note.casefold()
-                    return not any(name.casefold() in folded for name in PILLARS.values())
+                    return not any(name in folded for name in protected_names)
 
                 clip = _queued_clip(conn, media_dir, note_matches=untagged)
                 if clip is None and render.can_render("photos"):

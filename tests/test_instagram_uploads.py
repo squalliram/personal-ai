@@ -447,6 +447,22 @@ class DailyFromUploadTests(Fixture):
         self.assertEqual(later_ai.calls[0][1]["owner_note"], tagged_note)
         self.assertFalse(uploads.is_waiting(self.conn, tagged))
 
+    def test_upload_for_a_retired_pillar_can_fill_a_different_slot_as_an_alternate(self):
+        monday = MORNING + timedelta(days=4)
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO content_pillar_replacements VALUES('soup-swirl','ingredient-swap',?)",
+                (monday.date().isoformat(),),
+            )
+        content_plan.ensure_week(self.conn, monday)
+        note = "Soup swirl showdown: homemade squash soup."
+        upload_id = self.add_upload(note)
+        ai = PhotoAI([photo_draft()], [[85]])
+        self.assertEqual(self.tick(ai, now=monday), "ok")
+        self.assertFalse(uploads.is_waiting(self.conn, upload_id))
+        self.assertEqual(ai.calls[0][1]["owner_note"], note)
+        self.assertTrue(content_plan.rows(self.conn, monday)[0]["alternate"])
+
     def test_unapproved_carryovers_do_not_stop_the_next_recipe_draft(self):
         recipe_series.start(self.conn, MORNING)
         friday = MORNING + timedelta(days=1)
