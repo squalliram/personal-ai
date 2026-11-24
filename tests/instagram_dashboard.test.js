@@ -84,7 +84,7 @@ async function dashboard(savedHolds = {}, permission = 'recommend', holdFailures
   const context = vm.createContext({
     session: {permission}, load: async () => data, holdFailures, render: () => renderCalls.push(true), $: id => root.find(id),
     igView: {section: 'performance'}, igNumber: Number.isFinite,
-    when: date => date, clearCache: () => {},
+    when: date => date, clearCache: () => {}, signInCount: 0,
     api: async (path, options) => { calendarCalls.push({path, ...options}); return {ok: true, status: 200}; },
     el: (tag, attrs, ...children) => new Element(tag, attrs, children),
     card: (title, ...children) => new Element('card', {title}, children), muted: text => text,
@@ -163,6 +163,17 @@ async function sender() {
   assert.equal(normal.calendarCalls[0].path, 'api/v1/instagram/calendar/advance');
   assert.equal(normal.calendarCalls[0].body.status, 'Idea');
   assert.equal(normal.renderCalls.length, 1);
+  let loginShown = false;
+  normal.context.showLogin = () => { loginShown = true; };
+  normal.context.api = async () => {
+    normal.context.signInCount++;
+    return {ok: false, status: 401};
+  };
+  await advance.events.click();
+  assert.equal(loginShown, false, 'an earlier calendar request cannot sign out a later session');
+  normal.context.api = async () => ({ok: false, status: 401});
+  await advance.events.click();
+  assert.equal(loginShown, true, 'a 401 in the current session still goes to login');
 
   const saved = {
     held: {token: 'saved-release', body: {draft_id: 'held', hold: false, version: 2}},

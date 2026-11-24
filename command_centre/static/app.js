@@ -2495,10 +2495,12 @@
       const feedback = el("p", { role: "status", class: "muted", hidden: "" });
       const advance = entry.next_status && canDecide ? el("button", { type: "button" }, `Mark ${entry.next_status}`) : null;
       if (advance) advance.addEventListener("click", async () => {
+        const signIn = signInCount;
         advance.disabled = true;
         const result = await api("api/v1/instagram/calendar/advance", {
           method: "POST", body: { id: entry.id, status: entry.status }
         });
+        if (signIn !== signInCount) { if (result.ok) clearCache(); return; }
         if (result.status === 401) { showLogin("Your session has ended. Sign in again."); return; }
         if (result.ok) { clearCache(); render(); return; }
         feedback.hidden = false;
