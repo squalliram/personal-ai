@@ -171,6 +171,17 @@ async function sender() {
   };
   await advance.events.click();
   assert.equal(loginShown, false, 'an earlier calendar request cannot sign out a later session');
+  assert.equal(normal.renderCalls.length, 1, 'a failed stale request must not re-render');
+  let finishAdvance;
+  normal.context.api = () => new Promise(resolve => { finishAdvance = resolve; });
+  const refresh = [];
+  normal.context.clearCache = () => refresh.push('clear cache');
+  normal.context.render = () => refresh.push('render');
+  const staleAdvance = advance.events.click();
+  normal.context.signInCount++;
+  finishAdvance({ok: true, status: 200});
+  await staleAdvance;
+  assert.deepEqual(refresh, ['clear cache', 'render'], 'refresh the new sign-in after a stale successful advance');
   normal.context.api = async () => ({ok: false, status: 401});
   await advance.events.click();
   assert.equal(loginShown, true, 'a 401 in the current session still goes to login');

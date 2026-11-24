@@ -2500,7 +2500,7 @@
         const result = await api("api/v1/instagram/calendar/advance", {
           method: "POST", body: { id: entry.id, status: entry.status }
         });
-        if (signIn !== signInCount) { if (result.ok) clearCache(); return; }
+        if (signIn !== signInCount) { if (result.ok) { clearCache(); render(); } return; }
         if (result.status === 401) { showLogin("Your session has ended. Sign in again."); return; }
         if (result.ok) { clearCache(); render(); return; }
         feedback.hidden = false;
