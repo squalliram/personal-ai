@@ -91,6 +91,17 @@ class DraftTests(unittest.TestCase):
         self.assertEqual(len(tags), 20)
         self.assertEqual(drafts.clean_hashtags(["#a" * 1, "#b"], "x" * 2197), [])
 
+    def test_ai_slide_count_is_three_or_four_and_meets_minimum_duration(self):
+        for count in (0, 2, 3, 4, 5, 8):
+            with self.subTest(count=count):
+                draft = drafts.normalise(raw_draft("coffee", slides=count))
+                if count in (3, 4):
+                    self.assertEqual(len(draft["slides"]), count)
+                    self.assertEqual(drafts.render.photo_duration(count), count * 3)
+                    self.assertGreaterEqual(drafts.render.photo_duration(count), 7)
+                else:
+                    self.assertIsNone(draft)
+
     def test_publish_slots_start_at_noon_and_use_audience_hours(self):
         storage.replace_audience_hours(self.conn, {19: 500, 8: 400, 13: 300}, "now")
         self.assertEqual(
@@ -124,6 +135,7 @@ class DraftTests(unittest.TestCase):
         row = self.conn.execute("SELECT * FROM drafts").fetchone()
         self.assertEqual(row["kind"], "reel")
         self.assertEqual(json.loads(row["reel"])["render"], "pending")
+        self.assertEqual(json.loads(row["reel"])["framing"], "cover")
         self.assertNotIn("music", json.loads(row["reel"]))
         self.assertEqual((row["draft_id"], row["status"], row["created_on"]), (folder.name, "pending", "2026-11-12"))
         self.assertEqual(json.loads(row["slides"])[0], {"text": "one 0", "file": "slide-1.png"})
@@ -380,8 +392,12 @@ class SlidePromptTests(unittest.TestCase):
                 self.assertIn("photorealistic close-up", prompt)
 
     def test_no_people_and_insight_instructions(self):
-        self.assertIn("Each has 4-6 slides", drafts.CREATE)
-        self.assertIn("slide count within 4-6", drafts.CREATE)
+        self.assertIn("Each has 3-4 slides", drafts.CREATE)
+        self.assertIn("slide count within 3-4", drafts.CREATE)
+        self.assertIn("finished, plated dish", drafts.CREATE)
+        self.assertIn("first second", drafts.CREATE)
+        self.assertIn("outside 3-4 slides", drafts.REVIEW)
+        self.assertIn("finished, plated dish", drafts.REVIEW)
         self.assertIn(drafts.NO_PEOPLE, drafts.CREATE)
         self.assertIn("watch-time lift, reach, follows", drafts.CREATE)
         self.assertIn("reel duration findings", drafts.CREATE_REEL_FROM_PHOTOS)
@@ -400,6 +416,7 @@ class SlidePromptTests(unittest.TestCase):
     def test_text_is_drawn_only_by_models_that_spell_it(self):
         slide = {"text": "Flat white 101", "image_prompt": "a flat white on marble"}
         self.assertIn('spelled exactly: "Flat white 101"', drafts.slide_prompt(slide, draws_text=True))
+        self.assertIn("central 60%", drafts.slide_prompt(slide, draws_text=True))
         clean = drafts.slide_prompt(slide, draws_text=False)
         self.assertNotIn("Flat white 101", clean)
         self.assertIn("No text", clean)

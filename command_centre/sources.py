@@ -25,6 +25,7 @@ from octopus_energy.mcp_server import RefreshRequiredError, dispatch
 from octopus_energy.refresh import validate_status
 
 from .config import Settings
+from .instagram_analytics import performance as instagram_performance
 
 LONDON = ZoneInfo("Europe/London")
 HEALTH_STATES = (
@@ -596,6 +597,7 @@ def instagram_drafts(settings: Settings, limit: int = 30, now: datetime | None =
         "runs": [],
         "latest_attempt": None,
         "learnings": None,
+        "performance": {"window_days": 90, "items": [], "last_synced_at": None, "truncated": False},
     }
     path = settings.instagram_db
     if path is None or path.is_symlink() or not path.is_file():
@@ -633,6 +635,7 @@ def instagram_drafts(settings: Settings, limit: int = 30, now: datetime | None =
             except sqlite3.OperationalError:
                 token_row = None  # Older databases have no token lifecycle table.
             learned = instagram_learnings.summary(conn)
+            result["performance"] = instagram_performance(conn, now)
     except (OSError, sqlite3.Error):
         result["state"] = "unavailable"
         return result
