@@ -2422,7 +2422,7 @@
     const needsReview = (d) => d.status === "pending" && !d.publishing
       && (!data.auto_publish || (d.reel && d.reel.hold) || !igNumber(d.review_score) || d.review_score < 70);
     const review = data.drafts.filter(needsReview);
-    const drafts = data.drafts.filter((d) => ["pending", "approved"].includes(d.status) && !needsReview(d));
+    const drafts = data.drafts.filter((d) => ["pending", "approved", "failed"].includes(d.status) && !needsReview(d));
     const sections = [["performance", "Performance"], ["review", `Awaiting review (${review.length})`], ["drafts", `Drafts (${drafts.length})`],
       ["published", "Published"], ["uploads", "Uploads & music"], ["activity", "Activity & audit"]];
     const panels = new Map();
@@ -2438,7 +2438,7 @@
       performance: () => igPerformance(data),
       review: () => el("div", {}, card("Awaiting review", muted("Held or unapproved drafts that will not post automatically. Approve or reject below.")),
         review.length ? review.map((d) => draftCard(d, canDecide, data.auto_publish)) : muted("Nothing needs a decision.")),
-      drafts: () => el("div", {}, card("Drafts & scheduled", muted(data.auto_publish
+      drafts: () => el("div", {}, card("Drafts, scheduled & failed", muted("Failed attempts stay here with their last error. Check Instagram before taking any further action; publishing is never retried here."), muted(data.auto_publish
         ? "Ready or approved drafts. Each card shows whether and when it will post; reject a pending draft to stop it."
         : "Automatic posting is off. Approved drafts stay here until posted manually.")),
         drafts.length ? drafts.map((d) => draftCard(d, canDecide, data.auto_publish)) : muted("No drafts waiting to publish.")),
