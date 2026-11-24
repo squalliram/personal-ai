@@ -114,6 +114,7 @@ CREATE TABLE IF NOT EXISTS story_insights (
     posted_at TEXT NOT NULL,
     permalink TEXT,
     captured_at TEXT,
+    attempted_at TEXT,
     refresh_complete INTEGER NOT NULL DEFAULT 1,
     metrics TEXT NOT NULL DEFAULT '{}',
     navigation_breakdown TEXT NOT NULL DEFAULT '{}'
