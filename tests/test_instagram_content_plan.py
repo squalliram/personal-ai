@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
-from instagram_agent import content_plan, post_report, storage, weekly_performance
+from instagram_agent import cli, content_plan, post_report, storage, weekly_performance
 from instagram_agent.analysis import LONDON
 from instagram_agent.pillar_config import RESERVE
 
@@ -78,6 +78,15 @@ class ContentPlanTests(unittest.TestCase):
         with self.conn:
             self.conn.execute("UPDATE drafts SET status='published' WHERE draft_id='dish'")
         self.assertEqual(content_plan.rows(self.conn, MONDAY, True)[0]["status"], "Posted")
+
+    def test_draft_ready_notification_does_not_promise_posting_a_held_passing_reel(self):
+        content_plan.ensure_week(self.conn, MONDAY)
+        self.add_draft(content_plan.slot_today(self.conn, MONDAY), "dish", "Soup")
+        with self.conn:
+            self.conn.execute("UPDATE drafts SET review_score=95 WHERE draft_id='dish'")
+        with patch.object(cli.publish, "configured", return_value=True), patch.object(cli, "notify") as notify:
+            cli._notify_daily(self.conn, {}, "ok", MONDAY)
+        self.assertIn("won't post unless you approve it", notify.call_args.args[2])
 
     def test_sunday_report_uses_same_checkpoint_and_rotates_after_third_unique_loss(self):
         with patch.object(weekly_performance, "notify") as notify:
