@@ -59,6 +59,10 @@ class Element {
     }
   }
   remove() { this.parent.children = this.parent.children.filter(child => child !== this); }
+  replaceWith(child) {
+    child.parent = this.parent;
+    this.parent.children[this.parent.children.indexOf(this)] = child;
+  }
   replaceChildren(...children) { this.children = []; this.append(...children); }
   setAttribute(name, value) { this.attrs[name] = value; }
   addEventListener(name, fn) { this.events[name] = fn; }
@@ -84,10 +88,17 @@ async function dashboard(savedHolds = {}, permission = 'recommend', holdFailures
   const context = vm.createContext({
     session: {permission}, load: async () => data, holdFailures, render: options => renderCalls.push(options), $: id => root.find(id),
     igView: {section: 'performance'}, igNumber: Number.isFinite,
-    when: date => date, clearCache: () => {}, signInCount: 0,
-    api: async (path, options) => { calendarCalls.push({path, ...options}); return {ok: true, status: 200}; },
+    when: date => date, clearCache: () => {}, forget: () => {}, signInCount: 0,
+    api: async (path, options) => {
+      calendarCalls.push({path, ...options});
+      if (options?.method === 'POST') {
+        data.calendar[0] = {...data.calendar[0], status: 'Scripted', next_status: 'Filmed'};
+        return {ok: true, status: 200, data: {id: 1, status: 'Scripted'}};
+      }
+      return {ok: true, status: 200, data};
+    },
     el: (tag, attrs, ...children) => new Element(tag, attrs, children),
-    card: (title, ...children) => new Element('card', {title}, children), muted: text => text,
+    card: (title, ...children) => new Element('card', {title}, children), muted: text => new Element('p', {class: 'muted'}, [text]),
     tokenCard: () => new Element('token'), igPerformance: () => new Element('performance'),
     unconfirmedHold: id => savedHolds[id] || null,
     sendHold: (draft, body, token) => {
@@ -156,15 +167,20 @@ async function sender() {
   nav.children.find(button => button.attrs['aria-controls'] === 'ig-section-calendar').events.click();
   const calendar = normal.root.find('ig-section-calendar');
   assert.equal(calendar.hidden, false);
-  const entry = calendar.children[0].children.find(child => child.attrs.title === '£3 soup test');
-  const actions = entry.children.find(child => child instanceof Element && child.attrs.class === 'ig-calendar-actions');
-  const advance = actions.children.find(child => child instanceof Element && child.tag === 'button');
+  const getAdvance = () => {
+    const entry = calendar.children[0].children.find(child => child.attrs.title === '£3 soup test');
+    const actions = entry.children.find(child => child instanceof Element && child.attrs.class === 'ig-calendar-actions');
+    return actions.children.find(child => child instanceof Element && child.tag === 'button');
+  };
+  let advance = getAdvance();
   assert.equal(advance.children[0], 'Mark Scripted');
   await advance.events.click();
   assert.equal(normal.calendarCalls[0].path, 'api/v1/instagram/calendar/advance');
   assert.equal(normal.calendarCalls[0].body.status, 'Idea');
-  assert.equal(normal.renderCalls.length, 1);
-  assert.equal(normal.renderCalls[0].background, true, 'saving a status must not clear the visible calendar while refreshing');
+  advance = getAdvance();
+  assert.equal(advance.children[0], 'Mark Filmed', 'save must update the card even if a full render does not paint');
+  assert.notEqual(advance.disabled, true);
+  assert.equal(normal.renderCalls.length, 0, 'saving a calendar status must not rebuild unfinished upload forms');
   let loginShown = false;
   normal.context.showLogin = () => { loginShown = true; };
   normal.context.api = async () => {
@@ -173,7 +189,7 @@ async function sender() {
   };
   await advance.events.click();
   assert.equal(loginShown, false, 'an earlier calendar request cannot sign out a later session');
-  assert.equal(normal.renderCalls.length, 1, 'a failed stale request must not re-render');
+  assert.equal(normal.renderCalls.length, 0, 'a failed stale request must not re-render');
   let finishAdvance;
   normal.context.api = () => new Promise(resolve => { finishAdvance = resolve; });
   const refresh = [];

@@ -2491,7 +2491,8 @@
     const content = el("div", {}, card("Content calendar",
       muted("Monday, Wednesday and Friday · London time. Include a pillar name in your upload note to reserve it for a matching slot.")));
     if (!entries.length) content.append(muted("The calendar will appear after the next Instagram run."));
-    for (const entry of entries) {
+    function entryCard(entry) {
+      const statusLine = muted(`${when(entry.slot)} · ${entry.status}`);
       const feedback = el("p", { role: "status", class: "muted", hidden: "" });
       const advance = entry.next_status && canDecide ? el("button", { type: "button" }, `Mark ${entry.next_status}`) : null;
       if (advance) advance.addEventListener("click", async () => {
@@ -2502,19 +2503,36 @@
         });
         if (signIn !== signInCount) { if (result.ok) { clearCache(); render(); } return; }
         if (result.status === 401) { showLogin("Your session has ended. Sign in again."); return; }
-        if (result.ok) { clearCache(); render({ background: true }); return; }
+        if (result.ok) {
+          const path = "api/v1/instagram/drafts";
+          forget(path);
+          const latest = await api(path);
+          if (signIn !== signInCount) return;
+          if (latest.status === 401) { showLogin("Your session has ended. Sign in again."); return; }
+          const updated = latest.ok && latest.data?.calendar?.find((row) => row.id === entry.id);
+          if (updated) item.replaceWith(entryCard(updated));
+          else {
+            statusLine.textContent = `${when(entry.slot)} · ${result.data.status}`;
+            advance.hidden = true;
+            feedback.hidden = false;
+            feedback.textContent = "Status saved. Refresh to see the next action.";
+          }
+          return;
+        }
         feedback.hidden = false;
         feedback.textContent = result.status === 409 ? "This entry changed. Refresh to see its status." : "Could not save the status.";
         advance.disabled = false;
       });
       const review = entry.needs_approval && canDecide ? el("button", { type: "button" }, "Go to awaiting review") : null;
       if (review) review.addEventListener("click", showReview);
-      content.append(card(entry.pillar_name, muted(`${when(entry.slot)} · ${entry.status}`),
+      const item = card(entry.pillar_name, statusLine,
         entry.topic ? el("p", {}, entry.alternate ? `Alternate upload: ${entry.topic}` : entry.topic) : null,
         entry.scheduled_for && Date.parse(entry.scheduled_for) !== Date.parse(entry.slot)
           ? muted(`Moved to ${when(entry.scheduled_for)}`) : null,
-        advance || review ? el("div", { class: "ig-calendar-actions" }, advance, review) : null, feedback));
+        advance || review ? el("div", { class: "ig-calendar-actions" }, advance, review) : null, feedback);
+      return item;
     }
+    content.append(...entries.map(entryCard));
     return content;
   }
 
