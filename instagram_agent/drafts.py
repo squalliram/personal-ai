@@ -638,11 +638,13 @@ def publish_slots(conn, now: datetime, count: int) -> list[str]:
 
 
 def slide_prompt(slide: dict, *, draws_text: bool) -> str:
-    if PEOPLE.search(slide["image_prompt"]):
-        logging.getLogger(__name__).warning("AI image prompt mentions people; applying no-people constraint")
-    base = (
-        f"{slide['image_prompt']}\n\nA 4:5 portrait Instagram carousel photo for a food, coffee and restaurant account."
-    )
+    image_prompt = slide["image_prompt"]
+    if PEOPLE.search(image_prompt):
+        logging.getLogger(__name__).warning("AI image prompt mentions people; substituting a food photograph")
+        image_prompt = "An appetising, well-lit, photorealistic close-up food or drink photograph"
+        if not PEOPLE.search(slide["text"]):
+            image_prompt += f" illustrating: {slide['text']}"
+    base = f"{image_prompt}\n\nA 4:5 portrait Instagram carousel photo for a food, coffee and restaurant account."
     if draws_text:
         return (
             base + f' Overlay this text in large, clean, legible type, spelled exactly: "{slide["text"]}" ' + NO_PEOPLE

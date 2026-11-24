@@ -367,6 +367,8 @@ class SlidePromptTests(unittest.TestCase):
                     {"text": "Coffee", "image_prompt": "A barista hand pouring coffee"}, draws_text=draws_text
                 )
             self.assertTrue(prompt.endswith(drafts.NO_PEOPLE))
+            self.assertNotIn("A barista hand pouring coffee", prompt)
+            self.assertIn("photorealistic close-up food or drink photograph illustrating: Coffee", prompt)
             self.assertNotIn("pouring", logs.output[0])
         self.assertIsNone(drafts.PEOPLE.search("handcrafted mango coffee"))
 
