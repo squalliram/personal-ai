@@ -2468,7 +2468,15 @@
         if (id === "activity") auditCard().then((audit) => { if (audit) panel.append(audit); });
       }
     }
-    show(igView.section);
+    // Reloading must replay saved hold changes even though draft cards are now lazy.
+    // Open the affected section so both the retry and any unknown-state warning stay visible.
+    const pendingHoldDraft = canDecide && data.drafts.find((draft) => {
+      if (draft.status !== "pending" || draft.publishing || !draft.reel) return false;
+      const pending = unconfirmedHold(draft.draft_id);
+      return pending && pending.body && pending.body.draft_id === draft.draft_id
+        && typeof pending.body.hold === "boolean" && typeof pending.token === "string";
+    });
+    show(pendingHoldDraft ? needsReview(pendingHoldDraft) ? "review" : "drafts" : igView.section);
     view.append(root);
   }
 
