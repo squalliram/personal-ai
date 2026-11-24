@@ -123,13 +123,11 @@ def rows(conn, now, auto_publish=False):
             status = "Posted"
         elif draft_status == "approved":
             status = "Scheduled" if auto_publish and entry["scheduled_for"] and rendered(draft) else "Approved"
-        elif draft_status == "pending" and metadata.get("render") == "done":
-            status = "Edited"
         entry.update(
             status=status,
             alternate=metadata.get("pillar_match") is False,
             needs_approval=draft_status == "pending"
-            and status == "Edited"
+            and (status == "Edited" or metadata.get("render") == "done")
             and rendered(draft)
             and not (auto_publish and will_post(draft_status, score, held(draft))),
             pillar_name=PILLARS[entry["pillar"]],

@@ -102,6 +102,16 @@ class ContentPlanTests(unittest.TestCase):
         self.assertEqual(content_plan.advance(self.conn, slot["id"], "Filmed"), "Edited")
         self.assertTrue(content_plan.rows(self.conn, MONDAY)[0]["needs_approval"])
 
+    def test_rendered_reel_keeps_manual_status_but_can_notify_owner(self):
+        content_plan.ensure_week(self.conn, MONDAY)
+        slot = content_plan.slot_today(self.conn, MONDAY)
+        self.add_draft(slot, "rendered", "Edited soup clip")
+        entry = content_plan.rows(self.conn, MONDAY, True)[0]
+        self.assertEqual((entry["status"], entry["next_status"]), ("Scripted", "Filmed"))
+        self.assertTrue(entry["needs_approval"])
+        self.assertEqual(content_plan.advance(self.conn, slot["id"], "Scripted"), "Filmed")
+        self.assertEqual(content_plan.advance(self.conn, slot["id"], "Filmed"), "Edited")
+
     def test_sunday_report_uses_same_checkpoint_and_rotates_after_third_unique_loss(self):
         with patch.object(weekly_performance, "notify") as notify:
             for n in range(3):
