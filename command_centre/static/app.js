@@ -2492,14 +2492,22 @@
       ? "No Instagram database is connected yet. Graphs will appear after media and reports are captured." : "The Instagram database could not be read. Empty graphs are not evidence of zero performance.")));
     const tokenWarning = data.token && ["expired", "expiring", "refresh_failed", "not_configured"].includes(data.token.state) ? tokenCard(data.token) : null;
     if (tokenWarning) root.append(tokenWarning);
-    if (holdFailures.size) root.append(card("Hold changes needing attention", [...holdFailures].map(([id, notice]) => {
-      const acknowledge = el("button", { type: "button" }, "Dismiss notice");
-      acknowledge.addEventListener("click", () => {
-        if (holdFailures.get(id) === notice) holdFailures.delete(id);
-        render();
-      });
-      return el("div", {}, el("p", { role: "status" }, `${notice.topic}: ${notice.message}`), acknowledge);
-    })));
+    if (holdFailures.size) {
+      const notices = card("Hold changes needing attention");
+      for (const [id, notice] of holdFailures) {
+        const acknowledge = el("button", { type: "button" }, "Dismiss notice");
+        const row = el("div", {}, el("p", { role: "status" }, `${notice.topic}: ${notice.message}`), acknowledge);
+        acknowledge.addEventListener("click", () => {
+          if (holdFailures.get(id) !== notice) return;
+          holdFailures.delete(id);
+          // Dismissing a notice must not rebuild unsent photo/clip/music forms.
+          row.remove();
+          if (!holdFailures.size) notices.remove();
+        });
+        notices.append(row);
+      }
+      root.append(notices);
+    }
     const fills = {
       performance: () => igPerformance(data),
       review: () => el("div", {}, card("Awaiting review", muted("Held or unapproved drafts that will not post automatically. Approve or reject below.")),

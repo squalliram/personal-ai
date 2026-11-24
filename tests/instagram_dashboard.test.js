@@ -52,7 +52,13 @@ class Element {
     this.hidden = Object.hasOwn(attrs, 'hidden');
     this.append(...children.flat(Infinity));
   }
-  append(...children) { this.children.push(...children.filter(value => value !== null && value !== undefined && value !== false)); }
+  append(...children) {
+    for (const child of children.filter(value => value !== null && value !== undefined && value !== false)) {
+      if (child instanceof Element) child.parent = this;
+      this.children.push(child);
+    }
+  }
+  remove() { this.parent.children = this.parent.children.filter(child => child !== this); }
   setAttribute(name, value) { this.attrs[name] = value; }
   addEventListener(name, fn) { this.events[name] = fn; }
   find(id) { return this.attrs.id === id ? this : this.children.map(child => child instanceof Element ? child.find(id) : null).find(Boolean); }
@@ -61,6 +67,7 @@ class Element {
 async function dashboard(savedHolds = {}, permission = 'recommend', holdFailures = new Map()) {
   const renderedDrafts = [];
   const sentHolds = [];
+  const renderCalls = [];
   const data = {
     state: 'available', auto_publish: true, runs: [], token: {state: 'valid'},
     drafts: [
@@ -71,7 +78,7 @@ async function dashboard(savedHolds = {}, permission = 'recommend', holdFailures
     ],
   };
   const context = vm.createContext({
-    session: {permission}, load: async () => data, holdFailures, render: () => {},
+    session: {permission}, load: async () => data, holdFailures, render: () => renderCalls.push(true),
     igView: {section: 'performance'}, igNumber: Number.isFinite,
     el: (tag, attrs, ...children) => new Element(tag, attrs, children),
     card: (title, ...children) => new Element('card', {title}, children), muted: text => text,
@@ -88,7 +95,7 @@ async function dashboard(savedHolds = {}, permission = 'recommend', holdFailures
   const root = new Element('root');
   context.root = root;
   await vm.runInContext('instagram(root)', context);
-  return {root, context, renderedDrafts, sentHolds};
+  return {root, context, renderedDrafts, sentHolds, renderCalls};
 }
 
 // Exercise the real sender: retries share the same version and token, with no duplicate
@@ -161,6 +168,7 @@ async function sender() {
   assert.ok(notice, 'completed hold failures remain visible with no saved request');
   notice.children[0].children.find(node => node instanceof Element && node.tag === 'button').events.click();
   assert.equal(failures.size, 0, 'only explicit acknowledgement clears the notice');
+  assert.equal(recovered.renderCalls.length, 0, 'notice dismissal must not re-render unsent upload forms');
   await sender();
   console.log('Instagram calendar and section routing regressions passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });
