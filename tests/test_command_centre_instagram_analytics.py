@@ -1,6 +1,9 @@
+import shutil
 import sqlite3
+import subprocess
 import unittest
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from command_centre.instagram_analytics import MAX_MEDIA, performance
 from instagram_agent import storage
@@ -10,6 +13,16 @@ POSTED = "2026-11-20T19:00:00+00:00"
 
 
 class InstagramAnalyticsTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("node"), "Node.js is required for frontend regressions")
+    def test_frontend_calendar_and_section_regressions(self):
+        result = subprocess.run(
+            ["node", str(Path(__file__).with_name("instagram_dashboard.test.js"))],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def setUp(self):
         self.conn = sqlite3.connect(":memory:")
         self.conn.row_factory = sqlite3.Row
