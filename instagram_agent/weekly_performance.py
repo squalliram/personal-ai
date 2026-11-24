@@ -10,7 +10,7 @@ from notifications import command_centre_link, notify
 from .analysis import LONDON
 from .content_plan import alternate, monday
 from .pillar_config import PILLARS, RESERVE
-from .post_report import hook_style
+from .post_report import TITLE_LIMIT, hook_style
 
 
 def _ranking(reels, field):
@@ -45,12 +45,23 @@ def _figures(row):
 
 def _extreme(rows, target):
     if target is None:
-        return None, _figures(None)
+        return None, _figures(None), []
     views = target["views"]
-    tied = sum(reel["views"] == views for reel in rows)
-    if tied > 1:
-        return None, f"{tied} Reels tied at {views} views"
-    return target, _figures(target)
+    tied = [reel for reel in rows if reel["views"] == views]
+    if len(tied) > 1:
+        return None, f"{len(tied)} Reels tied at {views} views", tied
+    return target, _figures(target), []
+
+
+def _tie_figures(reels):
+    figures = []
+    for reel in {r["media_id"]: r for r in reels}.values():
+        figure = _figures(reel)
+        if figures and len(figures[-1]) + len(figure) + 2 <= TITLE_LIMIT:
+            figures[-1] += "; " + figure
+        else:
+            figures.append(f"Tied Reels: {figure}")
+    return figures
 
 
 def _replacement(conn, week, worst):
@@ -94,8 +105,8 @@ def _make(conn, week):
         reel["hook_style"] = creative.get("hook_style") or hook_style(creative.get("hook"))
         reels.append(reel)
     measured = sorted((r for r in reels if r["views"] is not None), key=lambda r: (-r["views"], r["media_id"]))
-    _, top_summary = _extreme(measured, measured[0] if measured else None)
-    bottom, bottom_summary = _extreme(measured, measured[-1] if len(measured) > 1 else None)
+    _, top_summary, tied_top = _extreme(measured, measured[0] if measured else None)
+    bottom, bottom_summary, tied_bottom = _extreme(measured, measured[-1] if len(measured) > 1 else None)
     hooks, pillars = _ranking(reels, "hook_style"), _ranking(reels, "pillar")
     best_hook = hooks[0][1] if hooks and (len(hooks) == 1 or hooks[0][0] > hooks[1][0]) else None
     best_pillar = pillars[0][1] if pillars and (len(pillars) == 1 or pillars[0][0] > pillars[1][0]) else None
@@ -129,7 +140,7 @@ def _make(conn, week):
     ]
     if update := _replacement(conn, week, worst):
         parts[2] += " " + update
-    return parts, worst
+    return parts + _tie_figures(tied_top + tied_bottom), worst
 
 
 def tick(conn, env, now: datetime) -> None:

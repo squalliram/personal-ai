@@ -193,6 +193,17 @@ class ContentPlanTests(unittest.TestCase):
         self.assertIn("Bottom: 2 Reels tied at 10 views.", parts[0])
         self.assertNotIn("lowest-viewed concept", parts[2])
         self.assertIsNone(worst)
+        self.assertIn("tied-a (10 views, 2s watch, n/a shares, n/a saves, n/a comments)", " ".join(parts[3:]))
+        self.assertIn("tied-b (10 views, 2s watch", " ".join(parts[3:]))
+        with self.conn:
+            self.conn.execute("UPDATE post_reports SET views=10, saved=0, shares=4, comments=1 WHERE media_id='winner'")
+        all_tied, _ = weekly_performance._make(self.conn, MONDAY.date())
+        metrics = " ".join(all_tied[3:])
+        self.assertIn("no unique top/bottom", all_tied[0])
+        self.assertIn("winner (10 views, 2s watch, 4 shares, 0 saves, 1 comments)", metrics)
+        self.assertEqual(metrics.count("tied-a ("), 1)
+        self.assertEqual(metrics.count("tied-b ("), 1)
+        self.assertTrue(all(len(part) <= post_report.TITLE_LIMIT for part in all_tied))
 
     def test_unstored_sunday_report_notification_retries_on_monday(self):
         sunday = MONDAY + timedelta(days=6, hours=11, minutes=45)
