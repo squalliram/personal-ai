@@ -124,6 +124,7 @@ class DraftTests(unittest.TestCase):
         row = self.conn.execute("SELECT * FROM drafts").fetchone()
         self.assertEqual(row["kind"], "reel")
         self.assertEqual(json.loads(row["reel"])["render"], "pending")
+        self.assertEqual(json.loads(row["reel"])["framing"], "cover")
         self.assertNotIn("music", json.loads(row["reel"]))
         self.assertEqual((row["draft_id"], row["status"], row["created_on"]), (folder.name, "pending", "2026-11-12"))
         self.assertEqual(json.loads(row["slides"])[0], {"text": "one 0", "file": "slide-1.png"})
@@ -400,6 +401,7 @@ class SlidePromptTests(unittest.TestCase):
     def test_text_is_drawn_only_by_models_that_spell_it(self):
         slide = {"text": "Flat white 101", "image_prompt": "a flat white on marble"}
         self.assertIn('spelled exactly: "Flat white 101"', drafts.slide_prompt(slide, draws_text=True))
+        self.assertIn("central 60%", drafts.slide_prompt(slide, draws_text=True))
         clean = drafts.slide_prompt(slide, draws_text=False)
         self.assertNotIn("Flat white 101", clean)
         self.assertIn("No text", clean)

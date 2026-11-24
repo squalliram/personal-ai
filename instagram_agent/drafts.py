@@ -658,7 +658,10 @@ def slide_prompt(slide: dict, *, draws_text: bool) -> str:
     base = f"{image_prompt}\n\nA 4:5 portrait Instagram carousel photo for a food, coffee and restaurant account."
     if draws_text:
         return (
-            base + f' Overlay this text in large, clean, legible type, spelled exactly: "{slide["text"]}" ' + NO_PEOPLE
+            base
+            + f' Overlay this text in large, clean, legible type, spelled exactly: "{slide["text"]}" '
+            + "Keep all lettering inside the central 60% of the image width and middle 80% of its height, "
+            "safe for a centered 9:16 crop. " + NO_PEOPLE
         )
     return base + " No text, words, letters or logos anywhere in the image. " + NO_PEOPLE
 
@@ -728,7 +731,7 @@ def render_and_store(
             draft = _with_render(
                 draft,
                 selected,
-                {"source": "photos", "photos": len(draft["slides"])},
+                {"source": "photos", "photos": len(draft["slides"]), "framing": "cover"},
                 {"pick": "agents", "mix": "replace"},
                 tracks,
             )

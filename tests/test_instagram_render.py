@@ -110,7 +110,34 @@ class CommandTests(unittest.TestCase):
         self.assertIn("transition=slideleft:duration=0.35:offset=6.0", graph)
         self.assertIn("transition=smoothup:duration=0.35:offset=9.0", graph)
         self.assertNotIn("concat=", graph)
+        self.assertNotIn("fade=t=in", graph)
         self.assertIn("alpha='max(0.15,min(1,(t-0)/0.25))'", graph)
+
+    def test_missing_xfade_dips_each_segment_to_black_without_shortening(self):
+        for photos in (1, 2, 6):
+            with self.subTest(photos=photos):
+                argv, seconds = render.command(self.dir, photo_reel(photos=photos), self.work, CAPS, None)
+                graph = argv[argv.index("-filter_complex") + 1]
+                count = render.photo_segments(photos)
+                self.assertEqual(seconds, count * 3)
+                self.assertEqual(graph.count("fade=t=in:st=0:d=0.2"), count)
+                self.assertEqual(graph.count("fade=t=out:st=2.8:d=0.2"), count)
+                self.assertIn(f"concat=n={count}", graph)
+                self.assertNotIn("xfade=", graph)
+
+    def test_only_explicit_ai_cover_framing_crops_photos(self):
+        for framing, cropped in ((None, False), ("cover", True)):
+            with self.subTest(framing=framing):
+                reel = photo_reel()
+                if framing:
+                    reel["framing"] = framing
+                argv, _ = render.command(self.dir, reel, self.work, CAPS, None)
+                graph = argv[argv.index("-filter_complex") + 1]
+                self.assertEqual("boxblur=" not in graph, cropped)
+                self.assertEqual("overlay=(W-w)/2" not in graph, cropped)
+                self.assertIn("crop=1080:1920", graph)
+                self.assertIn("x=(w-text_w)/2", graph)
+                self.assertIn("y=460", graph)
 
     def test_photo_reel_is_ken_burns_9_16_h264_aac_with_moov_first(self):
         argv, seconds = render.command(self.dir, photo_reel(), self.work, CAPS, None)
@@ -398,6 +425,7 @@ class ReelDraftRenderTests(Case):
                 upload = self.conn.execute("SELECT * FROM uploads WHERE upload_id=?", (upload_id,)).fetchone()
                 ai = ReelAI({**REEL, "music_track": track_id})
                 draft = drafts.generate_from_upload(self.conn, ai, NOW, upload, self.media)
+                self.assertNotIn("framing", draft["reel"])
                 self.assertNotIn("music", draft["reel"])
                 self.assertNotIn("music_tracks are", ai.calls[0])
 

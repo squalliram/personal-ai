@@ -28,6 +28,7 @@ WIDTH, HEIGHT, FPS = 1080, 1920, 30
 PHOTO_SECONDS, MIN_TOTAL, MAX_TOTAL = 3.0, 7.0, 30.0
 ZOOM = 0.14
 TRANSITION = 0.35
+FADE = 0.2
 TRANSITIONS = ("fade", "slideleft", "smoothup")
 TIMEOUT = 600
 NICE = 10
@@ -159,8 +160,10 @@ def _pngs(beats: list[dict], work: Path) -> list[Path]:
     return files
 
 
-def _frame(label_in: str, label_out: str) -> str:
-    """Fit into 9:16 over a blurred, filled copy of itself."""
+def _frame(label_in: str, label_out: str, *, cover: bool = False) -> str:
+    """Cover 9:16 for AI slides, or preserve owner content over a blurred background."""
+    if cover:
+        return f"[{label_in}]scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase,crop={WIDTH}:{HEIGHT}"
     return (
         f"[{label_in}]split[{label_out}a][{label_out}b];"
         f"[{label_out}a]scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase,crop={WIDTH}:{HEIGHT},"
@@ -221,7 +224,13 @@ def command(draft_dir: Path, reel: dict, work: Path, caps: dict, track: Path | N
             _safe(image)
             inputs += ["-i", str(image)]
             length = each + (TRANSITION if transitions and n < count - 1 else 0)
-            graph.append(_frame(f"{n}:v", f"p{n}") + _ken_burns(n, length) + f",settb=AVTB,setpts=PTS-STARTPTS[v{n}]")
+            fade = "" if transitions else f",fade=t=in:st=0:d={FADE},fade=t=out:st={each - FADE}:d={FADE}"
+            graph.append(
+                _frame(f"{n}:v", f"p{n}", cover=reel.get("framing") == "cover")
+                + _ken_burns(n, length)
+                + fade
+                + f",settb=AVTB,setpts=PTS-STARTPTS[v{n}]"
+            )
         if transitions:
             previous = "v0"
             for n in range(1, count):
