@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urljoin, urlsplit
@@ -119,11 +119,18 @@ class GraphClient:
             raise GraphAPIError("Token refresh requires an Instagram Login token")
         return self.get(f"{INSTAGRAM_HOST}refresh_access_token", {"grant_type": "ig_refresh_token"})
 
-    def paginated(self, path: str, params: dict[str, str] | None = None, *, limit: int | None = 100) -> Iterator[dict]:
-        page = self.get(path, params)
+    def paginated(
+        self,
+        path: str,
+        params: dict[str, str] | None = None,
+        *,
+        limit: int | None = 100,
+        continue_fetch: Callable[[], bool] | None = None,
+    ) -> Iterator[dict]:
         seen: set[str] = set()
         count = 0
-        while True:
+        while continue_fetch is None or continue_fetch():
+            page = self.get(path, params) if params is not None else self.get(path)
             for item in page.get("data", []):
                 yield item
                 count += 1
@@ -135,7 +142,7 @@ class GraphClient:
             if next_url in seen:
                 raise GraphAPIError("Graph API pagination repeated a page")
             seen.add(next_url)
-            page = self.get(next_url)
+            path, params = next_url, None
 
     def own_media(self, limit: int = 100) -> list[dict]:
         return list(self.paginated(f"{self.user_id}/media", {"fields": MEDIA_FIELDS}, limit=limit))
