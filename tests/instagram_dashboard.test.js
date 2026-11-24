@@ -4,6 +4,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const source = fs.readFileSync(require('node:path').join(__dirname, '../command_centre/static/app.js'), 'utf8');
+const css = fs.readFileSync(require('node:path').join(__dirname, '../command_centre/static/app.css'), 'utf8');
+assert.match(css, /button\.primary:disabled\{[^}]*background:#26343b;[^}]*cursor:not-allowed;box-shadow:none/);
 
 // Calendar identity must not depend on a browser's localized date punctuation.
 const dates = vm.createContext({Intl: {DateTimeFormat: function(locale, options) {
