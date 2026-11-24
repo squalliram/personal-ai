@@ -109,6 +109,14 @@ class PublishTests(PublishCase):
         self.assertEqual(self.tick(FakeGraph(), sunday), "published 0, failed 0")
         self.assertEqual(self.tick(FakeGraph(), sunday + timedelta(days=1)), "published 1, failed 0")
 
+    def test_series_recovers_its_final_off_day_reel_after_a_delayed_restart(self):
+        first = MADE + timedelta(days=4)
+        sunday = first + timedelta(days=27, hours=8)
+        self.add(slot=sunday.isoformat(), made=sunday - timedelta(hours=2))
+        recipe_series.start(self.conn, first)
+        self.assertEqual(self.tick(FakeGraph(), sunday), "published 0, failed 0")
+        self.assertEqual(self.tick(FakeGraph(), sunday + timedelta(days=2)), "published 1, failed 0")
+
     def test_approving_a_carryover_does_not_strand_the_other_reel_in_its_slot(self):
         carryover = self.add("a" * 16)
         recipe_series.start(self.conn, MADE)

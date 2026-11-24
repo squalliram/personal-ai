@@ -422,7 +422,7 @@ def tick(conn, env: dict, media_dir: Path, now: datetime, client: GraphClient | 
     if series and not recipe_series.posting_day(env, now):
         return "published 0, failed 0"
     day_full = series and recipe_series.already_published(conn, now)
-    if series or recipe_series.active(conn, now.astimezone(LONDON) - timedelta(days=1)):
+    if series or recipe_series.started(conn):
         _reschedule_series_reels(conn, env, now, day_full=day_full)
     if day_full:
         return "published 0, failed 0"
