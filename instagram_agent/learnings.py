@@ -19,7 +19,7 @@ from datetime import datetime, timedelta, timezone
 from . import story_insights
 from .analysis import LONDON, hashtags
 from .graph import CONVERSION_METRICS
-from .post_report import parse_time
+from .post_report import METRICS, caption_ask, parse_time
 
 WINDOW_DAYS = 90
 SMALL_SAMPLE = 10  # posts measured in total
@@ -40,8 +40,10 @@ def _engagement(row: dict) -> float | None:
         if interactions is None:
             return None
         return interactions / row["reach"]
-    weighted = (row.get("likes") or 0) + 2 * (row.get("comments") or 0)
-    return (weighted + 3 * ((row.get("saved") or 0) + (row.get("shares") or 0))) / row["reach"]
+    if any(row.get(metric) is None for metric in ("likes", "comments", "saved", "shares")):
+        return None
+    weighted = row["likes"] + 2 * row["comments"] + 3 * (row["saved"] + row["shares"])
+    return weighted / row["reach"]
 
 
 def _ratio(value, median) -> float | None:
@@ -78,7 +80,9 @@ def _reports(conn: sqlite3.Connection, now: datetime | None) -> list[dict]:
     for row in rows:
         posted = parse_time(row["posted_at"])
         if posted is not None and posted >= since:
-            reports.append({**dict(row), "posted": posted, "owner": row["draft_id"] in owner})
+            report = dict(row)
+            report["creative"] = json.loads(report.get("creative") or "null")
+            reports.append({**report, "posted": posted, "owner": row["draft_id"] in owner})
     return reports
 
 
@@ -116,6 +120,8 @@ def _band(value: int, bands: tuple) -> str:
 def _hook(post: dict) -> str | None:
     """The first words readers see: slide 1 or the reel's hook, or for owner photos (whose slide text is
     alt text) the caption's first line."""
+    if post.get("creative") is not None:
+        return post["creative"]["hook"]
     if post.get("owner") and post.get("kind") != "reel":
         return str(post.get("caption") or "").strip().split("\n")[0].strip() or None
     try:
@@ -146,15 +152,19 @@ def features(post: dict) -> list[tuple[str, str]]:
     if post.get("caption"):
         bands = ((79, "under 80 words"), (150, "80-150 words"), (10**6, "over 150 words"))
         found.append(("caption length", _band(_words(post["caption"]), bands)))
-    tags = (post.get("hashtags") or "").split()
+    creative = post.get("creative")
+    tags = (creative["hashtags"] or []) if creative else (post.get("hashtags") or "").split()
     if post.get("topic") is not None:
         found.append(("hashtag count", _band(len(tags), ((5, "0-5"), (12, "6-12"), (99, "13+")))))
     for tag in hashtags(" ".join(tags)):
         found.append(("hashtag", tag))
-    try:
-        seconds = (json.loads(post.get("reel") or "{}") or {}).get("seconds")
-    except (TypeError, ValueError):
-        seconds = None
+    if creative:
+        seconds = creative["duration_seconds"]
+    else:
+        try:
+            seconds = (json.loads(post.get("reel") or "{}") or {}).get("seconds")
+        except (TypeError, ValueError):
+            seconds = None
     if isinstance(seconds, (int, float)) and post["format"] == "reel":
         found.append(("reel length", _band(seconds, ((14.9, "under 15 s"), (30, "15-30 s"), (10**6, "over 30 s")))))
     return found
@@ -167,17 +177,10 @@ def _growth_features(post: dict) -> list[tuple[str, str]]:
     caption = post.get("caption") or ""
     mentions = dict.fromkeys(re.findall(r"(?<![\w.])@([a-z0-9_][a-z0-9_.]*)", caption.lower()))
     features_found.extend(("caption mention", f"@{name.rstrip('.')}") for name in mentions)
-    sentences = re.split(r"[.!?]+\s+|\n+", caption.strip())
-    ask = re.match(
-        r"\W*(?:please\s+)?(follow|save|share|comment|"
-        r"send(?=\s+(?:it|this(?:\s+one)?|(?:this|the)\s+(?:post|reel|video|carousel|clip|photo))"
-        r"\s+to\s+@?\w))\b",
-        sentences[-1],
-        re.IGNORECASE,
-    )
-    if ask:
-        action = ask[1].lower()
-        features_found.append(("caption ask", "share" if action == "send" else action))
+    creative = post.get("creative")
+    action = creative["cta"] if creative else caption_ask(caption)
+    if action:
+        features_found.append(("caption ask", action))
     features_found.append(("London posting hour", str(post["posted"].astimezone(LONDON).hour)))
     return features_found
 
@@ -191,6 +194,8 @@ def growth_findings(reports: list[dict]) -> dict[str, list[dict]]:
         for post in reports:
             value = post.get(metric)
             if value is None or not post.get("reach"):
+                continue
+            if metric == "profile_visits" and post.get("follows") is not None:
                 continue
             rate = value / post["reach"]
             rates[post["media_id"], post["checkpoint"]] = rate
@@ -233,14 +238,14 @@ def growth_findings(reports: list[dict]) -> dict[str, list[dict]]:
 
 def growth_hours(conn: sqlite3.Connection, now: datetime) -> list[int]:
     findings = growth_findings([report for report in _reports(conn, now) if report["format"] != "story"])
-    return list(
-        dict.fromkeys(
+    for metric in CONVERSION_METRICS:
+        if hours := [
             int(row["value"])
-            for metric in CONVERSION_METRICS
             for row in findings.get(metric, [])
             if row["feature"] == "London posting hour" and not row["small_sample"]
-        )
-    )
+        ]:
+            return hours
+    return []
 
 
 def _finding(feature: str, value: str, lifts: list[float]) -> dict:
@@ -292,6 +297,19 @@ def _story_samples(conn: sqlite3.Connection, posts: list[dict]) -> list[dict]:
     return samples
 
 
+def follower_trend(conn: sqlite3.Connection, now: datetime | None = None) -> list[dict]:
+    today = (now or datetime.now(timezone.utc)).astimezone(LONDON).date()
+    try:
+        rows = conn.execute(
+            "SELECT captured_on, captured_at, followers FROM account_followers "
+            "WHERE captured_on BETWEEN ? AND ? ORDER BY captured_on",
+            ((today - timedelta(days=WINDOW_DAYS - 1)).isoformat(), today.isoformat()),
+        )
+        return [dict(row) for row in rows]
+    except sqlite3.OperationalError:
+        return []
+
+
 def summary(conn: sqlite3.Connection, now: datetime | None = None) -> dict:
     """Findings, best and weakest posts and the latest reports. Works on a read-only connection."""
     checkpoints = _reports(conn, now)
@@ -330,11 +348,13 @@ def summary(conn: sqlite3.Connection, now: datetime | None = None) -> dict:
         reports = [
             dict(row)
             for row in conn.execute(
-                "SELECT r.media_id, r.checkpoint, r.captured_at, r.posted_at, r.permalink, r.summary, r.format, "
-                "d.topic FROM post_reports r LEFT JOIN drafts d ON d.draft_id=r.draft_id "
+                "SELECT r.*, d.topic FROM post_reports r LEFT JOIN drafts d ON d.draft_id=r.draft_id "
                 f"WHERE r.captured_at IS NOT NULL ORDER BY {report_time} DESC, r.checkpoint DESC LIMIT 10"
             )
         ]
+        for report in reports:
+            report["creative"] = json.loads(report.get("creative") or "null")
+            report["metrics"] = {metric: report.pop(metric, None) for metric in METRICS}
     except sqlite3.Error:
         reports = []
     return {
@@ -348,6 +368,7 @@ def summary(conn: sqlite3.Connection, now: datetime | None = None) -> dict:
         "weakest_posts": [_post(p) for p in ranked[::-1][:3]] if len(ranked) >= 2 * MIN_GROUP else [],
         "growth_findings": growth_findings(checkpoints),
         "story_samples": _story_samples(conn, posts),
+        "follower_trend": follower_trend(conn, now),
         "reports": reports,
     }
 

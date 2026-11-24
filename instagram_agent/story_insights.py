@@ -76,9 +76,6 @@ def _save(conn, media_id, draft_id, posted, permalink, stamp, values, breakdown)
         previous = conn.execute("SELECT * FROM story_insights WHERE media_id=?", (media_id,)).fetchone()
         if previous and previous["captured_at"] and (stamp is None or stamp < previous["captured_at"]):
             return
-        if previous:
-            values = {**json.loads(previous["metrics"]), **values}
-            breakdown = breakdown or json.loads(previous["navigation_breakdown"])
         conn.execute(
             "INSERT INTO story_insights(media_id,draft_id,posted_at,permalink,captured_at,metrics,navigation_breakdown) "
             "VALUES(?,?,?,?,?,?,?) ON CONFLICT(media_id) DO UPDATE SET "

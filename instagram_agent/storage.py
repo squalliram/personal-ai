@@ -38,6 +38,7 @@ LATER_COLUMNS = {
         "replies": "INTEGER",
         "navigation": "INTEGER",
         "reported_at": "TEXT",
+        "creative": "TEXT",
     },
     "drafts": {
         "kind": "TEXT NOT NULL DEFAULT 'carousel' CHECK (kind IN ('carousel', 'reel'))",

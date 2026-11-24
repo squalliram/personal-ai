@@ -8,6 +8,7 @@ retried on later ticks and reported once if it keeps failing. Nothing here write
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import statistics
 from datetime import datetime, timedelta, timezone
@@ -15,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 from notifications import command_centre_link, notify, safe_link
 
 from . import storage
-from .analysis import LONDON
+from .analysis import LONDON, hashtags
 from .graph import CONVERSION_METRICS, MEDIA_FIELDS, GraphAPIError, GraphClient
 
 # Checkpoint name, age at which it is due, and how long after that it may still be taken.
@@ -66,6 +67,45 @@ def media_format(product_type: str | None, media_type: str | None) -> str:
     if product_type == "REELS":
         return "reel"
     return {"CAROUSEL_ALBUM": "carousel", "IMAGE": "photo", "VIDEO": "video"}.get(media_type or "", "post")
+
+
+def caption_ask(caption: str) -> str | None:
+    last = re.split(r"[.!?]+\s+|\n+", caption.strip())[-1]
+    ask = re.match(
+        r"\W*(?:please\s+)?(follow|save|share|comment|"
+        r"send(?=\s+(?:it|this(?:\s+one)?|(?:this|the)\s+(?:post|reel|video|carousel|clip|photo))"
+        r"\s+to\s+@?\w))\b",
+        last,
+        re.IGNORECASE,
+    )
+    if ask:
+        action = ask[1].lower()
+        return "share" if action == "send" else action
+    return None
+
+
+def creative_snapshot(conn, post, fmt: str, posted: datetime | None) -> dict:
+    previous = conn.execute(
+        "SELECT creative FROM post_reports WHERE media_id=? AND creative IS NOT NULL ORDER BY captured_at LIMIT 1",
+        (post["media_id"],),
+    ).fetchone()
+    if previous:
+        return json.loads(previous["creative"])
+    draft = conn.execute(
+        "SELECT caption,hashtags,slides,reel FROM drafts WHERE draft_id=?", (post["draft_id"],)
+    ).fetchone()
+    reel = json.loads(draft["reel"] or "{}") if draft else {}
+    slides = json.loads(draft["slides"] or "[]") if draft else []
+    caption = draft["caption"] if draft and fmt != "story" else ""
+    return {
+        "publish_slot": posted.astimezone(LONDON).isoformat(timespec="seconds") if posted else None,
+        "hook": reel.get("hook")
+        or (slides[0].get("text") if slides and fmt in ("carousel", "reel") else None)
+        or (caption.splitlines()[0].strip() if caption else None),
+        "duration_seconds": reel.get("seconds") if fmt in ("reel", "story") else None,
+        "cta": caption_ask(caption),
+        "hashtags": (hashtags(draft["hashtags"] or "") if fmt != "story" else []) if draft else None,
+    }
 
 
 def published(conn: sqlite3.Connection) -> list:
@@ -186,9 +226,11 @@ def summarise(topic: str, fmt: str, checkpoint: str, posted_at: datetime | None,
             if isinstance(values.get(metric), int):
                 ratio = f" ({ratios[metric]:.1f}x)" if metric in ratios else ""
                 parts.append(f"{labels[metric]} {_number(metric, values[metric])}{ratio}")
+            elif metric in CONVERSION_METRICS:
+                parts.append(f"{labels[metric]} unavailable")
         return (", ".join(parts) + ".") if parts else "Instagram returned no numbers yet."
 
-    for metrics in ([m for m, _ in SHOWN], ["reach", "saved", "shares", *CONVERSION_METRICS], ["reach", "saved"]):
+    for metrics in ([m for m, _ in SHOWN], ["reach", "saved", "shares", *CONVERSION_METRICS], list(CONVERSION_METRICS)):
         for limit in (60, 30):
             short = topic if len(topic) <= limit else topic[: limit - 1].rstrip() + "…"
             text = f"{head.format(topic=short)} {stats(metrics)} {verdict}"
@@ -219,7 +261,11 @@ def _story_summary(post, checkpoint: str, posted: datetime, stamp: datetime, val
         ("follows", "follows"), ("profile_visits", "profile visits"), ("shares", "shares"),
         ("total_interactions", "interactions"),
     )  # fmt: skip
-    stats = ", ".join(f"{label} {_number(metric, values[metric])}" for metric, label in labels if metric in values)
+    stats = ", ".join(
+        f"{label} {_number(metric, values[metric])}" if metric in values else f"{label} unavailable"
+        for metric, label in labels
+        if metric in values or metric in CONVERSION_METRICS
+    )
     text = f"{head} {stats}."
     actions = json.loads(post["story_navigation"])
     labels = {"tap_forward": "forward", "tap_back": "back", "tap_exit": "exits", "swipe_forward": "next story"}
@@ -292,6 +338,7 @@ def report_one(conn, client: GraphClient | None, post, checkpoint: str, env: dic
         link = safe_link(media.get("permalink"))
         stamp = now.isoformat(timespec="seconds")
     base = baseline(conn, fmt, checkpoint, post["media_id"], now)
+    creative = creative_snapshot(conn, post, fmt, posted)
     if fmt == "story":
         text = _story_summary(post, checkpoint, posted, captured, values, base)
     else:
@@ -303,10 +350,10 @@ def report_one(conn, client: GraphClient | None, post, checkpoint: str, env: dic
             storage.link_published_drafts(conn)
         conn.execute(
             f"INSERT INTO post_reports(media_id,checkpoint,draft_id,format,posted_at,permalink,captured_at,reported_at,"
-            f"summary,{','.join(METRICS)}) VALUES(?,?,?,?,?,?,?,?,?,{','.join('?' * len(METRICS))}) "
+            f"summary,creative,{','.join(METRICS)}) VALUES(?,?,?,?,?,?,?,?,?,?,{','.join('?' * len(METRICS))}) "
             f"ON CONFLICT(media_id,checkpoint) DO UPDATE SET format=excluded.format, posted_at=excluded.posted_at, "
             f"permalink=excluded.permalink, captured_at=excluded.captured_at, reported_at=excluded.reported_at, "
-            f"summary=excluded.summary, " + ", ".join(f"{m}=excluded.{m}" for m in METRICS),
+            f"summary=excluded.summary, creative=excluded.creative, " + ", ".join(f"{m}=excluded.{m}" for m in METRICS),
             (
                 post["media_id"],
                 checkpoint,
@@ -317,6 +364,7 @@ def report_one(conn, client: GraphClient | None, post, checkpoint: str, env: dic
                 stamp,
                 now.astimezone(timezone.utc).isoformat(timespec="seconds"),
                 text,
+                json.dumps(creative),
                 *(values.get(m) for m in METRICS),
             ),
         )

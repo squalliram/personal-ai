@@ -190,7 +190,7 @@ class StoryInsightsTests(Case):
         )
         self.assertEqual(
             [tuple(r) for r in rows],
-            [(f"{h}h", "story", final.isoformat(), 45, 50, 1, 12, 2, 1, None) for h in (24, 72)],
+            [(f"{h}h", "story", final.isoformat(), 45, 50, 1, 12, 2, None, None) for h in (24, 72)],
         )
         title = self.inbox()[0][1]
         for part in (
@@ -200,7 +200,7 @@ class StoryInsightsTests(Case):
             "replies 1",
             "navigation 12",
             "follows 2",
-            "profile visits 1",
+            "profile visits unavailable",
             "forward 12",
             "back 0",
         ):
@@ -272,6 +272,50 @@ class PostReportTests(Case):
         stored = self.conn.execute("SELECT follows, profile_visits FROM post_reports").fetchone()
         self.assertEqual(tuple(stored), (0, None))
         self.assertIn("follows 0", self.inbox()[0][1])
+        self.assertIn("profile visits unavailable", self.inbox()[0][1])
+
+    def test_checkpoint_saves_creative_and_actual_slot(self):
+        draft_id = self.publish(kind="reel", tags=("#Coffee", "#latte"))
+        self.conn.execute("UPDATE drafts SET caption='Follow for more.' WHERE draft_id=?", (draft_id,))
+        at = PUBLISHED + timedelta(hours=25)
+        graph = InsightsGraph({"reach": 100, "follows": 0}, product="REELS", at=PUBLISHED + timedelta(minutes=12))
+        post_report.tick(self.conn, self.env, at, client=graph)
+        self.conn.execute("UPDATE drafts SET caption='Save this.', hashtags='' WHERE draft_id=?", (draft_id,))
+        report = learnings.summary(self.conn, at)["reports"][0]
+        self.assertEqual(
+            report["creative"],
+            {
+                "publish_slot": "2026-11-12T18:12:04+00:00",
+                "hook": "Flat white 101",
+                "cta": "follow",
+                "hashtags": ["#coffee", "#latte"],
+                "duration_seconds": 12.0,
+            },
+        )
+        self.assertEqual(report["metrics"]["follows"], 0)
+        self.assertIsNone(report["metrics"]["profile_visits"])
+        self.assertIn(("caption ask", "follow"), learnings._growth_features(learnings.measured(self.conn, at)[0]))
+        post_report.tick(self.conn, self.env, PUBLISHED + timedelta(hours=73), client=graph)
+        latest = learnings.summary(self.conn, PUBLISHED + timedelta(hours=73))["reports"][0]
+        self.assertEqual(latest["creative"], report["creative"])
+
+    def test_follower_snapshot_retries_missing_and_uses_london_calendar_days(self):
+        graph = mock.Mock(user_id="123")
+        graph.get.side_effect = [GraphAPIError("unavailable"), {}, {"followers_count": 0}, {"followers_count": 3}]
+        env = {"INSTAGRAM_ACCESS_TOKEN": "test", "INSTAGRAM_USER_ID": "123"}
+        at = datetime(2026, 7, 2, 22, 55, tzinfo=timezone.utc)
+        with mock.patch.object(cli, "graph_client", return_value=graph):
+            self.assertIn("failed", cli._capture_followers(self.conn, env, at))
+            self.assertIn("unavailable", cli._capture_followers(self.conn, env, at))
+            self.assertIn("captured", cli._capture_followers(self.conn, env, at))
+            self.assertIn("current", cli._capture_followers(self.conn, env, at))
+            self.assertIn("captured", cli._capture_followers(self.conn, env, at + timedelta(minutes=10)))
+        self.assertEqual(graph.get.call_count, 4)
+        trend = learnings.summary(self.conn, at + timedelta(hours=1))["follower_trend"]
+        self.assertEqual(
+            [(row["captured_on"], row["followers"]) for row in trend], [("2026-07-02", 0), ("2026-07-03", 3)]
+        )
+        self.assertNotIn("follower_trend", learnings.for_prompt(learnings.summary(self.conn, at)))
 
     def test_alert_retry_reuses_the_original_reach_and_conversion_snapshot(self):
         self.publish()
@@ -521,6 +565,27 @@ class LearningsTests(Case):
         self.assertEqual(payload["drafts"][0]["growth_findings"]["follows"][0]["value"], "#latte")
         self.assertEqual(draft["hashtags"], ["#latte"])
         self.assertEqual(drafts.publish_slots(self.conn, PUBLISHED.replace(hour=9), 1), ["2026-11-12T15:00+00:00"])
+
+    def test_profile_visit_rankings_use_only_results_without_attributed_follows(self):
+        posts = []
+        for n in range(9):
+            posts.append(
+                {
+                    "media_id": str(n),
+                    "format": "reel",
+                    "checkpoint": "24h",
+                    "posted": PUBLISHED,
+                    "hashtags": ("#recipe" if n < 3 else "#other" if n < 6 else "#knownzero"),
+                    "reach": 100,
+                    "follows": None if n < 6 else 0,
+                    "profile_visits": 3 if n < 3 else 0 if n < 6 else 10,
+                }
+            )
+        rows = learnings.growth_findings(posts)["profile_visits"]
+        self.assertEqual(
+            [(r["value"], r["posts"], r["vs_peer_rate"]) for r in rows if r["feature"] == "hashtag"],
+            [("#recipe", 3, 2.0)],
+        )
 
     def test_hashtag_conversion_evidence_stays_with_the_drafts_format(self):
         posts = []
