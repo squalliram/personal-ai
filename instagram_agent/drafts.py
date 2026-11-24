@@ -32,11 +32,12 @@ PHOTOS_SHOWN = 4  # thumbnails the Create agent sees per upload
 RULE_SKILLS = ("ig-carousel", "ig-caption", "ig-human")
 NO_PEOPLE = "Only food, drinks, venues, interiors or table settings. Absolutely no people or body parts of any kind: no faces, hands, arms, bodies, silhouettes or reflections of people."
 PEOPLE = re.compile(
-    r"\b(?:person|people|humans?|women|woman|men|man|hands?|arms?|bodies|body|silhouettes?|reflections?|chefs?|baristas?|customers?|friends?|faces?|girls?|boys?)\b",
+    r"\b(?:persons?|people|humans?|women|woman|men|man|hands?|arms?|bodies|body|silhouettes?|reflections?|chefs?|baristas?|customers?|friends?|faces?|girls?|boys?)\b",
     re.I,
 )
 NEGATED_PEOPLE = re.compile(
-    rf"\b(?:(?:no|without|(?:free|empty|devoid)\s+of)\s+(?:any\s+)?{PEOPLE.pattern}|{PEOPLE.pattern}[- ]free|unpeopled)\b",
+    r"\b(?:(?:no|without)\s+(?:any\s+)?(?:people|persons|humans|person|human)"
+    r"(?:\s+in\s+(?:the\s+)?frame|\s+visible)?|(?:people|person)-free)\b",
     re.I,
 )
 
@@ -641,12 +642,18 @@ def publish_slots(conn, now: datetime, count: int) -> list[str]:
     return [s.isoformat(timespec="minutes") for s in slots[:count]]
 
 
+def _mentions_people(prompt: str) -> bool:
+    if re.search(r"\b(?:except|but|apart\s+from)\b", prompt, re.I):
+        return bool(PEOPLE.search(prompt))
+    return bool(PEOPLE.search(NEGATED_PEOPLE.sub("", prompt)))
+
+
 def slide_prompt(slide: dict, *, draws_text: bool) -> str:
     image_prompt = slide["image_prompt"]
-    if PEOPLE.search(NEGATED_PEOPLE.sub("", image_prompt)):
+    if _mentions_people(image_prompt):
         logging.getLogger(__name__).warning("AI image prompt mentions people; substituting a food photograph")
         image_prompt = "An appetising, well-lit, photorealistic close-up food or drink photograph"
-        if not PEOPLE.search(NEGATED_PEOPLE.sub("", slide["text"])):
+        if not _mentions_people(slide["text"]):
             image_prompt += f" illustrating: {slide['text']}"
     base = f"{image_prompt}\n\nA 4:5 portrait Instagram carousel photo for a food, coffee and restaurant account."
     if draws_text:

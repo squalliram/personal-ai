@@ -358,21 +358,26 @@ class SlidePromptTests(unittest.TestCase):
         for scene in (
             "café interior with no people in frame",
             "café interior without people",
-            "café interior free of any people",
-            "café interior empty of people",
-            "café interior devoid of people",
+            "café interior without any humans visible",
             "people-free café interior",
-            "unpeopled café interior",
+            "person-free café interior",
         ):
             with self.subTest(scene=scene):
                 prompt = drafts.slide_prompt({"text": "Coffee", "image_prompt": scene}, draws_text=False)
                 self.assertTrue(prompt.startswith(scene + "\n"))
-        with self.assertLogs("instagram_agent.drafts", level="WARNING"):
-            prompt = drafts.slide_prompt(
-                {"text": "Coffee", "image_prompt": "a barista pouring latte"}, draws_text=False
-            )
-        self.assertNotIn("a barista pouring latte", prompt)
-        self.assertIn("photorealistic close-up", prompt)
+        for scene in (
+            "a barista pouring latte",
+            "a barista free-pouring milk",
+            "no hands except the one pouring espresso",
+            "no people except a chef",
+            "no people but a chef",
+            "no people apart from a chef",
+            "café interior free of any people",
+        ):
+            with self.subTest(scene=scene), self.assertLogs("instagram_agent.drafts", level="WARNING"):
+                prompt = drafts.slide_prompt({"text": "Coffee", "image_prompt": scene}, draws_text=False)
+                self.assertNotIn(scene, prompt)
+                self.assertIn("photorealistic close-up", prompt)
 
     def test_no_people_and_insight_instructions(self):
         self.assertIn("Each has 4-6 slides", drafts.CREATE)
