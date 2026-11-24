@@ -29,6 +29,7 @@ def connect(path: Path = DEFAULT_DATABASE, *, read_only: bool = False) -> sqlite
 
 # Columns added after the first release, for databases made before them.
 LATER_COLUMNS = {
+    "content_weekly_reports": {"notified_at": "TEXT"},
     "token_state": {"token_fingerprint": "TEXT"},
     "posts": {"media_product_type": "TEXT"},
     "post_metrics": {"avg_watch_ms": "INTEGER", "total_watch_ms": "INTEGER"},

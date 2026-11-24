@@ -134,25 +134,27 @@ def _make(conn, week):
 
 def tick(conn, env, now: datetime) -> None:
     local = now.astimezone(LONDON)
-    if local.weekday() != 6 or local.hour < 18:
-        return
-    week = monday(now)
-    with conn:
-        saved = conn.execute("SELECT summary FROM content_weekly_reports WHERE week=?", (week.isoformat(),)).fetchone()
-        if saved:
-            parts = json.loads(saved[0])
-        else:
-            parts, worst = _make(conn, week)
-            conn.execute(
-                "INSERT INTO content_weekly_reports VALUES(?,?,?)", (week.isoformat(), json.dumps(parts), worst)
-            )
-    for index, title in enumerate(parts, 1):
-        notify(
-            "instagram",
-            "info",
-            title,
-            command_centre_link(env, "instagram"),
-            key=f"instagram-sunday:{week}:{index}",
-            env=env,
-            now=now,
-        )
+    if local.weekday() == 6 and local.hour >= 18:
+        week = monday(now)
+        with conn:
+            if not conn.execute("SELECT 1 FROM content_weekly_reports WHERE week=?", (week.isoformat(),)).fetchone():
+                parts, worst = _make(conn, week)
+                conn.execute(
+                    "INSERT INTO content_weekly_reports(week,summary,worst) VALUES(?,?,?)",
+                    (week.isoformat(), json.dumps(parts), worst),
+                )
+    page = command_centre_link(env, "instagram")
+    pending = conn.execute(
+        "SELECT week,summary FROM content_weekly_reports WHERE notified_at IS NULL ORDER BY week"
+    ).fetchall()
+    for week, summary in pending:
+        stored = [
+            notify("instagram", "info", title, page, key=f"instagram-sunday:{week}:{index}", env=env, now=now)
+            for index, title in enumerate(json.loads(summary), 1)
+        ]
+        if all(notification_id is not None for notification_id in stored):
+            with conn:
+                conn.execute(
+                    "UPDATE content_weekly_reports SET notified_at=? WHERE week=?",
+                    (now.isoformat(timespec="seconds"), week),
+                )

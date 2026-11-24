@@ -147,10 +147,8 @@ class ContentPlanTests(unittest.TestCase):
                 weekly_performance.tick(self.conn, {}, sunday)
                 weekly_performance.tick(self.conn, {}, sunday + timedelta(minutes=15))
             results, findings, advice = [c.args[2] for c in notify.call_args_list[-3:]]
-            self.assertEqual(
-                [c.kwargs["key"] for c in notify.call_args_list[-3:]],
-                [c.kwargs["key"] for c in notify.call_args_list[-6:-3]],
-            )
+            keys = [c.kwargs["key"] for c in notify.call_args_list]
+            self.assertEqual((len(keys), len(set(keys))), (9, 9))
         self.assertIn("Bottom: Bowl B (0 views, n/a watch, n/a shares, 0 saves", results)
         self.assertNotIn("Bowl C", results)
         self.assertIn("choice/poll", findings)
@@ -195,6 +193,18 @@ class ContentPlanTests(unittest.TestCase):
         self.assertIn("Bottom: 2 Reels tied at 10 views.", parts[0])
         self.assertNotIn("lowest-viewed concept", parts[2])
         self.assertIsNone(worst)
+
+    def test_unstored_sunday_report_notification_retries_on_monday(self):
+        sunday = MONDAY + timedelta(days=6, hours=11, minutes=45)
+        with patch.object(weekly_performance, "notify", side_effect=[1, None, 3, 1, 2, 3]) as notify:
+            weekly_performance.tick(self.conn, {}, sunday)
+            weekly_performance.tick(self.conn, {}, sunday + timedelta(minutes=15))
+            calls = [call.kwargs["key"] for call in notify.call_args_list]
+            self.assertEqual(len(calls), 6)
+            self.assertEqual(calls[:3], calls[3:])
+            weekly_performance.tick(self.conn, {}, sunday + timedelta(days=1))
+            self.assertEqual(notify.call_count, 6)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM content_weekly_reports").fetchone()[0], 1)
 
     def test_hook_labels(self):
         self.assertEqual(post_report.hook_style("Stop skipping this step"), "mistake-fix")

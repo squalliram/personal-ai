@@ -67,7 +67,8 @@ CREATE TABLE IF NOT EXISTS content_plan (
 CREATE TABLE IF NOT EXISTS content_weekly_reports (
     week TEXT PRIMARY KEY,
     summary TEXT NOT NULL,
-    worst TEXT
+    worst TEXT,
+    notified_at TEXT
 );
 CREATE TABLE IF NOT EXISTS content_pillar_replacements (
     old_pillar TEXT PRIMARY KEY,
