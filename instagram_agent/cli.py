@@ -22,6 +22,7 @@ from . import (
     content_plan,
     drafts,
     following,
+    image_review,
     learnings,
     post_report,
     preflight,
@@ -44,6 +45,7 @@ DEFAULT_MEDIA = Path("data/instagram/drafts")
 DAILY_FROM_HOUR = 9
 DAILY_ATTEMPTS = 3
 DAILY_DRAFTS = 1
+DAILY_REVIEW_REJECTIONS = 2
 
 INSIGHT_WINDOW = timedelta(days=30)
 
@@ -181,6 +183,38 @@ def _posting(env: dict, rows) -> str:
     return "it won't post unless you approve it" if len(rows) == 1 else "none will post unless you approve one"
 
 
+def _notify_visual_review(conn, env: dict, now: datetime) -> None:
+    for row in conn.execute("SELECT * FROM drafts WHERE kind='reel' AND status IN ('pending','rejected')").fetchall():
+        try:
+            review = json.loads(row["reel"] or "{}").get("image_review", {})
+        except (ValueError, AttributeError):
+            continue
+        if not isinstance(review, dict):
+            continue
+        if review.get("status") in ("failed", "unavailable"):
+            title = f"Reel for {_short(row['topic'])} rejected: image review " + review["status"]
+            notify(
+                "instagram",
+                "failed",
+                title,
+                command_centre_link(env, "instagram"),
+                key=f"instagram-image-review:{row['draft_id']}",
+                env=env,
+                now=now,
+            )
+        elif row["status"] == "pending" and review.get("status") == "passed" and publish.rendered(row):
+            title = f"Reel for {_short(row['topic'])} ready for your approval; nothing posts unless you approve it"
+            notify(
+                "instagram",
+                "ok",
+                title,
+                command_centre_link(env, "instagram"),
+                key=f"instagram-approval-ready:{row['draft_id']}",
+                env=env,
+                now=now,
+            )
+
+
 def _insights(client: GraphClient, media: dict) -> dict[str, int]:
     """A post's metrics; reels add watch time, falling back to the common set if Meta refuses those."""
     if media.get("media_product_type") == "REELS":
@@ -208,6 +242,7 @@ def _notify_render(env: dict, now: datetime):
 
 
 def _notify_daily(conn, env: dict, outcome: str, now: datetime) -> None:
+    _notify_visual_review(conn, env, now)
     today = now.astimezone(LONDON).date().isoformat()
     page = command_centre_link(env, "instagram")
     if outcome in ("ok", "partial"):
@@ -235,13 +270,13 @@ def _notify_daily(conn, env: dict, outcome: str, now: datetime) -> None:
             notify("instagram", "ok", title, page, key=f"instagram-clip-draft:{row['clip_id']}", env=env, now=now)
     if outcome == "ok":
         rows = conn.execute(
-            "SELECT kind, reel, status, review_score, scheduled_for, created_at FROM drafts WHERE created_on=? AND draft_id NOT "
+            "SELECT 1 FROM drafts WHERE created_on=? AND status='pending' AND draft_id NOT "
             "IN (SELECT draft_id FROM uploads WHERE draft_id IS NOT NULL UNION "
             "SELECT draft_id FROM clips WHERE draft_id IS NOT NULL)",
             (today,),
         ).fetchall()
         if rows:
-            title = f"{len(rows)} Instagram draft{'' if len(rows) == 1 else 's'} ready to review, {_posting(env, rows)}"
+            title = f"{len(rows)} Instagram draft{'' if len(rows) == 1 else 's'} created; awaiting image review and your approval"
             notify("instagram", "ok", title, page, key=f"instagram-drafts-ready:{today}", env=env, now=now)
         return
     if outcome == "gave_up":
@@ -297,7 +332,10 @@ def make_drafts(conn, env: dict, media_dir: Path, now: datetime | None = None) -
         ):
             return "skipped"
         slot_args = {"slot": slot}
-    if storage.runs_on(conn, today) >= DAILY_ATTEMPTS:
+    if (
+        storage.runs_on(conn, today) >= DAILY_ATTEMPTS
+        or storage.review_rejections_on(conn, today) >= DAILY_REVIEW_REJECTIONS
+    ):
         return "gave_up"
     ai = model_client(env)
     if ai is None:
@@ -390,7 +428,9 @@ def make_drafts(conn, env: dict, media_dir: Path, now: datetime | None = None) -
             if series:
                 rules = f"Draft only a quick home recipe. Do not invent the owner's experience.\n{recipe_series.GUIDANCE}\n{rules}"
             found = drafts.generate(conn, ai, now, count=wanted - stored, rules=rules, voice=voice)
-            stored += drafts.render_and_store(conn, ai, found, media_dir, now, dropped, **slot_args)
+            stored += drafts.render_and_store(
+                conn, ai, found, media_dir, now, dropped, reviewer=image_review.client(env), **slot_args
+            )
     except (AIError, OSError) as exc:
         error = str(exc) if isinstance(exc, AIError) else type(exc).__name__
         with conn:
@@ -498,8 +538,9 @@ def main(argv: list[str] | None = None) -> int:
                 now = _now()
                 content_plan.ensure_week(conn, now)
                 outcome = daily(conn, env, args.media)
-                render.render_due(conn, args.media, _notify_render(env, _now()))
-                content_plan.notify_progress(conn, env, _now(), publish.configured(env))
+                render.render_due(conn, args.media, _notify_render(env, _now()), reviewer=image_review.client(env))
+                _notify_visual_review(conn, env, _now())
+                content_plan.notify_scripts(conn, env, _now())
                 published = publish.tick(conn, env, args.media, _now())
                 reports = _post_reports(conn, env)
                 followers = _capture_followers(conn, env, _now())

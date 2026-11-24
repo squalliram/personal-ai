@@ -9,7 +9,7 @@ import unittest
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from command_centre_fixtures import Client, Clock, make_app, make_settings
 from test_instagram_publish import DUE, ENV, MADE, SLOT, FakeGraph
@@ -59,6 +59,11 @@ def mp4(*, seconds=10, fps=30, moov_first=True, brand=b"isom", audio=True, mdat=
 
 class Case(unittest.TestCase):
     def setUp(self):
+        vision = patch.object(
+            cli.image_review, "client", return_value=Mock(chat_json=Mock(return_value={"pass": True, "reasons": []}))
+        )
+        vision.start()
+        self.addCleanup(vision.stop)
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.root = Path(tmp.name)
@@ -493,6 +498,7 @@ class ReelPublishTests(Case):
         draft = drafts.normalise_reel_draft({**REEL, "cover_seconds": 2.5}, 10.0)
         draft.update(draft_id="b" * 16, hashtags=["#coffee"], review_score=95, scheduled_for=SLOT)
         draft["reel"]["file"] = "reel.mp4"
+        draft["reel"]["image_review"] = {"status": "passed"}
         (self.media / draft["draft_id"]).mkdir(parents=True)
         (self.media / draft["draft_id"] / "reel.mp4").write_bytes(mp4())
         with self.conn:
@@ -503,7 +509,7 @@ class ReelPublishTests(Case):
         return publish.tick(self.conn, self.env, self.media, DUE, graph, check=check, sleep=lambda s: None)
 
     def test_a_reel_held_for_approval_waits_for_approve(self):
-        self.assertEqual(storage.hold_reel(self.conn, "b" * 16, True), "ok")
+        self.assertEqual(storage.hold_reel(self.conn, "b" * 16, True), "unchanged")
         graph = ReelGraph()
         self.assertEqual(self.tick(graph), "published 0, failed 0")
         self.assertEqual(graph.posts, [])
@@ -511,7 +517,7 @@ class ReelPublishTests(Case):
 
         # A delayed release sent from a page that saw it unheld, after a later hold-then-release-then-hold:
         def version():
-            return json.loads(self.conn.execute("SELECT reel FROM drafts").fetchone()[0])["hold_version"]
+            return json.loads(self.conn.execute("SELECT reel FROM drafts").fetchone()[0]).get("hold_version", 0)
 
         # A release whose reply is lost is resent and lands; the owner then holds it again.
         seen = version()
@@ -528,32 +534,34 @@ class ReelPublishTests(Case):
         self.assertEqual(storage.hold_reel(self.conn, "b" * 16, False), "not_pending")
         self.assertEqual(self.tick(ReelGraph(statuses=("FINISHED",))), "published 1, failed 0")
 
-    def test_a_hold_during_the_last_attempt_skips_instead_of_failing(self):
-        def hold_then_publish(*args, on_publish, **kwargs):
-            storage.hold_reel(self.conn, "b" * 16, True)
-            on_publish()
-
-        with patch.object(publish, "MAX_ATTEMPTS", 1), patch.object(publish, "publish_reel", hold_then_publish):
+    def test_an_unapproved_draft_never_starts_preparing_even_on_its_last_attempt(self):
+        with patch.object(publish, "MAX_ATTEMPTS", 1), patch.object(publish, "publish_reel") as prepare:
             self.assertEqual(self.tick(ReelGraph()), "published 0, failed 0")
+        prepare.assert_not_called()
         row = self.conn.execute("SELECT status FROM drafts").fetchone()
         self.assertEqual(row[0], "pending")
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM publish_runs").fetchone()[0], 0)
 
-    def test_a_hold_then_a_failure_before_publishing_keeps_the_hold(self):
-        def hold_then_fail(*args, on_publish, **kwargs):
-            storage.hold_reel(self.conn, "b" * 16, True)
-            raise publish.PublishError("container status ERROR")
-
-        with patch.object(publish, "MAX_ATTEMPTS", 1), patch.object(publish, "publish_reel", hold_then_fail):
+    def test_an_unapproved_draft_never_enters_the_failure_path(self):
+        with (
+            patch.object(publish, "MAX_ATTEMPTS", 1),
+            patch.object(
+                publish, "publish_reel", side_effect=publish.PublishError("container status ERROR")
+            ) as prepare,
+        ):
             self.assertEqual(self.tick(ReelGraph()), "published 0, failed 0")
+        prepare.assert_not_called()
         [row] = self.conn.execute("SELECT * FROM drafts").fetchall()
         self.assertEqual(row["status"], "pending")
         self.assertTrue(publish.held(row))
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM publish_runs").fetchone()[0], 0)
 
     def test_a_reject_then_a_failure_before_publishing_is_not_a_failed_post(self):
+        storage.decide_draft(self.conn, "b" * 16, "approved", MADE.isoformat())
+
         def reject_then_fail(*args, on_publish, **kwargs):
-            storage.decide_draft(self.conn, "b" * 16, "rejected", "2026-11-12T18:04:00+00:00")
+            with self.conn:
+                self.conn.execute("UPDATE drafts SET status='rejected'")
             raise publish.PublishError("container status ERROR")
 
         with patch.object(publish, "publish_reel", reject_then_fail):
@@ -562,20 +570,25 @@ class ReelPublishTests(Case):
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM publish_runs").fetchone()[0], 0)
 
     def test_a_hold_set_while_rendering_survives_the_render(self):
+        self.assertEqual(storage.hold_reel(self.conn, "b" * 16, False), "ok")
         with self.conn:
             self.conn.execute("UPDATE drafts SET reel=json_set(reel, '$.render', 'pending')")
 
         def held_meanwhile(conn, media_dir, draft_id, reel):
-            storage.hold_reel(self.conn, draft_id, True)
+            self.assertEqual(storage.hold_reel(self.conn, draft_id, True), "ok")
             return {**reel, "render": "done"}
 
-        with patch.object(render, "render", held_meanwhile):
+        with (
+            patch.object(render, "render", held_meanwhile),
+            patch.object(render.image_review, "frames", return_value={"status": "passed", "frames": [], "reasons": []}),
+        ):
             render.render_due(self.conn, self.media, now=MADE)
         [row] = self.conn.execute("SELECT * FROM drafts").fetchall()
         self.assertTrue(publish.held(row))
         self.assertTrue(publish.rendered(row))
 
-    def test_a_passing_reel_auto_posts_once_and_notifies(self):
+    def test_a_passing_approved_reel_posts_once_and_notifies(self):
+        storage.decide_draft(self.conn, "b" * 16, "approved", MADE.isoformat())
         graph = ReelGraph(statuses=("FINISHED",))
         with patch.object(publish, "notify") as told:
             self.assertEqual(self.tick(graph), "published 1, failed 0")
@@ -726,7 +739,7 @@ class ReelCommandCentreTests(Case):
             [{"text": "First", "format": "jpg"}, {"text": "Second", "format": "png"}, {"text": "", "format": "jpg"}],
         )
 
-    def test_reel_draft_shows_its_script_and_auto_posts_unless_held(self):
+    def test_reel_draft_shows_its_script_and_always_waits_for_approval(self):
         draft = drafts.normalise_reel_draft(REEL, 10.0)
         draft.update(draft_id="c" * 16, review_score=95, scheduled_for=SLOT, hashtags=[])
         with self.conn:
@@ -734,18 +747,21 @@ class ReelCommandCentreTests(Case):
         settings = make_settings(self.root, instagram_db=self.db, instagram_media=self.media)
         [shown] = sources.instagram_drafts(settings)["drafts"]
         self.assertEqual(shown["kind"], "reel")
-        self.assertTrue(shown["will_post"])
-        self.assertFalse(shown["reel"]["hold"])
+        self.assertFalse(shown["will_post"])
+        self.assertTrue(shown["reel"]["hold"])
+        self.assertEqual(shown["reel"]["image_review"]["status"], "pending")
         self.assertEqual(shown["reel"]["hook"], REEL["hook"])
         self.assertEqual(shown["reel"]["cover_seconds"], 9.9)
         client = self.client()
-        held = client.request("POST", "/api/v1/instagram/hold", body={"draft_id": "c" * 16, "hold": True, "version": 0})
-        self.assertEqual(held.json(), {"draft_id": "c" * 16, "hold": True})
+        held = client.request(
+            "POST", "/api/v1/instagram/hold", body={"draft_id": "c" * 16, "hold": False, "version": 0}
+        )
+        self.assertEqual(held.json(), {"draft_id": "c" * 16, "hold": False})
         [shown] = sources.instagram_drafts(settings)["drafts"]
         self.assertFalse(shown["will_post"])
-        self.assertTrue(shown["reel"]["hold"])
+        self.assertFalse(shown["reel"]["hold"])
         stale = client.request(
-            "POST", "/api/v1/instagram/hold", body={"draft_id": "c" * 16, "hold": False, "version": 0}
+            "POST", "/api/v1/instagram/hold", body={"draft_id": "c" * 16, "hold": True, "version": 0}
         )
         self.assertEqual((stale.status, stale.json()), (409, {"error": "hold_changed"}))
         unversioned = client.request("POST", "/api/v1/instagram/hold", body={"draft_id": "c" * 16, "hold": False})

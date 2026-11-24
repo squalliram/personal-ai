@@ -240,6 +240,14 @@ class RealRenderTests(Case):
 
 
 class RenderDueTests(Case):
+    def setUp(self):
+        super().setUp()
+        review = patch.object(
+            render.image_review, "frames", return_value={"status": "passed", "frames": [], "reasons": []}
+        )
+        review.start()
+        self.addCleanup(review.stop)
+
     def add_reel(self, reel):
         draft = {"kind": "reel", "category": "coffee", "topic": "Bar Italia", "angle": "", "caption": "Hi",
                  "slides": [], "hashtags": [], "reel": reel, "draft_id": "d" * 16,
@@ -267,7 +275,9 @@ class RenderDueTests(Case):
         self.add_reel(photo_reel())
         [row] = self.conn.execute("SELECT * FROM drafts").fetchall()
         self.assertFalse(publish.rendered(row))
-        with patch.object(render, "render", side_effect=lambda c, m, d, reel: {**reel, "render": "done"}):
+        with patch.object(
+            render, "render", side_effect=lambda c, m, d, reel: {**reel, "render": "done", "file": "reel.mp4"}
+        ):
             self.assertEqual(render.render_due(self.conn, self.media, now=NOW), "rendered 1, failed 0")
         [row] = self.conn.execute("SELECT * FROM drafts").fetchall()
         self.assertTrue(publish.rendered(row))
@@ -281,7 +291,9 @@ class RenderDueTests(Case):
         self.add_reel(photo_reel())
         told = []
         late = datetime(2026, 11, 12, 22, 0, tzinfo=timezone.utc)
-        with patch.object(render, "render", side_effect=lambda c, m, d, reel: {**reel, "render": "done"}):
+        with patch.object(
+            render, "render", side_effect=lambda c, m, d, reel: {**reel, "render": "done", "file": "reel.mp4"}
+        ):
             render.render_due(self.conn, self.media, lambda row, error, final: told.append(error), now=late)
         self.assertEqual(self.conn.execute("SELECT scheduled_for FROM drafts").fetchone()[0], late.isoformat())
         self.assertEqual(told, [])
@@ -289,7 +301,9 @@ class RenderDueTests(Case):
             self.conn.execute(
                 "UPDATE drafts SET reel=?, scheduled_for=?", (json.dumps(photo_reel()), "2026-11-12T18:00:00+00:00")
             )
-        with patch.object(render, "render", side_effect=lambda c, m, d, reel: {**reel, "render": "done"}):
+        with patch.object(
+            render, "render", side_effect=lambda c, m, d, reel: {**reel, "render": "done", "file": "reel.mp4"}
+        ):
             render.render_due(
                 self.conn, self.media, lambda row, error, final: told.append(error), now=late + timedelta(hours=3)
             )
@@ -553,11 +567,11 @@ assert.equal(links(postKit({...draft, reel:{source:'clip'}})).length, 0);
     @unittest.skipUnless(shutil.which("node"), "Node.js is required for card checks")
     def test_photo_reel_cards_show_each_slide_and_keep_the_reel_script(self):
         script = (Path(__file__).resolve().parents[1] / "command_centre/static/app.js").read_text()
-        function = script[script.index("  function draftCard(") : script.index("  const MAX_PHOTOS")]
+        function = script[script.index("  function visualReview(") : script.index("  const MAX_PHOTOS")]
         harness = (
             """
 const assert = require('node:assert/strict');
-function el(tag, attrs, ...children) { return {tag, attrs, children: children.flat().filter(Boolean)}; }
+function el(tag, attrs, ...children) { return {tag, attrs, children: children.flat().filter(Boolean), addEventListener() {}}; }
 const card = (title, ...children) => el('card', {title}, ...children);
 const reelScript = () => el('script', {});
 const slideUrl = (draft, n) => `slide/${draft.draft_id}/${n}`;
@@ -579,6 +593,16 @@ for (const note of [undefined, 'Owner note']) {
 assert.equal(nodes(draftCard({...base, reel:{source:'clip'}}, false, true), 'img').length, 0);
 assert.equal(nodes(draftCard({...base, slides:[]}, false, true), 'img').length, 0);
 assert.equal(nodes(draftCard({...base, kind:'carousel', reel:null}, false, true), 'img').length, 2);
+for (const status of ['pending', 'passed', 'failed', 'unavailable']) {
+  const review = {status, slides:[{slide:1, attempts:[{status:'failed', reasons:['floating spoon']}]}],
+    frames:[{second:4.5, status:'passed', reasons:[]}]};
+  const tree = draftCard({...base, status:'pending', reel:{source:'photos', image_review:review}}, true, true);
+  const approve = nodes(tree, 'button').find(n => n.children[0] === 'Approve');
+  assert.equal(Boolean(approve.disabled), status !== 'passed');
+  assert.ok(JSON.stringify(tree).includes('floating spoon'));
+  assert.ok(JSON.stringify(tree).includes('Frame 4.5 s: passed'));
+}
+assert.equal(nodes(visualReview({status:'unavailable'}), 'summary')[0].children[0], 'Image sanity review: unavailable');
 """
         )
         result = subprocess.run(["node", "-e", harness], capture_output=True, text=True)

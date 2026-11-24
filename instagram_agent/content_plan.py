@@ -154,9 +154,9 @@ def advance(conn, entry_id: int, status: str) -> str | None:
     return target if changed else None
 
 
-def notify_progress(conn, env, now, auto_publish):
+def notify_scripts(conn, env, now):
     page = command_centre_link(env, "instagram")
-    for row in rows(conn, now, auto_publish):
+    for row in rows(conn, now):
         if row["status"] != "Idea":
             notify(
                 "instagram",
@@ -164,16 +164,6 @@ def notify_progress(conn, env, now, auto_publish):
                 f"Script ready: {row['pillar_name']}",
                 page,
                 key=f"instagram-plan-script:{row['id']}",
-                env=env,
-                now=now,
-            )
-        if row["needs_approval"]:
-            notify(
-                "instagram",
-                "ok",
-                f"Reel needs your approval: {row['pillar_name']}",
-                page,
-                key=f"instagram-plan-approval:{row['draft_id']}",
                 env=env,
                 now=now,
             )

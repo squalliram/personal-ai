@@ -14,7 +14,7 @@ import typing
 from datetime import datetime, time, timedelta
 from pathlib import Path
 
-from . import analysis, clips, learnings, music, render, storage, uploads, video
+from . import analysis, clips, image_review, learnings, music, render, storage, uploads, video
 from .analysis import LONDON
 from .openai_client import AIError, image_extension
 
@@ -53,9 +53,17 @@ CAPTION_ASK = (
     "End with exactly one ask. Default to a natural reason to follow for more content like this; "
     "use save, share or comment instead if the account's stronger growth evidence favors it for this post. "
 )
+BRAND = (
+    "Photorealistic, like a real phone or 35mm photo of a home kitchen: warm amber and brown tones, "
+    "moody natural window light, rustic wooden surfaces, slight imperfections: crumbs, drips and linen. "
+    "Static still-life scenes only. No pouring, stirring, dipping or drizzling, no mid-motion action, "
+    "floating tools, invisible supports or impossible objects. No text, words, letters, labels or logos. "
+)
 CREATE = (
     "You are the Create agent for @instafoodielove, an Instagram account about food, coffee and restaurants. "
-    "Write {count} carousel drafts in the account's own voice. Every draft's category must be food, coffee or "
+    "Write {count} slide reel drafts in the account's own voice. Focus on cosy seasonal home cooking, "
+    "easy enough for weeknights, using UK ingredients and £ for evidenced prices only; never invent prices. "
+    f"{BRAND} Every draft's category must be food, coffee or "
     "restaurant, and its topic must be specific (a dish, a drink, a technique, a type of place or a named city "
     "area), never generic like 'dining out'. "
     "Each has 3-4 slides (9-12 seconds at 3 seconds per slide). Use performance_learnings, including watch-time lift, reach, follows and "
@@ -147,8 +155,9 @@ REVIEW = (
     "draft that names a venue, dish, rating or price the note doesn't, or changes its rating. "
     "For AI-generated slides only, score under 50 a draft outside 3-4 slides or whose first image_prompt "
     "does not show the finished, plated dish or ready-to-drink drink as the payoff. "
-    "For both AI-generated and owner media, score under 50 if the draft or owner note indicates people in any "
-    "image or clip, including faces, hands, arms, bodies, silhouettes or reflections of people. "
+    "For AI-generated slides only, score under 50 if the draft indicates people in any image, "
+    "including faces, hands, arms, bodies, silhouettes or reflections of people. "
+    "For the owner's real photos or clips, people and hands are allowed; do not penalise their presence. "
     "Be strict; 70 means "
     'ready to post. Reply with JSON: {"reviews": [{"score": 0, "notes": "one or two sentences"}]}, in order.'
 )
@@ -590,7 +599,11 @@ def store_clip_draft(
 
 def _free_slots(conn, now: datetime, count: int) -> list[str]:
     day = now.astimezone(LONDON).date().isoformat()
-    taken = {r[0] for r in conn.execute("SELECT scheduled_for FROM drafts WHERE created_on=?", (day,))}
+    taken = {
+        row["scheduled_for"]
+        for row in conn.execute("SELECT scheduled_for,status,reel FROM drafts WHERE created_on=?", (day,))
+        if not storage.image_review_rejected(row)
+    }
     return [s for s in publish_slots(conn, now, count + len(taken)) if s not in taken][:count]
 
 
@@ -682,15 +695,18 @@ def slide_prompt(slide: dict, *, draws_text: bool) -> str:
         image_prompt = "An appetising, well-lit, photorealistic close-up food or drink photograph"
         if not _mentions_people(slide["text"]):
             image_prompt += f" illustrating: {slide['text']}"
+    image_prompt = re.sub(
+        r"\b(?:no|without)\s+(?:any\s+)?(?:pouring|stirring|dipping|drizzling|floating|levitating)\b[^,;.!?]*",
+        "",
+        image_prompt,
+        flags=re.I,
+    ).strip(" ,;")
+    if not image_prompt or re.search(
+        r"\b(pouring|stirring|dipping|drizzling|floating|levitating)\b", image_prompt, re.I
+    ):
+        image_prompt = "A finished, plated dish or ready-to-drink drink resting on a rustic wooden table"
     base = f"{image_prompt}\n\nA 4:5 portrait Instagram carousel photo for a food, coffee and restaurant account."
-    if draws_text:
-        return (
-            base
-            + f' Overlay this text in large, clean, legible type, spelled exactly: "{slide["text"]}" '
-            + "Keep all lettering inside the central 60% of the image width and middle 80% of its height, "
-            "safe for a centered 9:16 crop. " + NO_PEOPLE
-        )
-    return base + " No text, words, letters or logos anywhere in the image. " + NO_PEOPLE
+    return base + " " + BRAND + " No text, words, letters or logos anywhere in the image. " + NO_PEOPLE
 
 
 def _private_dir(path: Path) -> None:
@@ -718,6 +734,7 @@ def render_and_store(
     *,
     slot: str | None = None,
     plan_id: int | None = None,
+    reviewer=None,
 ) -> int:
     """An image for each slide, then the draft row. A draft whose images fail is dropped and its reason kept."""
     _private_dir(media_dir)
@@ -728,35 +745,44 @@ def render_and_store(
         draft_id = secrets.token_hex(8)
         folder = media_dir / draft_id
         _private_dir(folder)
+        reviews = []
+        verdict = {"status": "passed", "reasons": []}
         try:
             for number, slide in enumerate(draft["slides"], 1):
-                image = _image(ai, slide)
+                attempts = []
+                for _ in range(3):
+                    image = _image(ai, slide)
+                    verdict = image_review.check(reviewer, image)
+                    attempts.append(verdict)
+                    if verdict["status"] != "failed":
+                        break
+                reviews.append({"slide": number, "attempts": attempts})
                 slide["file"] = f"slide-{number}.{image_extension(image)}"
                 flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
                 with os.fdopen(os.open(folder / slide["file"], flags, 0o600), "wb") as stream:
                     stream.write(image)
+                if verdict["status"] != "passed":
+                    break
         except AIError as exc:
             shutil.rmtree(folder, ignore_errors=True)
             if dropped is not None:
                 dropped.append(f"slide image failed ({exc})")
             continue
         try:
+            if verdict["status"] != "passed":
+                draft = {**draft, "slides": draft["slides"][: len(reviews)]}
             seconds = render.photo_duration(len(draft["slides"]))
             each = render.photo_seconds(len(draft["slides"]))
-            beats = (
-                []
-                if getattr(ai, "draws_text", True)
-                else [
-                    {
-                        "start": round(n * each, 2),
-                        "end": 2.0 if n == 0 else round((n + 1) * each, 2),
-                        "text": slide["text"],
-                    }
-                    for n, slide in enumerate(draft["slides"])
-                ]
-            )
+            beats = [
+                {
+                    "start": round(n * each, 2),
+                    "end": 2.0 if n == 0 else round((n + 1) * each, 2),
+                    "text": slide["text"],
+                }
+                for n, slide in enumerate(draft["slides"])
+            ]
             draft = {**draft, "kind": "reel", "reel": {"hook": draft["topic"], "on_screen": beats, "seconds": seconds}}
-            tracks = music.for_reel(conn, media_dir)
+            tracks = music.for_reel(conn, media_dir) if verdict["status"] == "passed" else []
             selected = {}
             if tracks:
                 selected = ai.chat_json(
@@ -766,7 +792,16 @@ def render_and_store(
             draft = _with_render(
                 draft,
                 selected,
-                {"source": "photos", "photos": len(draft["slides"]), "framing": "cover"},
+                {
+                    "source": "photos",
+                    "photos": len(draft["slides"]),
+                    "framing": "cover",
+                    "image_review": {
+                        "status": "pending" if verdict["status"] == "passed" else verdict["status"],
+                        "slides": reviews,
+                        "frames": [],
+                    },
+                },
                 {"pick": "agents", "mix": "replace"},
                 tracks,
             )
@@ -777,8 +812,15 @@ def render_and_store(
                     day,
                     now.isoformat(timespec="seconds"),
                 )
+                if verdict["status"] != "passed":
+                    conn.execute(
+                        "UPDATE drafts SET status='rejected', review_notes=?, decided_at=? WHERE draft_id=?",
+                        ("Image review: " + "; ".join(verdict["reasons"]), now.isoformat(timespec="seconds"), draft_id),
+                    )
+                    if dropped is not None:
+                        dropped.append("image review: " + "; ".join(verdict["reasons"]))
         except BaseException:
             shutil.rmtree(folder, ignore_errors=True)
             raise
-        stored += 1
+        stored += verdict["status"] == "passed"
     return stored

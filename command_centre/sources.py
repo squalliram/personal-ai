@@ -682,6 +682,7 @@ def instagram_drafts(settings: Settings, limit: int = 30, now: datetime | None =
                 "will_post": instagram_publish.will_post(
                     row["status"], row["review_score"], instagram_publish.held(row)
                 )
+                and bool(row["decided_at"])
                 and instagram_publish.rendered(row),
                 "publish_error": publishing["errors"].get(row["draft_id"]),
                 "publishing": row["draft_id"] in publishing["started"],
@@ -722,6 +723,7 @@ def _reel(reel) -> dict:
         "render_error": str(reel.get("render_error", "")) or None,
         "hold": reel.get("hold") is True,
         "hold_version": reel["hold_version"] if type(reel.get("hold_version")) is int else 0,
+        "image_review": reel.get("image_review") if isinstance(reel.get("image_review"), dict) else None,
         "trim": {"in": number(trim.get("in")), "out": number(trim.get("out"))} if isinstance(trim, dict) else None,
         "music": {k: str(song.get(k, "")) for k in ("title", "licence", "mix")} if isinstance(song, dict) else None,
     }

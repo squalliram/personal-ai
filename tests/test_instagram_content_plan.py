@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
-from instagram_agent import cli, content_plan, post_report, storage, weekly_performance
+from instagram_agent import cli, content_plan, post_report, publish, storage, weekly_performance
 from instagram_agent.analysis import LONDON
 from instagram_agent.pillar_config import RESERVE
 
@@ -34,7 +34,10 @@ class ContentPlanTests(unittest.TestCase):
         self.assertTrue(all(a != b for a, b in zip(pillars, pillars[1:], strict=False)))
         self.assertEqual(len(set(pillars[1::3])), 1)
 
-    def add_draft(self, entry, draft_id, topic, render="done"):
+    def add_draft(self, entry, draft_id, topic, render="done", *, reviewed=False):
+        reel = {"render": render}
+        if reviewed:
+            reel["image_review"] = {"status": "passed"}
         with self.conn:
             storage.insert_draft(
                 self.conn,
@@ -48,7 +51,7 @@ class ContentPlanTests(unittest.TestCase):
                     "caption": "",
                     "hashtags": [],
                     "kind": "reel",
-                    "reel": {"render": render},
+                    "reel": reel,
                 },
                 entry["slot"][:10],
                 entry["slot"],
@@ -58,21 +61,35 @@ class ContentPlanTests(unittest.TestCase):
         content_plan.ensure_week(self.conn, MONDAY)
         entry = content_plan.slot_today(self.conn, MONDAY)
         self.add_draft(entry, "dish", "Soup", "pending")
-        self.assertTrue(json.loads(self.conn.execute("SELECT reel FROM drafts").fetchone()[0])["hold"])
+        metadata = json.loads(self.conn.execute("SELECT reel FROM drafts").fetchone()[0])
+        self.assertTrue(metadata["hold"])
+        self.assertEqual(metadata["image_review"]["status"], "pending")
         self.assertIsNone(content_plan.slot_today(self.conn, MONDAY))
         self.assertEqual(content_plan.rows(self.conn, MONDAY)[0]["status"], "Scripted")
         self.assertEqual(content_plan.advance(self.conn, entry["id"], "Scripted"), "Filmed")
         self.assertEqual(content_plan.advance(self.conn, entry["id"], "Filmed"), "Edited")
+        scheduled = datetime.fromisoformat(entry["slot"])
+        due_at = scheduled + publish.VETO_LEAD
+        self.assertFalse(storage.decide_draft(self.conn, "dish", "approved", scheduled.isoformat()))
+        with patch.object(content_plan, "notify") as scripts, patch.object(cli, "notify") as approvals:
+            content_plan.notify_scripts(self.conn, {}, MONDAY)
+            cli._notify_visual_review(self.conn, {}, MONDAY)
+            approvals.assert_not_called()
+        self.assertEqual([c.kwargs["key"] for c in scripts.call_args_list], [f"instagram-plan-script:{entry['id']}"])
         with self.conn:
-            self.conn.execute("UPDATE drafts SET reel=? WHERE draft_id='dish'", (json.dumps({"render": "done"}),))
-        with patch.object(content_plan, "notify") as notify:
-            content_plan.notify_progress(self.conn, {}, MONDAY, True)
+            metadata.update(render="done", image_review={"status": "passed"}, hold=False)
+            self.conn.execute(
+                "UPDATE drafts SET reel=?, review_score=95 WHERE draft_id='dish'", (json.dumps(metadata),)
+            )
+        with patch.object(cli, "notify") as notify:
+            cli._notify_visual_review(self.conn, {}, MONDAY)
         self.assertEqual(
             [c.kwargs["key"] for c in notify.call_args_list],
-            [f"instagram-plan-script:{entry['id']}", "instagram-plan-approval:dish"],
+            ["instagram-approval-ready:dish"],
         )
-        with self.conn:
-            self.conn.execute("UPDATE drafts SET status='approved' WHERE draft_id='dish'")
+        self.assertEqual(publish.due(self.conn, due_at), [])
+        self.assertTrue(storage.decide_draft(self.conn, "dish", "approved", scheduled.isoformat()))
+        self.assertEqual([row["draft_id"] for row in publish.due(self.conn, due_at)], ["dish"])
         self.assertEqual(content_plan.rows(self.conn, MONDAY)[0]["status"], "Approved")
         self.assertEqual(content_plan.rows(self.conn, MONDAY, True)[0]["status"], "Scheduled")
         with self.conn:
@@ -86,14 +103,17 @@ class ContentPlanTests(unittest.TestCase):
             self.conn.execute("UPDATE drafts SET review_score=95 WHERE draft_id='dish'")
         with patch.object(cli.publish, "configured", return_value=True), patch.object(cli, "notify") as notify:
             cli._notify_daily(self.conn, {}, "ok", MONDAY)
-        self.assertIn("won't post unless you approve it", notify.call_args.args[2])
+        self.assertIn("awaiting image review and your approval", notify.call_args.args[2])
 
     def test_as_filmed_reel_keeps_manual_filmed_and_edited_transitions(self):
         content_plan.ensure_week(self.conn, MONDAY)
         slot = content_plan.slot_today(self.conn, MONDAY)
         self.add_draft(slot, "raw", "As-filmed soup clip")
         with self.conn:
-            self.conn.execute("UPDATE drafts SET reel=? WHERE draft_id='raw'", (json.dumps({"file": "reel.mp4"}),))
+            self.conn.execute(
+                "UPDATE drafts SET reel=? WHERE draft_id='raw'",
+                (json.dumps({"file": "reel.mp4", "image_review": {"status": "passed"}}),),
+            )
         entry = content_plan.rows(self.conn, MONDAY)[0]
         self.assertEqual((entry["status"], entry["next_status"]), ("Scripted", "Filmed"))
         self.assertFalse(entry["needs_approval"])
@@ -105,7 +125,7 @@ class ContentPlanTests(unittest.TestCase):
     def test_rendered_reel_keeps_manual_status_but_can_notify_owner(self):
         content_plan.ensure_week(self.conn, MONDAY)
         slot = content_plan.slot_today(self.conn, MONDAY)
-        self.add_draft(slot, "rendered", "Edited soup clip")
+        self.add_draft(slot, "rendered", "Edited soup clip", reviewed=True)
         entry = content_plan.rows(self.conn, MONDAY, True)[0]
         self.assertEqual((entry["status"], entry["next_status"]), ("Scripted", "Filmed"))
         self.assertTrue(entry["needs_approval"])
