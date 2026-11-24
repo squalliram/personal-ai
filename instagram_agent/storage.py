@@ -32,8 +32,11 @@ LATER_COLUMNS = {
     "token_state": {"token_fingerprint": "TEXT"},
     "posts": {"media_product_type": "TEXT"},
     "post_metrics": {"avg_watch_ms": "INTEGER", "total_watch_ms": "INTEGER"},
-    "story_insights": {"earlier_metrics": "TEXT NOT NULL DEFAULT '{}'"},
-    "story_insights": {"refresh_complete": "INTEGER NOT NULL DEFAULT 1", "attempted_at": "TEXT"},
+    "story_insights": {
+        "refresh_complete": "INTEGER NOT NULL DEFAULT 1",
+        "attempted_at": "TEXT",
+        "earlier_metrics": "TEXT NOT NULL DEFAULT '{}'",
+    },
     "post_reports": {
         "follows": "INTEGER",
         "profile_visits": "INTEGER",
