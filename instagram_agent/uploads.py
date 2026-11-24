@@ -225,13 +225,14 @@ def add_columns(conn: sqlite3.Connection, table: str = "uploads") -> None:
         conn.execute("ALTER TABLE uploads ADD COLUMN reel INTEGER NOT NULL DEFAULT 0")
 
 
-def oldest(conn: sqlite3.Connection):
+def oldest(conn: sqlite3.Connection, *, note_matches=None):
     with conn:
         add_columns(conn)
-    return conn.execute(
+    rows = conn.execute(
         "SELECT upload_id, created_at, note, photos, reel, music FROM uploads WHERE status='waiting' "
         "ORDER BY created_at, upload_id"
-    ).fetchone()
+    )
+    return next((row for row in rows if note_matches is None or note_matches(row["note"])), None)
 
 
 def is_waiting(conn: sqlite3.Connection, upload_id: str) -> bool:

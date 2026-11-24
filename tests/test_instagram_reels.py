@@ -17,7 +17,7 @@ from test_instagram_publish import DUE, ENV, MADE, SLOT, FakeGraph
 import notifications
 from command_centre import sources
 from command_centre.security import Permission
-from instagram_agent import cli, clips, drafts, publish, render, storage, uploads, video
+from instagram_agent import cli, clips, drafts, publish, recipe_series, render, storage, uploads, video
 from instagram_agent.graph import GraphAPIError
 
 NOW = datetime(2026, 11, 12, 10, 0, tzinfo=timezone.utc)
@@ -366,6 +366,20 @@ REEL = {
 
 
 class ReelDraftTests(Case):
+    def test_recipe_photos_without_a_renderer_do_not_block_a_queued_clip(self):
+        clip_id = self.waiting_clip()
+        upload_id = uploads.save(
+            self.conn, self.media, "Recipe: homemade soup.", [(b"\xff\xd8\xffslide", b"\xff\xd8\xffthumb")], NOW
+        )
+        recipe_series.start(self.conn, NOW)
+        env = {"OPENAI_API_KEY": "sk-test", "COMMAND_CENTRE_NOTIFICATIONS_DB": str(self.root / "n.sqlite3")}
+        with patch.object(cli, "model_client", return_value=ReelAI(REEL)):
+            self.assertEqual(cli.daily(self.conn, env, self.media, now=NOW + timedelta(days=1)), "ok")
+        self.assertTrue(uploads.is_waiting(self.conn, upload_id))
+        self.assertEqual(
+            self.conn.execute("SELECT status FROM clips WHERE clip_id=?", (clip_id,)).fetchone()[0], "used"
+        )
+
     def test_normalise_keeps_valid_beats_inside_the_clip(self):
         draft = drafts.normalise_reel_draft(REEL, 10.0)
         self.assertEqual(draft["kind"], "reel")

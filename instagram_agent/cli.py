@@ -25,6 +25,7 @@ from . import (
     post_report,
     preflight,
     publish,
+    recipe_series,
     render,
     storage,
     story_insights,
@@ -253,6 +254,14 @@ def _notify_daily(conn, env: dict, outcome: str, now: datetime) -> None:
     notify("instagram", "failed", f"Instagram drafts {outcome}: {error}", page, env=env, now=now)
 
 
+def _queued_clip(conn, media_dir, **filter_args):
+    clip = clips.oldest(conn, **filter_args)
+    while clip is not None and not clips.clip_file(media_dir, clip).is_file():
+        clips.delete(conn, media_dir, clip["clip_id"])
+        clip = clips.oldest(conn, **filter_args)
+    return clip
+
+
 def make_drafts(conn, env: dict, media_dir: Path, now: datetime | None = None) -> str:
     """One cron tick: from 09:00 London make today's draft(s), topping up to DAILY_DRAFTS until 12:00.
 
@@ -264,6 +273,19 @@ def make_drafts(conn, env: dict, media_dir: Path, now: datetime | None = None) -
     have = storage.drafts_on(conn, today)
     if local.hour < DAILY_FROM_HOUR or have >= DAILY_DRAFTS or (have and local.time() >= drafts.READY_BY):
         return "skipped"
+    series_day = recipe_series.calendar(conn, env).day(now)
+    series = series_day.in_series
+    slot_args = {}
+    if series:
+        if (
+            series_day.number is None
+            or not series_day.posting_day
+            or recipe_series.already_published(conn, now)
+            or publish.recipe_slot_taken(conn, now)
+            or not (slot := drafts.recipe_slot(conn, now))
+        ):
+            return "skipped"
+        slot_args = {"slot": slot}
     if storage.runs_on(conn, today) >= DAILY_ATTEMPTS:
         return "gave_up"
     ai = model_client(env)
@@ -282,31 +304,42 @@ def make_drafts(conn, env: dict, media_dir: Path, now: datetime | None = None) -
     try:
         rules = drafts.load_rules(Path(skills).expanduser() if skills else None)
         voice = _read(env.get("INSTAGRAM_VOICE_FILE", "agents/instagram-voice.md"))
-        # Owner clips come first, then owner photos, then AI slide reels.
-        clip = clips.oldest(conn)
-        while clip is not None and not clips.clip_file(media_dir, clip).is_file():
-            clips.delete(conn, media_dir, clip["clip_id"])  # its file was lost; don't let it block every day
-            clip = clips.oldest(conn)
+        clip = _queued_clip(conn, media_dir, note_matches=recipe_series.is_recipe) if series else None
+        recipe_upload = (
+            uploads.oldest(conn, note_matches=recipe_series.is_recipe)
+            if series and clip is None and render.can_render("photos")
+            else None
+        )
+        if clip is None and recipe_upload is None:
+            clip = _queued_clip(conn, media_dir)
         if clip is not None:
             rendered = render.can_render("clip")
+            clip_rules = rules
+            if series and recipe_series.is_recipe(clip["note"]):
+                clip_rules = f"{recipe_series.GUIDANCE}\n{rules}"
             draft = drafts.generate_from_clip(
-                conn, ai, now, clip, rules=rules, voice=voice, rendered=rendered, media_dir=media_dir
+                conn, ai, now, clip, rules=clip_rules, voice=voice, rendered=rendered, media_dir=media_dir
             )
             if draft is None:
                 raise AIError("the agents wrote no usable reel from your clip")
-            stored += drafts.store_clip_draft(conn, draft, clip, media_dir, now) is not None
+            stored += drafts.store_clip_draft(conn, draft, clip, media_dir, now, **slot_args) is not None
         if stored < wanted and not render.can_render("photos"):
             raise AIError("photo reel rendering unavailable; queued photos preserved")
-        upload = uploads.oldest(conn) if stored < wanted else None  # also when the clip was deleted meanwhile
+        upload = (recipe_upload or uploads.oldest(conn)) if stored < wanted else None
         if upload is not None:
-            draft = drafts.generate_from_upload(conn, ai, now, upload, media_dir, rules=rules, voice=voice)
+            upload_rules = rules
+            if series and recipe_series.is_recipe(upload["note"]):
+                upload_rules = f"{recipe_series.GUIDANCE}\n{rules}"
+            draft = drafts.generate_from_upload(conn, ai, now, upload, media_dir, rules=upload_rules, voice=voice)
             if draft is None:
                 raise AIError("the agents wrote no usable post from your photos")
-            stored += drafts.store_upload_draft(conn, draft, upload, media_dir, now) is not None
+            stored += drafts.store_upload_draft(conn, draft, upload, media_dir, now, **slot_args) is not None
         dropped: list[str] = []
         if stored < wanted:
+            if series:
+                rules = f"Draft only a quick home recipe. Do not invent the owner's experience.\n{recipe_series.GUIDANCE}\n{rules}"
             found = drafts.generate(conn, ai, now, count=wanted - stored, rules=rules, voice=voice)
-            stored += drafts.render_and_store(conn, ai, found, media_dir, now, dropped)
+            stored += drafts.render_and_store(conn, ai, found, media_dir, now, dropped, **slot_args)
     except (AIError, OSError) as exc:
         error = str(exc) if isinstance(exc, AIError) else type(exc).__name__
         with conn:
@@ -411,7 +444,18 @@ def main(argv: list[str] | None = None) -> int:
                 refreshed = token_refresh.tick(conn, env, env_file, _now())
                 if refreshed in ("refreshed", "failed", "metadata_failed", "token_changed"):
                     env = {**load_env(env_file), **os.environ}
-                outcome = daily(conn, env, args.media)
+                now = _now()
+                calendar = recipe_series.calendar(conn, env)
+                if publish.configured(env) and calendar.launched_on is None:
+                    recipe_series.start(
+                        conn,
+                        now,
+                        defer_first_day=calendar.day(now).posting_day and drafts.recipe_slot(conn, now) is None,
+                    )
+                    calendar = recipe_series.calendar(conn, env)
+                series_day = calendar.day(now)
+                defer_series = series_day.in_series and series_day.number is None
+                outcome = "skipped" if defer_series else daily(conn, env, args.media)
                 render.render_due(conn, args.media, _notify_render(env, _now()))
                 published = publish.tick(conn, env, args.media, _now())
                 reports = _post_reports(conn, env)

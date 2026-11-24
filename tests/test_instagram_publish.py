@@ -10,7 +10,7 @@ from unittest.mock import patch
 from urllib.error import HTTPError
 
 import notifications
-from instagram_agent import cli, env_install, publish, storage
+from instagram_agent import cli, env_install, publish, recipe_series, storage
 from instagram_agent.graph import GraphAPIError, GraphClient
 
 JPEG = b"\xff\xd8\xff" + b"1" * 32
@@ -93,6 +93,189 @@ class PublishCase(unittest.TestCase):
 
 
 class PublishTests(PublishCase):
+    def test_preparation_cancelled_at_midnight_of_deferred_launch_is_carried_forward(self):
+        monday = (DUE + timedelta(days=4)).replace(hour=23, minute=59, second=30)
+        self.add(slot=monday.isoformat())
+        recipe_series.start(self.conn, monday, defer_first_day=True)
+        elapsed = 0
+
+        def sleep(seconds):
+            nonlocal elapsed
+            elapsed += seconds
+
+        with patch.object(publish.time, "monotonic", side_effect=lambda: elapsed):
+            self.assertEqual(
+                publish.tick(self.conn, self.env, self.media, monday, FakeGraph(), check=self.check, sleep=sleep),
+                "published 0, failed 0",
+            )
+        self.assertEqual(self.tick(FakeGraph(), monday + timedelta(minutes=1)), "published 0, failed 0")
+        self.assertEqual(self.tick(FakeGraph(), monday + timedelta(days=2)), "published 1, failed 0")
+
+    def test_deferred_launch_reel_approved_after_midnight_is_carried_forward(self):
+        monday = (DUE + timedelta(days=4)).replace(hour=23, minute=30)
+        reel = self.add(slot=monday.isoformat())
+        recipe_series.start(self.conn, monday, defer_first_day=True)
+        with self.conn:
+            self.conn.execute("UPDATE drafts SET reel=? WHERE draft_id=?", ('{"file":"reel.mp4","hold":true}', reel))
+        self.assertEqual(self.tick(FakeGraph(), monday), "published 0, failed 0")
+        with self.conn:
+            self.conn.execute("UPDATE drafts SET status='approved' WHERE draft_id=?", (reel,))
+        self.assertEqual(self.tick(FakeGraph(), monday + timedelta(hours=1)), "published 0, failed 0")
+        self.assertEqual(self.tick(FakeGraph(), monday + timedelta(days=2)), "published 1, failed 0")
+
+    def test_a_deferred_launch_with_a_publication_counts_as_series_day_one(self):
+        monday = (DUE + timedelta(days=4)).replace(hour=20)
+        recipe_series.start(self.conn, monday, defer_first_day=True)
+        self.add(slot=monday.isoformat())
+        self.assertEqual(self.tick(FakeGraph(), monday), "published 1, failed 0")
+        after_four_weeks = monday + recipe_series.WINDOW
+        for draft_id in ("b" * 16, "c" * 16):
+            self.add(draft_id, slot=after_four_weeks.isoformat())
+        self.assertEqual(self.tick(FakeGraph(), after_four_weeks), "published 2, failed 0")
+
+    def test_prepared_reel_is_not_sent_after_midnight_on_a_series_off_day(self):
+        friday = (DUE + timedelta(days=1)).replace(hour=23, minute=59, second=30)
+        reel = self.add(slot=friday.isoformat())
+        recipe_series.start(self.conn, MADE)
+        graph = FakeGraph()
+        elapsed = 0
+
+        def sleep(seconds):
+            nonlocal elapsed
+            elapsed += seconds
+
+        with patch.object(publish.time, "monotonic", side_effect=lambda: elapsed):
+            self.assertEqual(
+                publish.tick(self.conn, self.env, self.media, friday, graph, check=self.check, sleep=sleep),
+                "published 0, failed 0",
+            )
+        self.assertFalse(any(path.endswith("/media_publish") for path, _, _ in graph.posts))
+        self.assertEqual(self.status(reel)[0], "pending")
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM publish_runs").fetchone()[0], 0)
+        self.assertEqual(self.tick(FakeGraph(), friday + timedelta(minutes=1)), "published 0, failed 0")
+        self.assertEqual(self.tick(FakeGraph(), friday + timedelta(days=3)), "published 1, failed 0")
+
+    def test_publish_run_uses_time_after_reel_preparation(self):
+        self.add()
+        elapsed = iter((0, publish.REEL_WAIT))
+        with patch.object(publish.time, "monotonic", side_effect=lambda: next(elapsed, publish.REEL_WAIT)):
+            self.assertEqual(self.tick(FakeGraph()), "published 1, failed 0")
+        expected = (DUE + timedelta(seconds=publish.REEL_WAIT)).isoformat(timespec="seconds")
+        self.assertEqual(
+            [row[0] for row in self.conn.execute("SELECT started_at FROM publish_runs ORDER BY id")],
+            [expected, expected],
+        )
+
+    def test_late_series_launch_caps_the_number_of_due_reels(self):
+        monday = (DUE + timedelta(days=4)).replace(hour=20)
+        self.add("a" * 16, slot=monday.isoformat())
+        self.add("b" * 16, slot=monday.isoformat())
+        graph = FakeGraph()
+        tick = publish.tick
+        with (
+            patch.dict(cli.os.environ, self.env, clear=True),
+            patch.object(cli, "_now", return_value=monday),
+            patch.object(cli.token_refresh, "tick", return_value="not_due"),
+            patch.object(publish, "configured", return_value=True),
+            patch.object(
+                publish, "tick", side_effect=lambda *args: tick(*args, graph, check=self.check, sleep=lambda _: None)
+            ),
+            patch.object(cli.render, "render_due"),
+            patch.object(cli, "_capture_followers", return_value="followers_off"),
+            patch.object(cli, "_capture_stories", return_value="stories_off"),
+            patch.object(cli, "_post_reports", return_value="reports_off"),
+            patch("builtins.print"),
+        ):
+            self.assertEqual(
+                cli.main(["--database", str(self.root / "instagram.sqlite3"), "daily", "--media", str(self.media)]), 0
+            )
+        self.assertEqual([self.status(d)[0] for d in ("a" * 16, "b" * 16)], ["published", "pending"])
+        self.assertEqual(self.tick(FakeGraph(), monday + timedelta(days=2)), "published 1, failed 0")
+
+    def test_series_carries_an_off_day_reel_to_the_next_posting_day(self):
+        self.add()
+        recipe_series.start(self.conn, MADE)
+        self.assertEqual(self.tick(FakeGraph()), "published 0, failed 0")
+        graph = FakeGraph()
+        self.assertEqual(self.tick(graph, DUE + timedelta(days=1)), "published 1, failed 0")
+        self.assertEqual(tuple(self.status()), ("published", "9001"))
+
+    def test_series_carries_an_off_day_reel_when_the_series_ends(self):
+        first = MADE + timedelta(days=4)
+        sunday = first + timedelta(days=27, hours=8)
+        self.add(slot=sunday.isoformat(), made=sunday - timedelta(hours=2))
+        recipe_series.start(self.conn, first)
+        self.assertEqual(self.tick(FakeGraph(), sunday), "published 0, failed 0")
+        self.assertEqual(self.tick(FakeGraph(), sunday + timedelta(days=1)), "published 1, failed 0")
+
+    def test_series_recovers_its_final_off_day_reel_after_a_delayed_restart(self):
+        first = MADE + timedelta(days=4)
+        sunday = first + timedelta(days=27, hours=8)
+        self.add(slot=sunday.isoformat(), made=sunday - timedelta(hours=2))
+        recipe_series.start(self.conn, first)
+        self.assertEqual(self.tick(FakeGraph(), sunday), "published 0, failed 0")
+        self.assertEqual(self.tick(FakeGraph(), sunday + timedelta(days=2)), "published 1, failed 0")
+
+    def test_approving_a_carryover_does_not_strand_the_other_reel_in_its_slot(self):
+        carryover = self.add("a" * 16)
+        recipe_series.start(self.conn, MADE)
+        friday = DUE + timedelta(days=1)
+        with self.conn:
+            self.conn.execute(
+                "UPDATE drafts SET reel=? WHERE draft_id=?", ('{"file":"reel.mp4","hold":true}', carryover)
+            )
+        self.assertEqual(self.tick(FakeGraph(), friday - timedelta(hours=7)), "published 0, failed 0")
+        slot = self.conn.execute("SELECT scheduled_for FROM drafts WHERE draft_id=?", (carryover,)).fetchone()[0]
+        fresh = self.add("b" * 16, slot=slot, made=friday - timedelta(hours=7))
+        with self.conn:
+            self.conn.execute("UPDATE drafts SET status='approved' WHERE draft_id=?", (carryover,))
+        self.assertEqual(self.tick(FakeGraph(), friday), "published 1, failed 0")
+        self.assertEqual(self.tick(FakeGraph(), friday + timedelta(days=3)), "published 1, failed 0")
+        self.assertEqual([self.status(d)[0] for d in (carryover, fresh)], ["published", "published"])
+
+    def test_late_approval_does_not_reschedule_an_expired_reel(self):
+        friday = DUE + timedelta(days=1)
+        slot = (friday - timedelta(minutes=5)).isoformat()
+        late = self.add("a" * 16, slot=slot)
+        self.add("b" * 16, slot=slot)
+        recipe_series.start(self.conn, MADE)
+        with self.conn:
+            self.conn.execute("UPDATE drafts SET reel=? WHERE draft_id=?", ('{"file":"reel.mp4","hold":true}', late))
+        self.assertEqual(self.tick(FakeGraph(), friday), "published 1, failed 0")
+        with self.conn:
+            self.conn.execute("UPDATE drafts SET status='approved' WHERE draft_id=?", (late,))
+        self.assertEqual(self.tick(FakeGraph(), friday + publish.STALE_AFTER), "published 0, failed 0")
+        self.assertEqual(self.tick(FakeGraph(), friday + timedelta(days=3)), "published 0, failed 0")
+        self.assertEqual(self.status(late)[0], "approved")
+
+    def test_after_midnight_approval_within_grace_moves_to_a_posting_day(self):
+        friday = (DUE + timedelta(days=1)).replace(hour=23, minute=30)
+        reel = self.add(slot=friday.isoformat())
+        recipe_series.start(self.conn, MADE)
+        with self.conn:
+            self.conn.execute("UPDATE drafts SET reel=? WHERE draft_id=?", ('{"file":"reel.mp4","hold":true}', reel))
+        self.assertEqual(self.tick(FakeGraph(), friday), "published 0, failed 0")
+        with self.conn:
+            self.conn.execute("UPDATE drafts SET status='approved' WHERE draft_id=?", (reel,))
+        self.assertEqual(self.tick(FakeGraph(), friday + timedelta(hours=1)), "published 0, failed 0")
+        self.assertEqual(self.tick(FakeGraph(), friday + timedelta(days=3)), "published 1, failed 0")
+
+    def test_recipe_series_enforces_posting_days_and_one_reel_story_pair_per_day(self):
+        self.add()
+        recipe_series.start(self.conn, MADE)
+        graph = FakeGraph()
+        self.assertEqual(self.tick(graph), "published 0, failed 0")
+        self.assertEqual(graph.posts, [])
+        self.env["INSTAGRAM_RECIPE_SERIES_DAYS"] = "tue,thu,sat"
+        self.add("b" * 16)
+        self.assertEqual(self.tick(graph), "published 1, failed 0")
+        self.assertEqual(
+            [params["media_type"] for path, params, _ in graph.posts if path.endswith("/media")],
+            ["REELS", "STORIES"],
+        )
+        self.assertEqual(tuple(self.status("b" * 16)), ("pending", None))
+        self.assertEqual(self.tick(FakeGraph()), "published 0, failed 0")
+
     def test_publishes_reel_then_same_video_story_once(self):
         self.add()
         graph = FakeGraph(statuses=("IN_PROGRESS", "FINISHED"))

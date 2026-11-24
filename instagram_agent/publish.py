@@ -23,7 +23,8 @@ from urllib.request import Request, urlopen
 
 from notifications import command_centre_link, notify
 
-from . import storage, video
+from . import recipe_series, storage, video
+from .analysis import LONDON
 from .drafts import PASS_SCORE
 from .graph import GraphAPIError, GraphClient
 
@@ -123,20 +124,73 @@ def rendered(row) -> bool:
     return state in (None, "done")
 
 
-def due(conn, now: datetime) -> list:
-    rows = conn.execute(
+def _scheduled_reels(conn) -> list:
+    return conn.execute(
         "SELECT d.*, (SELECT COUNT(*) FROM publish_runs r WHERE r.draft_id=d.draft_id AND r.outcome='failed') AS fails "
-        "FROM drafts d WHERE d.status IN ('approved','pending') AND d.scheduled_for IS NOT NULL ORDER BY d.scheduled_for"
+        "FROM drafts d WHERE d.status IN ('approved','pending') AND d.kind='reel' AND d.scheduled_for IS NOT NULL "
+        "ORDER BY d.scheduled_for, d.draft_id"
     ).fetchall()
+
+
+def _eligible(row) -> bool:
+    return rendered(row) and row["fails"] < MAX_ATTEMPTS and will_post(row["status"], row["review_score"], held(row))
+
+
+def due(conn, now: datetime) -> list:
     found = []
-    for row in rows:
+    for row in _scheduled_reels(conn):
         when = posts_at(row["scheduled_for"], row["created_at"])
-        if kind(row) != "reel" or not rendered(row):
-            continue  # a reel still rendering, or whose render failed, never posts unedited
-        if will_post(row["status"], row["review_score"], held(row)) and when <= now <= when + STALE_AFTER:
-            if row["fails"] < MAX_ATTEMPTS:
-                found.append(row)
+        if _eligible(row) and when <= now <= when + STALE_AFTER:
+            found.append(row)
     return found
+
+
+def recipe_slot_taken(conn, now: datetime) -> bool:
+    today = now.astimezone(LONDON).date()
+    for row in _scheduled_reels(conn):
+        when = posts_at(row["scheduled_for"], row["created_at"])
+        if _eligible(row) and when.astimezone(LONDON).date() == today and now <= when + STALE_AFTER:
+            return True
+    return False
+
+
+def _reschedule_series_reels(
+    conn, calendar: recipe_series.SeriesCalendar, now: datetime, *, day_full: bool = False
+) -> None:
+    rows = _scheduled_reels(conn)
+    current = calendar.day(now)
+    today = current.date
+    first_open = today + timedelta(days=1) if day_full else today
+    occupied = {
+        slot.date()
+        for row in rows
+        if _eligible(row) and (slot := _instant(row["scheduled_for"]).astimezone(LONDON)).date() >= first_open
+    }
+    with conn:
+        for row in rows:
+            slot = _instant(row["scheduled_for"]).astimezone(LONDON)
+            slot_day = calendar.day(slot)
+            earlier_series_slot = slot_day.date < today and slot_day.in_series
+            off_day = earlier_series_slot and not slot_day.posting_day
+            eligible = _eligible(row)
+            within_grace = now <= posts_at(row["scheduled_for"], row["created_at"]) + STALE_AFTER
+            overnight = current.in_series and earlier_series_slot and eligible and within_grace
+            overflow = day_full and slot.date() == today and eligible and within_grace
+            if not (off_day or overnight or overflow):
+                continue
+            target = datetime.combine(first_open, slot.time(), LONDON)
+            while (
+                target + STALE_AFTER < now
+                or target.date() in occupied
+                or ((target_day := calendar.day(target)).in_series and not target_day.posting_day)
+            ):
+                target += timedelta(days=1)
+            conn.execute(
+                "UPDATE drafts SET scheduled_for=? WHERE draft_id=? AND scheduled_for=? AND status IN ('approved','pending')",
+                (target.isoformat(timespec="seconds"), row["draft_id"], row["scheduled_for"]),
+            )
+            if eligible:
+                occupied.add(target.date())
 
 
 def _is_jpeg(data: bytes) -> bool:
@@ -338,6 +392,7 @@ def configured(env: dict) -> bool:
 
 def tick(conn, env: dict, media_dir: Path, now: datetime, client: GraphClient | None = None, **kwargs) -> str:
     """Publish every due draft. Off unless INSTAGRAM_AUTO_PUBLISH=1 and the token and public folder are set."""
+    checked_at = time.monotonic()
     public_dir, public_url = env.get("INSTAGRAM_PUBLIC_DIR"), env.get("INSTAGRAM_PUBLIC_URL", "")
     if client is None and configured(env):
         from .cli import graph_client
@@ -364,14 +419,27 @@ def tick(conn, env: dict, media_dir: Path, now: datetime, client: GraphClient | 
             key=f"instagram-legacy-skipped:{old['draft_id']}",
             env=env,
         )
+    calendar = recipe_series.calendar(conn, env)
+    current = calendar.day(now)
+    series = current.in_series
+    off_day = series and not current.posting_day
+    day_full = series and not off_day and recipe_series.already_published(conn, now)
+    if calendar.launched_on is not None:
+        _reschedule_series_reels(conn, calendar, now, day_full=day_full)
+    if off_day or day_full:
+        return "published 0, failed 0"
     for row in due(conn, now):
         if kind(row) != "reel":
             continue
-        stamp = now.isoformat(timespec="seconds")
+        if series and calendar.day(_instant(row["scheduled_for"])).date != current.date:
+            continue
+        publish_at = now
+        stamp = publish_at.isoformat(timespec="seconds")
 
         sent = []
 
-        def started(draft_id=row["draft_id"], stamp=stamp, sent=sent):
+        def started(draft_id=row["draft_id"], sent=sent):
+            nonlocal publish_at, stamp
             # Re-check under a write lock: a Reject during preparation must win.
             conn.execute("BEGIN IMMEDIATE")
             try:
@@ -380,6 +448,11 @@ def tick(conn, env: dict, media_dir: Path, now: datetime, client: GraphClient | 
                 ).fetchone()
                 if kind(now_row) != "reel" or not will_post(now_row["status"], now_row["review_score"], held(now_row)):
                     raise Withdrawn("rejected or held before posting")
+                publish_at = now + timedelta(seconds=time.monotonic() - checked_at)
+                send_day = calendar.day(publish_at)
+                if series and (send_day.date != current.date or not send_day.posting_day):
+                    raise Withdrawn("series posting day ended during preparation")
+                stamp = publish_at.isoformat(timespec="seconds")
                 _record(conn, draft_id, stamp, "started")
             except BaseException:
                 conn.rollback()
@@ -419,6 +492,8 @@ def tick(conn, env: dict, media_dir: Path, now: datetime, client: GraphClient | 
             conn.execute(
                 "UPDATE drafts SET status='published', media_id=? WHERE draft_id=?", (media_id, row["draft_id"])
             )
+        if series:
+            _reschedule_series_reels(conn, recipe_series.calendar(conn, env), publish_at, day_full=True)
         try:
             with conn:
                 storage.link_published(conn, row["draft_id"], media_id)
@@ -427,8 +502,10 @@ def tick(conn, env: dict, media_dir: Path, now: datetime, client: GraphClient | 
         link = permalink(client, media_id) or page
         notify("instagram", "ok", f"Instagram post is live: {row['topic']}", link, env=env)
         try:
-            publish_story_once(conn, client, row, media_dir, Path(public_dir), public_url, env, now, **kwargs)
+            publish_story_once(conn, client, row, media_dir, Path(public_dir), public_url, env, publish_at, **kwargs)
         except Exception:
             notify("instagram", "failed", "Reel is live; Story recording failed, check Instagram", page, env=env)
         published += 1
+        if series:
+            break
     return f"published {published}, failed {failed}"
