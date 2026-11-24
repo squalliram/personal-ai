@@ -97,16 +97,18 @@ def creative_snapshot(conn, post, fmt: str, posted: datetime | None) -> dict:
     reel = json.loads(draft["reel"] or "{}") if draft else {}
     slides = json.loads(draft["slides"] or "[]") if draft else []
     caption = draft["caption"] if draft and fmt != "story" else ""
-    generated_slides = (
-        reel.get("source") == "photos"
-        and not conn.execute("SELECT 1 FROM uploads WHERE draft_id=?", (post["draft_id"],)).fetchone()
+    owner_photos = (fmt == "carousel" or reel.get("source") == "photos") and conn.execute(
+        "SELECT 1 FROM uploads WHERE draft_id=?", (post["draft_id"],)
+    ).fetchone()
+    opening_slide = slides[0].get("text") if slides and not owner_photos else None
+    hook = (
+        (opening_slide if reel.get("source") == "photos" and not owner_photos else reel.get("hook"))
+        or (opening_slide if fmt in ("carousel", "reel") else None)
+        or (caption.strip().splitlines()[0].strip() if caption.strip() else None)
     )
-    opening_slide = slides[0].get("text") if slides else None
     return {
         "publish_slot": posted.astimezone(LONDON).isoformat(timespec="seconds") if posted else None,
-        "hook": (opening_slide if generated_slides else reel.get("hook"))
-        or (opening_slide if fmt in ("carousel", "reel") else None)
-        or (caption.splitlines()[0].strip() if caption else None),
+        "hook": hook,
         "duration_seconds": reel.get("seconds") if fmt in ("reel", "story") else None,
         "cta": caption_ask(caption),
         "hashtags": (hashtags(draft["hashtags"] or "") if fmt != "story" else []) if draft else None,

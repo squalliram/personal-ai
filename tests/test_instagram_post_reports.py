@@ -374,6 +374,21 @@ class PostReportTests(Case):
         latest = learnings.summary(self.conn, PUBLISHED + timedelta(hours=73))["reports"][0]
         self.assertEqual(latest["creative"], report["creative"])
 
+    def test_owner_photo_carousel_snapshot_uses_caption_not_alt_text(self):
+        draft_id = self.publish(hook="Bowl on a blue plate")
+        caption = "Roast it for deeper flavour"
+        with self.conn:
+            self.conn.execute(
+                "UPDATE drafts SET caption=? WHERE draft_id=?", (caption + "\nFollow for recipes.", draft_id)
+            )
+            self.conn.execute(
+                "INSERT INTO uploads(upload_id,created_at,note,photos,status,draft_id) VALUES(?,?,?,?,?,?)",
+                ("upload", PUBLISHED.isoformat(), "My soup", 1, "used", draft_id),
+            )
+        at = PUBLISHED + timedelta(hours=25)
+        post_report.tick(self.conn, self.env, at, client=InsightsGraph({"reach": 50}))
+        self.assertEqual(learnings.summary(self.conn, at)["reports"][0]["creative"]["hook"], caption)
+
     def test_generated_reel_snapshot_uses_opening_overlay_not_topic(self):
         draft_id = self.publish(kind="reel", topic="Squash soup", hook="Roast it for deeper flavour")
         self.conn.execute(
