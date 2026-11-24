@@ -101,6 +101,14 @@ class PublishTests(PublishCase):
         self.assertEqual(self.tick(graph, DUE + timedelta(days=1)), "published 1, failed 0")
         self.assertEqual(tuple(self.status()), ("published", "9001"))
 
+    def test_series_carries_an_off_day_reel_when_the_series_ends(self):
+        first = MADE + timedelta(days=4)
+        sunday = first + timedelta(days=27, hours=8)
+        self.add(slot=sunday.isoformat(), made=sunday - timedelta(hours=2))
+        recipe_series.start(self.conn, first)
+        self.assertEqual(self.tick(FakeGraph(), sunday), "published 0, failed 0")
+        self.assertEqual(self.tick(FakeGraph(), sunday + timedelta(days=1)), "published 1, failed 0")
+
     def test_recipe_series_enforces_posting_days_and_one_reel_story_pair_per_day(self):
         self.add()
         recipe_series.start(self.conn, MADE)

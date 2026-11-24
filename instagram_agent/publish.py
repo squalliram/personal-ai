@@ -402,7 +402,7 @@ def tick(conn, env: dict, media_dir: Path, now: datetime, client: GraphClient | 
     series = recipe_series.active(conn, now)
     if series and (not recipe_series.posting_day(env, now) or recipe_series.already_published(conn, now)):
         return "published 0, failed 0"
-    if series:
+    if series or recipe_series.active(conn, now.astimezone(LONDON) - timedelta(days=1)):
         _carry_off_day_reels(conn, env, now)
     for row in due(conn, now):
         if kind(row) != "reel":
