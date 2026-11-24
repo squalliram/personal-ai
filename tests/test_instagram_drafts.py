@@ -355,7 +355,8 @@ class DailyTickTests(unittest.TestCase):
 
 class SlidePromptTests(unittest.TestCase):
     def test_no_people_and_insight_instructions(self):
-        self.assertIn("Each has 6-8 slides", drafts.CREATE)
+        self.assertIn("Each has 4-6 slides", drafts.CREATE)
+        self.assertIn("slide count within 4-6", drafts.CREATE)
         self.assertIn(drafts.NO_PEOPLE, drafts.CREATE)
         self.assertIn("watch-time lift, reach, follows", drafts.CREATE)
         self.assertIn("reel duration findings", drafts.CREATE_REEL_FROM_PHOTOS)
