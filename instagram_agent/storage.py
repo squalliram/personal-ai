@@ -280,14 +280,18 @@ def decide_draft(conn: sqlite3.Connection, draft_id: str, decision: str, decided
     if decision not in ("approved", "rejected"):
         raise ValueError("decision must be approved or rejected")
     with conn:
-        row = conn.execute("SELECT reel FROM drafts WHERE draft_id=?", (draft_id,)).fetchone()
+        row = conn.execute("SELECT reel, kind FROM drafts WHERE draft_id=?", (draft_id,)).fetchone()
         if decision == "approved":
             try:
                 reel = json.loads(row[0] or "{}") if row else {}
                 if reel.get("render") in ("pending", "failed"):
                     return False
-                if "image_review" in reel and (
-                    not isinstance(reel["image_review"], dict) or reel["image_review"].get("status") != "passed"
+                if (
+                    row
+                    and row["kind"] == "reel"
+                    and (
+                        not isinstance(reel.get("image_review"), dict) or reel["image_review"].get("status") != "passed"
+                    )
                 ):
                     return False
             except (ValueError, AttributeError):

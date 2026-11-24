@@ -385,7 +385,9 @@ def render_due(
         done = failed = 0
         for row in rows:
             reel = json.loads(row["reel"] or "{}")
-            needs_review = reel.get("render") == "pending" or reel.get("image_review", {}).get("status") == "pending"
+            review = reel.get("image_review")
+            review = review if isinstance(review, dict) else {}
+            needs_review = reel.get("render") == "pending" or review.get("status") in (None, "pending")
             if reel.get("render") != "pending" and not needs_review:
                 continue
             try:
@@ -407,7 +409,7 @@ def render_due(
                     result = image_review.frames(
                         path, reel["seconds"], reviewer, capabilities().get("ffmpeg"), _run, owner_media=owner_media
                     )
-                    reel["image_review"] = {**reel.get("image_review", {}), **result}
+                    reel["image_review"] = {**review, **result}
                     if result["status"] != "passed":
                         with conn:
                             conn.execute(

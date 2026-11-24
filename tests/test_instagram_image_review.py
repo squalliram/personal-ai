@@ -204,6 +204,23 @@ class CreationTests(unittest.TestCase):
         self.assertIn("ready for your approval", notify.call_args.args[2])
         self.assertTrue(storage.decide_draft(self.conn, row["draft_id"], "approved", MORNING.isoformat()))
 
+    def test_legacy_reel_requires_frame_review_before_approval_or_publishing(self):
+        self.create(reviewer())
+        with self.conn:
+            self.conn.execute(
+                "UPDATE drafts SET reel=json_set(json_remove(reel,'$.image_review'),'$.render','done','$.file','reel.mp4')"
+            )
+        row = self.row()
+        self.assertFalse(publish.rendered(row))
+        self.assertFalse(storage.decide_draft(self.conn, row["draft_id"], "approved", MORNING.isoformat()))
+        with patch.object(
+            image_review, "frames", return_value={"status": "passed", "frames": [], "reasons": []}
+        ) as frames:
+            render.render_due(self.conn, self.media, now=MORNING, reviewer=reviewer())
+        frames.assert_called_once()
+        self.assertTrue(publish.rendered(self.row()))
+        self.assertTrue(storage.decide_draft(self.conn, row["draft_id"], "approved", MORNING.isoformat()))
+
     def test_real_upload_and_clip_provenance_selects_owner_frame_review(self):
         self.create(reviewer())
         draft_id = self.row()["draft_id"]

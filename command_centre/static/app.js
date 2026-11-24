@@ -1941,7 +1941,7 @@
     } else if (draft.status === "pending" && canDecide) {
       const approve = el("button", { type: "button", class: "primary" }, "Approve");
       const visual = draft.reel && draft.reel.image_review;
-      if ((visual && visual.status !== "passed") || (draft.reel && ["pending", "failed"].includes(draft.reel.render))) approve.disabled = true;
+      if ((draft.kind === "reel" && (!visual || visual.status !== "passed")) || (draft.reel && ["pending", "failed"].includes(draft.reel.render))) approve.disabled = true;
       const reject = el("button", { type: "button" }, "Reject");
       const status = el("p", { class: "muted", role: "status" });
       approve.addEventListener("click", () => decide(draft, "approve", [approve, reject], status));

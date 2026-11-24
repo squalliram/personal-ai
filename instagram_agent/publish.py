@@ -117,9 +117,7 @@ def rendered(row) -> bool:
     try:
         reel = json.loads(row["reel"] or "{}")
         state = reel.get("render")
-        if "image_review" in reel and (
-            not isinstance(reel["image_review"], dict) or reel["image_review"].get("status") != "passed"
-        ):
+        if not isinstance(reel.get("image_review"), dict) or reel["image_review"].get("status") != "passed":
             return False
     except (ValueError, AttributeError):
         return False
