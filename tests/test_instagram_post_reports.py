@@ -9,7 +9,7 @@ from unittest import mock
 from command_centre_fixtures import Client, Clock, make_app, make_settings
 
 from command_centre.security import Permission
-from instagram_agent import cli, drafts, learnings, post_report, storage
+from instagram_agent import cli, drafts, learnings, music, post_report, storage, story_insights
 from instagram_agent.graph import GraphAPIError, GraphClient
 
 PUBLISHED = datetime(2026, 11, 12, 18, 0, tzinfo=timezone.utc)
@@ -85,6 +85,138 @@ class Case(unittest.TestCase):
     def inbox(self):
         with sqlite3.connect(self.notes) as conn:
             return conn.execute("SELECT outcome, title, link, dedupe_key FROM notifications ORDER BY id").fetchall()
+
+
+class StoryInsightsTests(Case):
+    def test_new_story_report_ranks_above_newer_captures(self):
+        captured = PUBLISHED + timedelta(hours=23)
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO story_insights(media_id,posted_at,captured_at,metrics) VALUES(?,?,?,?)",
+                ("42", PUBLISHED.isoformat(), captured.isoformat(), '{"reach":45}'),
+            )
+            for n in range(10):
+                stamp = (captured + timedelta(hours=n + 1)).isoformat()
+                self.conn.execute(
+                    "INSERT INTO post_reports(media_id,checkpoint,format,posted_at,captured_at) "
+                    "VALUES(?,'24h','reel',?,?)",
+                    (str(n), PUBLISHED.isoformat(), stamp),
+                )
+        now = PUBLISHED + timedelta(hours=72)
+        self.assertEqual(post_report.tick(self.conn, self.env, now), "reports 1")
+        first = learnings.summary(self.conn, now)["reports"][0]
+        self.assertEqual(
+            (first["media_id"], first["checkpoint"], first["captured_at"]), ("42", "72h", captured.isoformat())
+        )
+
+    def test_live_snapshots_are_updated_and_used_by_both_reports_and_learning(self):
+        draft_id = self.publish(kind="reel")
+        with self.conn:
+            self.conn.execute(
+                "UPDATE drafts SET reel=? WHERE draft_id=?",
+                (
+                    json.dumps({"story": {"state": "published", "media_id": "42"}, "music": {"track_id": "test"}}),
+                    draft_id,
+                ),
+            )
+
+        class StoriesGraph(InsightsGraph):
+            def get(self, path, params=None):
+                if path == f"{self.user_id}/stories":
+                    return {
+                        "data": [
+                            {"id": "42", "timestamp": PUBLISHED.isoformat()},
+                            {"id": "90", "timestamp": (PUBLISHED - timedelta(days=1)).isoformat()},
+                        ],
+                        "paging": {"next": "page2"},
+                    }
+                if path == "page2":
+                    return {"data": [{"id": "43", "timestamp": PUBLISHED.isoformat()}]}
+                if path == "90/insights":
+                    raise AssertionError("Expired Story fetched")
+                if params.get("breakdown") and path == "42/insights":
+                    return {
+                        "data": [
+                            {
+                                "name": "navigation",
+                                "total_value": {
+                                    "value": 12,
+                                    "breakdowns": [
+                                        {
+                                            "dimension_keys": ["story_navigation_action_type"],
+                                            "results": [
+                                                {"dimension_values": ["tap_forward"], "value": 12},
+                                                {"dimension_values": ["tap_back"], "value": 0},
+                                            ],
+                                        }
+                                    ],
+                                },
+                            }
+                        ]
+                    }
+                if params.get("breakdown") or params["metric"] == "shares":
+                    raise GraphAPIError("Unsupported metric")
+                return super().get(path, params)
+
+        graph = StoriesGraph(
+            {"reach": 10, "views": 12, "follows": 0, "profile_visits": 1, "replies": 0, "navigation": 5}
+        )
+        self.assertEqual(story_insights.capture(self.conn, graph, PUBLISHED + timedelta(hours=1)), 2)
+        self.assertEqual(story_insights.capture(self.conn, graph, PUBLISHED + timedelta(hours=2)), 0)
+        graph.metrics = {"reach": 45, "views": 50, "follows": 2, "replies": 1, "total_interactions": 3, "navigation": 8}
+        final = PUBLISHED + timedelta(hours=23, minutes=15)
+        self.assertEqual(story_insights.capture(self.conn, graph, final), 2)
+        self.assertEqual(story_insights.capture(self.conn, graph, PUBLISHED + timedelta(hours=24)), 0)
+        row = self.conn.execute("SELECT * FROM story_insights WHERE media_id='42'").fetchone()
+        self.assertEqual((row["draft_id"], row["captured_at"]), (draft_id, final.isoformat()))
+        self.assertEqual(json.loads(row["navigation_breakdown"]), {"tap_forward": 12, "tap_back": 0})
+        self.assertEqual(
+            self.conn.execute("SELECT draft_id FROM story_insights WHERE media_id='43'").fetchone()[0], None
+        )
+        self.assertEqual(
+            json.loads(self.conn.execute("SELECT metrics FROM story_insights WHERE media_id='43'").fetchone()[0])[
+                "navigation"
+            ],
+            8,
+        )
+
+        with mock.patch.object(post_report, "fetch", side_effect=AssertionError("Story must not fetch live")):
+            for hours in (24, 72):
+                report_at = PUBLISHED + timedelta(hours=hours, minutes=5)
+                self.assertEqual(post_report.tick(self.conn, self.env, report_at), "reports 2")
+        rows = self.conn.execute(
+            "SELECT checkpoint,format,captured_at,reach,views,replies,navigation,follows,profile_visits,shares "
+            "FROM post_reports WHERE media_id='42' ORDER BY checkpoint"
+        )
+        self.assertEqual(
+            [tuple(r) for r in rows],
+            [(f"{h}h", "story", final.isoformat(), 45, 50, 1, 12, 2, 1, None) for h in (24, 72)],
+        )
+        title = self.inbox()[0][1]
+        for part in (
+            "Captured live at 23h 15m",
+            "reach 45",
+            "views 50",
+            "replies 1",
+            "navigation 12",
+            "follows 2",
+            "profile visits 1",
+            "forward 12",
+            "back 0",
+        ):
+            self.assertIn(part, title)
+        with storage.connect(self.db, read_only=True) as conn:
+            learned = learnings.for_prompt(learnings.summary(conn, report_at))
+        self.assertEqual(learned["posts_measured"], 2)
+        sample = next(sample for sample in learned["story_samples"] if sample["topic"] == "Flat whites")
+        self.assertEqual(sample["captured_live_at"], final.isoformat())
+        self.assertEqual(sample["metrics"]["total_interactions"], 3)
+        self.assertEqual(sample["navigation_breakdown"], {"tap_forward": 12, "tap_back": 0})
+        with (
+            mock.patch.object(music, "tracks", return_value=[{"track_id": "test"}]),
+            mock.patch.object(music, "usable_file", return_value=self.root / "test.mp3"),
+        ):
+            self.assertEqual(music.for_reel(self.conn, self.root)[0]["performance"], {})
 
 
 class PostReportTests(Case):
@@ -245,6 +377,20 @@ class PostReportTests(Case):
 
 
 class LearningsTests(Case):
+    def test_story_conversion_hours_do_not_override_reel_schedule(self):
+        for n in range(10):
+            strong = n < 5
+            posted = (PUBLISHED - timedelta(days=15 - n)).replace(hour=15 if strong else 18)
+            self.conn.execute(
+                "INSERT INTO post_reports(media_id,checkpoint,format,posted_at,captured_at,reach,follows) "
+                "VALUES(?,'24h','story',?,?,100,?)",
+                (str(n), posted.isoformat(), (posted + timedelta(hours=23)).isoformat(), 4 if strong else 0),
+            )
+        findings = learnings.summary(self.conn, PUBLISHED)["growth_findings"]["follows"]
+        self.assertTrue(any(row["feature"] == "London posting hour" and row["value"] == "15" for row in findings))
+        with mock.patch.object(drafts.analysis, "best_hours", return_value=[18]):
+            self.assertEqual(drafts.publish_slots(self.conn, PUBLISHED.replace(hour=9), 1), ["2026-11-12T18:00+00:00"])
+
     def measure(self, media_id, reach, *, days=0, **draft):
         at = PUBLISHED - timedelta(days=days)
         self.publish(media_id, at=at, **draft)

@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from instagram_agent import story_insights  # noqa: E402
 from instagram_agent.graph import (  # noqa: E402
     CONVERSION_METRICS,
     GRAPH_HOST,
@@ -30,7 +31,6 @@ from instagram_agent.graph import (  # noqa: E402
 LONDON = ZoneInfo("Europe/London")
 COMMON_METRICS = ("reach", "views", "likes", "comments", "saved", "shares", "total_interactions")
 REEL_METRICS = ("ig_reels_avg_watch_time", "ig_reels_video_view_total_time")
-STORY_METRICS = ("reach", "views", "replies", "shares", *CONVERSION_METRICS)
 POST_COLUMNS = (
     "id",
     "date",
@@ -253,11 +253,18 @@ def export(client, output, token, now=None):
     stories = []
     for item in (story_page or {}).get("data", []):
         media_id = item["id"]
-        values = {}
-        for metric in STORY_METRICS:
-            payload = get(f"{media_id}/insights", {"metric": metric}, f"story:{media_id}:{metric}")
-            values[metric] = metric_value(payload or {})
-        stories.append({**item, "insights": values})
+        values, breakdown = story_insights.read_metrics(
+            lambda params, media_id=media_id: get(
+                f"{media_id}/insights", params, f"story:{media_id}:{params['metric']}"
+            )
+        )
+        stories.append(
+            {
+                **item,
+                "insights": {metric: values.get(metric) for metric in story_insights.METRICS},
+                "navigation_breakdown": breakdown,
+            }
+        )
     save(
         "active_stories.json",
         {

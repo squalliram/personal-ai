@@ -1,12 +1,13 @@
 """Read-only reports on each auto-published post at about 24 and 72 hours, sent through `notifications.notify`.
 
-Each checkpoint fetches the post's insights, stores them in `post_reports`, compares them with the
+Each checkpoint reads the post's insights (a stored live snapshot for Stories), compares them with the
 account's recent median for the same format and sends one Inbox + Telegram alert. A failed fetch is
 retried on later ticks and reported once if it keeps failing. Nothing here writes to Instagram.
 """
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import statistics
 from datetime import datetime, timedelta, timezone
@@ -30,6 +31,8 @@ METRICS = (
     "avg_watch_ms",
     "total_watch_ms",
     *CONVERSION_METRICS,
+    "replies",
+    "navigation",
 )
 SHOWN = (("reach", "reach"), ("views", "views"), ("likes", "likes"), ("comments", "comments"), ("saved", "saves"),
          ("shares", "shares"), ("avg_watch_ms", "avg watch"), ("follows", "follows"),
@@ -66,11 +69,14 @@ def media_format(product_type: str | None, media_type: str | None) -> str:
 
 
 def published(conn: sqlite3.Connection) -> list:
-    """Drafts this agent published, with the tick time of their publish."""
+    """Published drafts and Stories, with their publish times."""
     return conn.execute(
-        "SELECT d.draft_id, d.media_id, d.topic, d.kind, MIN(r.started_at) AS published_at FROM drafts d "
+        "SELECT d.draft_id, d.media_id, d.topic, d.kind, MIN(r.started_at) AS published_at, "
+        "NULL AS story_captured_at, NULL AS story_metrics, NULL AS story_navigation FROM drafts d "
         "JOIN publish_runs r ON r.draft_id=d.draft_id AND r.outcome='published' AND r.media_id=d.media_id "
-        "WHERE d.status='published' AND d.media_id IS NOT NULL GROUP BY d.draft_id"
+        "WHERE d.status='published' AND d.media_id IS NOT NULL GROUP BY d.draft_id "
+        "UNION ALL SELECT s.draft_id, s.media_id, COALESCE(d.topic,'Instagram Story'), 'story', s.posted_at, "
+        "s.captured_at, s.metrics, s.navigation_breakdown FROM story_insights s LEFT JOIN drafts d USING(draft_id)"
     ).fetchall()
 
 
@@ -134,7 +140,7 @@ def baseline(conn: sqlite3.Connection, fmt: str, checkpoint: str, exclude: str, 
         if (parse_time(row["posted_at"]) or since) >= since
     ]
     basis = "checkpoint"
-    if len(rows) < MIN_SAME_CHECKPOINT:
+    if fmt != "story" and len(rows) < MIN_SAME_CHECKPOINT:
         lifetime = _lifetime_rows(conn, fmt, exclude, since)
         if len(lifetime) > len(rows):
             rows, basis = lifetime, "lifetime"
@@ -205,6 +211,31 @@ def _attempt_failed(conn, post, checkpoint: str, env: dict, now: datetime, page:
         _gave_up(conn, post, checkpoint, env, now, page)
 
 
+def _story_summary(post, checkpoint: str, posted: datetime, stamp: datetime, values: dict, base: dict) -> str:
+    minutes = int((stamp - posted).total_seconds() // 60)
+    head = f"{checkpoint} Story report: {post['topic'][:50]}. Captured live at {minutes // 60}h {minutes % 60}m."
+    labels = (
+        ("reach", "reach"), ("views", "views"), ("replies", "replies"), ("navigation", "navigation"),
+        ("follows", "follows"), ("profile_visits", "profile visits"), ("shares", "shares"),
+        ("total_interactions", "interactions"),
+    )  # fmt: skip
+    stats = ", ".join(f"{label} {_number(metric, values[metric])}" for metric, label in labels if metric in values)
+    text = f"{head} {stats}."
+    actions = json.loads(post["story_navigation"])
+    labels = {"tap_forward": "forward", "tap_back": "back", "tap_exit": "exits", "swipe_forward": "next story"}
+    for key, label in labels.items():
+        if key in actions:
+            extra = f" {label} {actions[key]:,}."
+            if len(text) + len(extra) <= TITLE_LIMIT:
+                text += extra
+    reach, median = values.get("reach"), base["medians"].get("reach")
+    if reach is not None and median:
+        extra = f" Reach {reach / median:.1f}x the median of {base['posts']} Stories."
+        if len(text) + len(extra) <= TITLE_LIMIT:
+            text += extra
+    return text if len(text) <= TITLE_LIMIT else text[: TITLE_LIMIT - 1] + "…"
+
+
 def _gave_up(conn, post, checkpoint: str, env: dict, now: datetime, page: str) -> None:
     """One failure alert once fetching is exhausted; retried on later ticks until it is stored."""
     title = f"Instagram {checkpoint} report not made: insights for {post['topic']} could not be read"
@@ -229,7 +260,7 @@ def _deliver_report(conn, post, checkpoint: str, text: str, link: str | None, en
     return True
 
 
-def report_one(conn, client: GraphClient, post, checkpoint: str, env: dict, now: datetime) -> bool:
+def report_one(conn, client: GraphClient | None, post, checkpoint: str, env: dict, now: datetime) -> bool:
     page = command_centre_link(env, "instagram")
     previous = conn.execute(
         "SELECT attempts,captured_at,summary,permalink FROM post_reports WHERE media_id=? AND checkpoint=?",
@@ -240,30 +271,42 @@ def report_one(conn, client: GraphClient, post, checkpoint: str, env: dict, now:
     if previous and previous["attempts"] >= MAX_ATTEMPTS:
         _gave_up(conn, post, checkpoint, env, now, page)
         return False
-    try:
-        media, values = fetch(client, post["media_id"])
-    except (GraphAPIError, ValueError, KeyError, TypeError, AttributeError):
-        _attempt_failed(conn, post, checkpoint, env, now, page)
-        return False
-    fmt = media_format(media.get("media_product_type"), media.get("media_type"))
-    if post["kind"] == "reel":
-        fmt = "reel"
-    posted = parse_time(media.get("timestamp")) or parse_time(post["published_at"])
-    link = safe_link(media.get("permalink"))
-    stamp = now.isoformat(timespec="seconds")
+    posted = parse_time(post["published_at"])
+    if post["kind"] == "story":
+        stamp = post["story_captured_at"]
+        captured = parse_time(stamp)
+        if not captured or not posted:
+            _attempt_failed(conn, post, checkpoint, env, now, page)
+            return False
+        fmt, media, link, values = "story", {}, None, json.loads(post["story_metrics"])
+    else:
+        try:
+            media, values = fetch(client, post["media_id"])
+        except (GraphAPIError, ValueError, KeyError, TypeError, AttributeError):
+            _attempt_failed(conn, post, checkpoint, env, now, page)
+            return False
+        fmt = (
+            "reel" if post["kind"] == "reel" else media_format(media.get("media_product_type"), media.get("media_type"))
+        )
+        posted = parse_time(media.get("timestamp")) or posted
+        link = safe_link(media.get("permalink"))
+        stamp = now.isoformat(timespec="seconds")
     base = baseline(conn, fmt, checkpoint, post["media_id"], now)
-    text = summarise(post["topic"], fmt, checkpoint, posted, values, base)
+    if fmt == "story":
+        text = _story_summary(post, checkpoint, posted, captured, values, base)
+    else:
+        text = summarise(post["topic"], fmt, checkpoint, posted, values, base)
     with conn:
         if media.get("timestamp"):
             storage.upsert_post(conn, media, stamp)
             storage.upsert_metrics(conn, post["media_id"], now.astimezone(LONDON).date().isoformat(), values)
             storage.link_published_drafts(conn)
         conn.execute(
-            f"INSERT INTO post_reports(media_id,checkpoint,draft_id,format,posted_at,permalink,captured_at,summary,"
-            f"{','.join(METRICS)}) VALUES(?,?,?,?,?,?,?,?,{','.join('?' * len(METRICS))}) "
+            f"INSERT INTO post_reports(media_id,checkpoint,draft_id,format,posted_at,permalink,captured_at,reported_at,"
+            f"summary,{','.join(METRICS)}) VALUES(?,?,?,?,?,?,?,?,?,{','.join('?' * len(METRICS))}) "
             f"ON CONFLICT(media_id,checkpoint) DO UPDATE SET format=excluded.format, posted_at=excluded.posted_at, "
-            f"permalink=excluded.permalink, captured_at=excluded.captured_at, summary=excluded.summary, "
-            + ", ".join(f"{m}=excluded.{m}" for m in METRICS),
+            f"permalink=excluded.permalink, captured_at=excluded.captured_at, reported_at=excluded.reported_at, "
+            f"summary=excluded.summary, " + ", ".join(f"{m}=excluded.{m}" for m in METRICS),
             (
                 post["media_id"],
                 checkpoint,
@@ -272,6 +315,7 @@ def report_one(conn, client: GraphClient, post, checkpoint: str, env: dict, now:
                 posted.isoformat(timespec="seconds") if posted else None,
                 link,
                 stamp,
+                now.astimezone(timezone.utc).isoformat(timespec="seconds"),
                 text,
                 *(values.get(m) for m in METRICS),
             ),
@@ -285,12 +329,15 @@ def tick(conn, env: dict, now: datetime | None = None, client: GraphClient | Non
     pending = due(conn, now)
     if not pending:
         return "reports 0"
-    if client is None:
+    if client is None and any(post["kind"] != "story" for post, _ in pending):
         if not (env.get("INSTAGRAM_ACCESS_TOKEN") and env.get("INSTAGRAM_USER_ID")):
-            return "reports off"
-        from .cli import graph_client
+            pending = [(post, checkpoint) for post, checkpoint in pending if post["kind"] == "story"]
+            if not pending:
+                return "reports off"
+        else:
+            from .cli import graph_client
 
-        client = graph_client(env)
+            client = graph_client(env)
     sent = failed = 0
     for post, checkpoint in pending[:PER_TICK]:
         if report_one(conn, client, post, checkpoint, env, now):

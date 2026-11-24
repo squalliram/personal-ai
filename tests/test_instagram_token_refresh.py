@@ -271,6 +271,7 @@ class DailyRefreshIntegrationTests(unittest.TestCase):
 
             with (
                 patch.object(cli.token_refresh, "tick", side_effect=refresh),
+                patch.object(cli, "_capture_stories", side_effect=lambda *a: events.append("stories") or "stories_off"),
                 patch.object(cli, "daily", side_effect=lambda *a: events.append("draft") or "skipped"),
                 patch.object(cli.render, "render_due"),
                 patch.object(cli.publish, "tick", side_effect=lambda *a: events.append("publish") or "publish_off"),
@@ -278,8 +279,8 @@ class DailyRefreshIntegrationTests(unittest.TestCase):
                 redirect_stdout(io.StringIO()) as output,
             ):
                 self.assertEqual(cli.main(args), 0)
-        self.assertEqual(events, ["refresh", "draft", "publish", "reports"])
-        self.assertEqual(output.getvalue().strip(), "skipped; not_due; publish_off; reports_off")
+        self.assertEqual(events, ["refresh", "stories", "draft", "publish", "reports"])
+        self.assertEqual(output.getvalue().strip(), "skipped; not_due; publish_off; stories_off; reports_off")
 
     def test_daily_reloads_config_after_concurrent_rotation(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -294,6 +295,7 @@ class DailyRefreshIntegrationTests(unittest.TestCase):
             with (
                 patch.dict(cli.os.environ, {}, clear=True),
                 patch.object(GraphClient, "refresh_access_token", side_effect=refresh),
+                patch.object(cli, "_capture_stories", return_value="stories_off") as stories,
                 patch.object(cli, "daily", return_value="skipped") as draft,
                 patch.object(cli.render, "render_due"),
                 patch.object(cli.publish, "tick", return_value="publish_off") as publish,
@@ -314,7 +316,7 @@ class DailyRefreshIntegrationTests(unittest.TestCase):
                     ),
                     0,
                 )
-            for stage in (draft, publish, reports):
+            for stage in (stories, draft, publish, reports):
                 env = stage.call_args.args[1]
                 self.assertEqual(env[TOKEN_KEY], ROTATED_TOKEN)
                 self.assertEqual(env["INSTAGRAM_AUTO_PUBLISH"], "0")

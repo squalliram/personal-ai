@@ -288,6 +288,8 @@ class ExportTests(unittest.TestCase):
                     return {"data": [media("2", media_product_type="STORY")]}
                 if path == "123/insights":
                     return {"data": []}
+                if path == "2/insights" and params.get("breakdown") == "story_navigation_action_type":
+                    return response({"tap_forward": 8, "tap_back": 0})
                 if params["metric"] == "profile_visits":
                     raise GraphAPIError("Unsupported metric")
                 return response(0 if params["metric"] == "follows" else 30)
@@ -301,6 +303,8 @@ class ExportTests(unittest.TestCase):
             self.assertEqual((story["id"], story["insights"]["reach"]), ("2", 30))
             self.assertEqual(story["insights"]["follows"], 0)
             self.assertIsNone(story["insights"]["profile_visits"])
+            self.assertEqual(story["insights"]["navigation"], 8)
+            self.assertEqual(story["navigation_breakdown"], {"tap_forward": 8, "tap_back": 0})
             with (output / "posts.csv").open() as handle:
                 self.assertEqual(
                     [(p["id"], p["follows"], p["profile_visits"]) for p in csv.DictReader(handle)], [("1", "0", "")]

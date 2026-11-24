@@ -108,6 +108,16 @@ CREATE TABLE IF NOT EXISTS token_state (
     last_outcome TEXT NOT NULL,
     last_error TEXT
 );
+CREATE TABLE IF NOT EXISTS story_insights (
+    media_id TEXT PRIMARY KEY,
+    draft_id TEXT,
+    posted_at TEXT NOT NULL,
+    permalink TEXT,
+    captured_at TEXT,
+    metrics TEXT NOT NULL DEFAULT '{}',
+    navigation_breakdown TEXT NOT NULL DEFAULT '{}'
+);
+
 CREATE TABLE IF NOT EXISTS post_reports (
     media_id TEXT NOT NULL,
     checkpoint TEXT NOT NULL CHECK (checkpoint IN ('24h', '72h')),
@@ -117,6 +127,7 @@ CREATE TABLE IF NOT EXISTS post_reports (
     permalink TEXT,
     attempts INTEGER NOT NULL DEFAULT 0,
     captured_at TEXT,
+    reported_at TEXT,
     reach INTEGER,
     likes INTEGER,
     comments INTEGER,
@@ -128,6 +139,8 @@ CREATE TABLE IF NOT EXISTS post_reports (
     total_watch_ms INTEGER,
     follows INTEGER,
     profile_visits INTEGER,
+    replies INTEGER,
+    navigation INTEGER,
     summary TEXT,
     notified_at TEXT,
     PRIMARY KEY (media_id, checkpoint)

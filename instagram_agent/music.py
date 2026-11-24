@@ -141,7 +141,7 @@ def for_reel(conn: sqlite3.Connection, media_dir: Path) -> list[dict]:
         return available
     rows = conn.execute(
         "SELECT d.reel,p.checkpoint,p.views,p.reach FROM post_reports p JOIN drafts d ON d.draft_id=p.draft_id "
-        "WHERE d.kind='reel' AND p.captured_at IS NOT NULL"
+        "WHERE d.kind='reel' AND p.captured_at IS NOT NULL AND p.format IS NOT 'story'"
     ).fetchall()
     observed = {}
     for row in rows:
