@@ -451,6 +451,19 @@ class SlidePromptTests(unittest.TestCase):
             self.assertNotIn("pouring", logs.output[0])
         self.assertIsNone(drafts.PEOPLE.search("handcrafted mango coffee"))
 
+    def test_negated_motion_clauses_preserve_the_dish(self):
+        for scene, expected in (
+            ("A cherry crumble on a brown plate, no pouring", "A cherry crumble on a brown plate"),
+            ("without drizzling, a bowl of tomato soup", "a bowl of tomato soup"),
+            ("A baked potato; no stirring or dipping", "A baked potato"),
+        ):
+            prompt = drafts.slide_prompt({"text": "Weeknight supper", "image_prompt": scene}, draws_text=False)
+            self.assertEqual(prompt.split("\n\n")[0], expected)
+        prompt = drafts.slide_prompt(
+            {"text": "Supper", "image_prompt": "cream pouring over a cherry crumble"}, draws_text=False
+        )
+        self.assertTrue(prompt.startswith("A finished, plated dish"))
+
     def test_all_models_generate_textless_static_brand_photos(self):
         slide = {"text": "Flat white 101", "image_prompt": "a flat white on marble"}
         for draws_text in (True, False):

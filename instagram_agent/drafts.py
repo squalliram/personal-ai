@@ -690,7 +690,15 @@ def slide_prompt(slide: dict, *, draws_text: bool) -> str:
         image_prompt = "An appetising, well-lit, photorealistic close-up food or drink photograph"
         if not _mentions_people(slide["text"]):
             image_prompt += f" illustrating: {slide['text']}"
-    if re.search(r"\b(pouring|stirring|dipping|drizzling|floating|levitating)\b", image_prompt, re.I):
+    image_prompt = re.sub(
+        r"\b(?:no|without)\s+(?:any\s+)?(?:pouring|stirring|dipping|drizzling|floating|levitating)\b[^,;.!?]*",
+        "",
+        image_prompt,
+        flags=re.I,
+    ).strip(" ,;")
+    if not image_prompt or re.search(
+        r"\b(pouring|stirring|dipping|drizzling|floating|levitating)\b", image_prompt, re.I
+    ):
         image_prompt = "A finished, plated dish or ready-to-drink drink resting on a rustic wooden table"
     base = f"{image_prompt}\n\nA 4:5 portrait Instagram carousel photo for a food, coffee and restaurant account."
     return base + " " + BRAND + " No text, words, letters or logos anywhere in the image. " + NO_PEOPLE
