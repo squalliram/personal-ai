@@ -367,6 +367,34 @@ class DailyFromUploadTests(Fixture):
         self.assertEqual(self.titles(), [f'Your photos ("{NOTE}") are now a reel draft, posting is manual'])
         self.assertEqual(self.tick(PhotoAI([], [])), "skipped")
 
+    def test_unapproved_carryovers_do_not_stop_the_next_recipe_draft(self):
+        recipe_series.start(self.conn, MORNING)
+        friday = MORNING + timedelta(days=1)
+        slot = friday.replace(hour=16).isoformat()
+        with self.conn:
+            for draft_id, score, hold in (("a" * 16, 90, True), ("b" * 16, 40, False)):
+                storage.insert_draft(
+                    self.conn,
+                    {
+                        "draft_id": draft_id,
+                        "category": "food",
+                        "topic": "Carryover",
+                        "kind": "reel",
+                        "slides": [],
+                        "caption": "",
+                        "hashtags": [],
+                        "review_score": score,
+                        "scheduled_for": slot,
+                        "reel": {"render": "done", "hold": hold},
+                    },
+                    MORNING.date().isoformat(),
+                    MORNING.isoformat(),
+                )
+        self.add_upload("Recipe: homemade squash soup.")
+        ai = PhotoAI([photo_draft()], [[85]])
+        self.assertEqual(self.tick(ai, now=friday), "ok")
+        self.assertEqual(storage.drafts_on(self.conn, friday.date().isoformat()), 1)
+
     def test_recipe_series_prefers_recipe_upload_then_reverts_to_regular_queue(self):
         restaurant = self.add_upload()
         recipe = self.add_upload(

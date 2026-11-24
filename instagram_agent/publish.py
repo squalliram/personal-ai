@@ -124,32 +124,43 @@ def rendered(row) -> bool:
     return state in (None, "done")
 
 
-def due(conn, now: datetime) -> list:
-    rows = conn.execute(
+def _scheduled_reels(conn) -> list:
+    return conn.execute(
         "SELECT d.*, (SELECT COUNT(*) FROM publish_runs r WHERE r.draft_id=d.draft_id AND r.outcome='failed') AS fails "
-        "FROM drafts d WHERE d.status IN ('approved','pending') AND d.scheduled_for IS NOT NULL ORDER BY d.scheduled_for"
+        "FROM drafts d WHERE d.status IN ('approved','pending') AND d.kind='reel' AND d.scheduled_for IS NOT NULL "
+        "ORDER BY d.scheduled_for, d.draft_id"
     ).fetchall()
+
+
+def _eligible(row) -> bool:
+    return rendered(row) and row["fails"] < MAX_ATTEMPTS and will_post(row["status"], row["review_score"], held(row))
+
+
+def due(conn, now: datetime) -> list:
     found = []
-    for row in rows:
+    for row in _scheduled_reels(conn):
         when = posts_at(row["scheduled_for"], row["created_at"])
-        if kind(row) != "reel" or not rendered(row):
-            continue  # a reel still rendering, or whose render failed, never posts unedited
-        if will_post(row["status"], row["review_score"], held(row)) and when <= now <= when + STALE_AFTER:
-            if row["fails"] < MAX_ATTEMPTS:
-                found.append(row)
+        if _eligible(row) and when <= now <= when + STALE_AFTER:
+            found.append(row)
     return found
 
 
+def recipe_slot_taken(conn, now: datetime) -> bool:
+    today = now.astimezone(LONDON).date()
+    for row in _scheduled_reels(conn):
+        when = posts_at(row["scheduled_for"], row["created_at"])
+        if _eligible(row) and when.astimezone(LONDON).date() == today and now <= when + STALE_AFTER:
+            return True
+    return False
+
+
 def _carry_off_day_reels(conn, env: dict, now: datetime) -> None:
-    rows = conn.execute(
-        "SELECT * FROM drafts WHERE status IN ('approved','pending') "
-        "AND kind='reel' AND scheduled_for IS NOT NULL ORDER BY julianday(scheduled_for), draft_id"
-    ).fetchall()
+    rows = _scheduled_reels(conn)
     local = now.astimezone(LONDON)
     occupied = {
         slot.date()
         for row in rows
-        if (slot := _instant(row["scheduled_for"]).astimezone(LONDON)) >= local.replace(hour=0, minute=0, second=0)
+        if _eligible(row) and (slot := _instant(row["scheduled_for"]).astimezone(LONDON)).date() >= local.date()
     }
     with conn:
         for row in rows:
@@ -171,7 +182,8 @@ def _carry_off_day_reels(conn, env: dict, now: datetime) -> None:
                 "UPDATE drafts SET scheduled_for=? WHERE draft_id=? AND scheduled_for=? AND status IN ('approved','pending')",
                 (target.isoformat(timespec="seconds"), row["draft_id"], row["scheduled_for"]),
             )
-            occupied.add(target.date())
+            if _eligible(row):
+                occupied.add(target.date())
 
 
 def _is_jpeg(data: bytes) -> bool:

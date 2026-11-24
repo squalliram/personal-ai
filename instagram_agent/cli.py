@@ -276,7 +276,11 @@ def make_drafts(conn, env: dict, media_dir: Path, now: datetime | None = None) -
     series = recipe_series.active(conn, now)
     slot_args = {}
     if series:
-        if not recipe_series.posting_day(env, now) or not (slot := drafts.recipe_slot(conn, now)):
+        if (
+            not recipe_series.posting_day(env, now)
+            or publish.recipe_slot_taken(conn, now)
+            or not (slot := drafts.recipe_slot(conn, now))
+        ):
             return "skipped"
         slot_args = {"slot": slot}
     if storage.runs_on(conn, today) >= DAILY_ATTEMPTS:

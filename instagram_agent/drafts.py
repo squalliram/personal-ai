@@ -656,12 +656,6 @@ def publish_slots(conn, now: datetime, count: int) -> list[str]:
 
 def recipe_slot(conn, now: datetime) -> str | None:
     local = now.astimezone(LONDON)
-    dates = conn.execute(
-        "SELECT scheduled_for FROM drafts WHERE status IN ('approved','pending') "
-        "AND kind='reel' AND scheduled_for IS NOT NULL"
-    )
-    if any(datetime.fromisoformat(row[0]).astimezone(LONDON).date() == local.date() for row in dates):
-        return None
     hours = [*learnings.growth_hours(conn, now), 16]
     for hour in hours:
         at = datetime.combine(local.date(), time(hour), LONDON)
