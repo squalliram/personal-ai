@@ -40,6 +40,10 @@ next = vm.runInContext('igNextTest(items, p => p.views, [], "Views", learned)', 
 assert.match(next['Posting hour'], /single content test below/);
 assert.doesNotMatch(next['Posting hour'], /change only the hook/);
 assert.match(next['Next reel'], /caption length/);
+insights.learned.not_working.unshift({feature: 'format', value: 'story', text: 'Excluded format evidence'});
+insights.learned.not_working[1].text = 'Caption length: over 150 words — 0.7x the median (3 posts, small sample)';
+assert.equal(vm.runInContext('igContentFindings(learned).change.text', insights), insights.learned.not_working[1].text,
+  'the evidence card and recommendation must select the same finding, including sample size');
 
 // Test section routing without a browser. Real DOM interactions are covered by UI testing.
 class Element {

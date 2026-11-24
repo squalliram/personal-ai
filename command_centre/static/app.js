@@ -2256,7 +2256,8 @@
   }
 
   function learningsCard(learned, next) {
-    const findings = [...(learned.working || []).slice(0, 1), ...(learned.not_working || []).slice(0, 1)];
+    const { change, keep } = igContentFindings(learned);
+    const findings = [change, keep].filter(Boolean);
     return card("What to test next", keyValues(Object.entries(next)),
       muted("Suggested tests, not proven causes. Hour and format use the selected filters; stored learnings below use their own 90-day sample."),
       findings.length ? el("details", {}, el("summary", {}, "Stored learnings behind the suggestion"), muted(learned.sample_note),
@@ -2275,6 +2276,13 @@
     return sorted.length ? (sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2) : null;
   };
   const igFormatCount = (format, count) => `${count} ${count === 1 ? format === "story" ? "Story" : IG_FORMATS[format].toLowerCase() : {reel: "reels", story: "Stories", post: "posts"}[format]}`;
+  function igContentFindings(learned) {
+    const features = new Set(["hook length", "caption length", "caption ask", "hashtag count", "hashtag", "reel length"]);
+    return {
+      change: (learned.not_working || []).find((f) => features.has(f.feature)),
+      keep: (learned.working || []).find((f) => features.has(f.feature)),
+    };
+  }
   function igNextTest(measured, value, groups, metric, learned) {
     const formats = ["reel", "post"].map((format) => {
       const peers = measured.filter((p) => p.format === format);
@@ -2283,9 +2291,7 @@
     const hour = groups.find((g) => g.values.length >= 5 && igMedian(g.values) > 0);
     // General learnings combine formats/checkpoints; do not turn a timing or format association
     // from that separate sample into a claim about the selected chart cohort.
-    const contentFeatures = new Set(["hook length", "caption length", "caption ask", "hashtag count", "hashtag", "reel length"]);
-    const change = (learned.not_working || []).find((f) => contentFeatures.has(f.feature));
-    const keep = (learned.working || []).find((f) => contentFeatures.has(f.feature));
+    const { change, keep } = igContentFindings(learned);
     return {
       "Format to test": formats.length === 2 && formats[0].median > formats[1].median
         ? `${IG_FORMATS[formats[0].format]} leads on median ${metric.toLowerCase()} (${igCount(formats[0].median)}, n=${formats[0].n}); candidate for a separate format-only test, not a conversion verdict. Stories are separate.`
