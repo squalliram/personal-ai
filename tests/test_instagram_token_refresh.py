@@ -271,8 +271,9 @@ class DailyRefreshIntegrationTests(unittest.TestCase):
                 clock.return_value += timedelta(days=1)
                 self.assertEqual(cli.main(args), 0)
             with storage.connect(db) as conn:
-                self.assertFalse(recipe_series.active(conn, monday))
-                self.assertTrue(recipe_series.active(conn, monday + recipe_series.WINDOW))
+                calendar = recipe_series.calendar(conn, {})
+                self.assertIsNone(calendar.day(monday).number)
+                self.assertEqual(calendar.day(monday + recipe_series.WINDOW).number, 28)
             draft.assert_called_once()
 
     def test_refresh_runs_before_drafting_and_publishing_inside_daily_lock(self):

@@ -273,11 +273,13 @@ def make_drafts(conn, env: dict, media_dir: Path, now: datetime | None = None) -
     have = storage.drafts_on(conn, today)
     if local.hour < DAILY_FROM_HOUR or have >= DAILY_DRAFTS or (have and local.time() >= drafts.READY_BY):
         return "skipped"
-    series = recipe_series.active(conn, now)
+    series_day = recipe_series.calendar(conn, env).day(now)
+    series = series_day.in_series
     slot_args = {}
     if series:
         if (
-            not recipe_series.posting_day(env, now)
+            series_day.number is None
+            or not series_day.posting_day
             or recipe_series.already_published(conn, now)
             or publish.recipe_slot_taken(conn, now)
             or not (slot := drafts.recipe_slot(conn, now))
@@ -443,15 +445,16 @@ def main(argv: list[str] | None = None) -> int:
                 if refreshed in ("refreshed", "failed", "metadata_failed", "token_changed"):
                     env = {**load_env(env_file), **os.environ}
                 now = _now()
-                if publish.configured(env) and not recipe_series.started(conn):
+                calendar = recipe_series.calendar(conn, env)
+                if publish.configured(env) and calendar.launched_on is None:
                     recipe_series.start(
                         conn,
                         now,
-                        defer_first_day=recipe_series.posting_day(env, now) and drafts.recipe_slot(conn, now) is None,
+                        defer_first_day=calendar.day(now).posting_day and drafts.recipe_slot(conn, now) is None,
                     )
-                defer_series = recipe_series.active(conn, now, including_launch_day=True) and not recipe_series.active(
-                    conn, now
-                )
+                    calendar = recipe_series.calendar(conn, env)
+                series_day = calendar.day(now)
+                defer_series = series_day.in_series and series_day.number is None
                 outcome = "skipped" if defer_series else daily(conn, env, args.media)
                 render.render_due(conn, args.media, _notify_render(env, _now()))
                 published = publish.tick(conn, env, args.media, _now())

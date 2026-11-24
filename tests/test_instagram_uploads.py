@@ -448,7 +448,7 @@ class DailyFromUploadTests(Fixture):
         self.assertNotIn(recipe_series.GUIDANCE, fallback.calls[0][0])
         expired = MORNING + timedelta(weeks=4)
         recipe_series.start(self.conn, expired)
-        self.assertFalse(recipe_series.active(self.conn, expired))
+        self.assertFalse(recipe_series.calendar(self.conn, self.env).day(expired).in_series)
         self.add_upload()
         next_ai = PhotoAI([photo_draft()], [[85]])
         self.assertEqual(self.tick(next_ai, now=expired), "ok")

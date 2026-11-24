@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 
 from .analysis import LONDON
@@ -27,31 +28,48 @@ def start(conn, now: datetime, *, defer_first_day: bool = False) -> None:
         )
 
 
-def _launch(conn):
-    return conn.execute("SELECT value,updated_at FROM publisher_state WHERE key=?", (KEY,)).fetchone()
+@dataclass(frozen=True)
+class SeriesDay:
+    date: date
+    in_series: bool
+    posting_day: bool
+    number: int | None
 
 
-def started(conn) -> bool:
-    return _launch(conn) is not None
+@dataclass(frozen=True)
+class SeriesCalendar:
+    weekdays: frozenset[int]
+    launched_on: date | None = None
+    first_day: date | None = None
+
+    def day(self, now: datetime) -> SeriesDay:
+        local = now.astimezone(LONDON).date()
+        posting_day = local.weekday() in self.weekdays
+        first = self.first_day
+        if self.launched_on is None or first is None or not self.launched_on <= local < first + WINDOW:
+            return SeriesDay(local, False, posting_day, None)
+        return SeriesDay(local, True, posting_day, (local - first).days + 1 if local >= first else None)
 
 
-def active(conn, now: datetime, *, including_launch_day: bool = False) -> bool:
-    launch = _launch(conn)
-    if launch is None:
-        return False
-    first = date.fromisoformat(launch["value"])
-    begins = datetime.fromisoformat(launch["updated_at"]).astimezone(LONDON).date() if including_launch_day else first
-    return begins <= now.astimezone(LONDON).date() < first + WINDOW
-
-
-def posting_day(env: dict, now: datetime) -> bool:
+def calendar(conn, env: dict) -> SeriesCalendar:
     names = {name.strip().lower() for name in env.get("INSTAGRAM_RECIPE_SERIES_DAYS", "").split(",")}
-    days = {DAYS.index(name) for name in names} if len(names) == 3 and names.issubset(DAYS) else DEFAULT_DAYS
-    return now.astimezone(LONDON).weekday() in days
+    days = frozenset(DAYS.index(name) for name in names) if len(names) == 3 and names.issubset(DAYS) else DEFAULT_DAYS
+    launch = conn.execute("SELECT value,updated_at FROM publisher_state WHERE key=?", (KEY,)).fetchone()
+    if launch is None:
+        return SeriesCalendar(days)
+    launched_on = datetime.fromisoformat(launch["updated_at"]).astimezone(LONDON).date()
+    first = date.fromisoformat(launch["value"])
+    if launched_on < first and _published_on(conn, launched_on):
+        first = launched_on
+    return SeriesCalendar(days, launched_on, first)
 
 
 def already_published(conn, now: datetime) -> bool:
-    first = datetime.combine(now.astimezone(LONDON).date(), time.min, LONDON)
+    return _published_on(conn, now.astimezone(LONDON).date())
+
+
+def _published_on(conn, day: date) -> bool:
+    first = datetime.combine(day, time.min, LONDON)
     return (
         conn.execute(
             "SELECT 1 FROM publish_runs WHERE outcome='published' AND julianday(started_at) >= julianday(?) "

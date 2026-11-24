@@ -93,6 +93,46 @@ class PublishCase(unittest.TestCase):
 
 
 class PublishTests(PublishCase):
+    def test_preparation_cancelled_at_midnight_of_deferred_launch_is_carried_forward(self):
+        monday = (DUE + timedelta(days=4)).replace(hour=23, minute=59, second=30)
+        self.add(slot=monday.isoformat())
+        recipe_series.start(self.conn, monday, defer_first_day=True)
+        elapsed = 0
+
+        def sleep(seconds):
+            nonlocal elapsed
+            elapsed += seconds
+
+        with patch.object(publish.time, "monotonic", side_effect=lambda: elapsed):
+            self.assertEqual(
+                publish.tick(self.conn, self.env, self.media, monday, FakeGraph(), check=self.check, sleep=sleep),
+                "published 0, failed 0",
+            )
+        self.assertEqual(self.tick(FakeGraph(), monday + timedelta(minutes=1)), "published 0, failed 0")
+        self.assertEqual(self.tick(FakeGraph(), monday + timedelta(days=2)), "published 1, failed 0")
+
+    def test_deferred_launch_reel_approved_after_midnight_is_carried_forward(self):
+        monday = (DUE + timedelta(days=4)).replace(hour=23, minute=30)
+        reel = self.add(slot=monday.isoformat())
+        recipe_series.start(self.conn, monday, defer_first_day=True)
+        with self.conn:
+            self.conn.execute("UPDATE drafts SET reel=? WHERE draft_id=?", ('{"file":"reel.mp4","hold":true}', reel))
+        self.assertEqual(self.tick(FakeGraph(), monday), "published 0, failed 0")
+        with self.conn:
+            self.conn.execute("UPDATE drafts SET status='approved' WHERE draft_id=?", (reel,))
+        self.assertEqual(self.tick(FakeGraph(), monday + timedelta(hours=1)), "published 0, failed 0")
+        self.assertEqual(self.tick(FakeGraph(), monday + timedelta(days=2)), "published 1, failed 0")
+
+    def test_a_deferred_launch_with_a_publication_counts_as_series_day_one(self):
+        monday = (DUE + timedelta(days=4)).replace(hour=20)
+        recipe_series.start(self.conn, monday, defer_first_day=True)
+        self.add(slot=monday.isoformat())
+        self.assertEqual(self.tick(FakeGraph(), monday), "published 1, failed 0")
+        after_four_weeks = monday + recipe_series.WINDOW
+        for draft_id in ("b" * 16, "c" * 16):
+            self.add(draft_id, slot=after_four_weeks.isoformat())
+        self.assertEqual(self.tick(FakeGraph(), after_four_weeks), "published 2, failed 0")
+
     def test_prepared_reel_is_not_sent_after_midnight_on_a_series_off_day(self):
         friday = (DUE + timedelta(days=1)).replace(hour=23, minute=59, second=30)
         reel = self.add(slot=friday.isoformat())

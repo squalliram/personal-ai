@@ -155,11 +155,11 @@ def recipe_slot_taken(conn, now: datetime) -> bool:
 
 
 def _reschedule_series_reels(
-    conn, env: dict, now: datetime, *, day_full: bool = False, in_series: bool = False
+    conn, calendar: recipe_series.SeriesCalendar, now: datetime, *, day_full: bool = False
 ) -> None:
     rows = _scheduled_reels(conn)
-    local = now.astimezone(LONDON)
-    today = local.date()
+    current = calendar.day(now)
+    today = current.date
     first_open = today + timedelta(days=1) if day_full else today
     occupied = {
         slot.date()
@@ -169,11 +169,12 @@ def _reschedule_series_reels(
     with conn:
         for row in rows:
             slot = _instant(row["scheduled_for"]).astimezone(LONDON)
-            earlier_series_slot = slot.date() < today and recipe_series.active(conn, slot)
-            off_day = earlier_series_slot and not recipe_series.posting_day(env, slot)
+            slot_day = calendar.day(slot)
+            earlier_series_slot = slot_day.date < today and slot_day.in_series
+            off_day = earlier_series_slot and not slot_day.posting_day
             eligible = _eligible(row)
             within_grace = now <= posts_at(row["scheduled_for"], row["created_at"]) + STALE_AFTER
-            overnight = in_series and earlier_series_slot and eligible and within_grace
+            overnight = current.in_series and earlier_series_slot and eligible and within_grace
             overflow = day_full and slot.date() == today and eligible and within_grace
             if not (off_day or overnight or overflow):
                 continue
@@ -181,7 +182,7 @@ def _reschedule_series_reels(
             while (
                 target + STALE_AFTER < now
                 or target.date() in occupied
-                or (recipe_series.active(conn, target) and not recipe_series.posting_day(env, target))
+                or ((target_day := calendar.day(target)).in_series and not target_day.posting_day)
             ):
                 target += timedelta(days=1)
             conn.execute(
@@ -418,17 +419,19 @@ def tick(conn, env: dict, media_dir: Path, now: datetime, client: GraphClient | 
             key=f"instagram-legacy-skipped:{old['draft_id']}",
             env=env,
         )
-    series = recipe_series.active(conn, now, including_launch_day=True)
-    off_day = series and not recipe_series.posting_day(env, now)
+    calendar = recipe_series.calendar(conn, env)
+    current = calendar.day(now)
+    series = current.in_series
+    off_day = series and not current.posting_day
     day_full = series and not off_day and recipe_series.already_published(conn, now)
-    if recipe_series.started(conn):
-        _reschedule_series_reels(conn, env, now, day_full=day_full, in_series=series)
+    if calendar.launched_on is not None:
+        _reschedule_series_reels(conn, calendar, now, day_full=day_full)
     if off_day or day_full:
         return "published 0, failed 0"
     for row in due(conn, now):
         if kind(row) != "reel":
             continue
-        if series and _instant(row["scheduled_for"]).astimezone(LONDON).date() != now.astimezone(LONDON).date():
+        if series and calendar.day(_instant(row["scheduled_for"])).date != current.date:
             continue
         publish_at = now
         stamp = publish_at.isoformat(timespec="seconds")
@@ -446,10 +449,8 @@ def tick(conn, env: dict, media_dir: Path, now: datetime, client: GraphClient | 
                 if kind(now_row) != "reel" or not will_post(now_row["status"], now_row["review_score"], held(now_row)):
                     raise Withdrawn("rejected or held before posting")
                 publish_at = now + timedelta(seconds=time.monotonic() - checked_at)
-                if series and (
-                    publish_at.astimezone(LONDON).date() != now.astimezone(LONDON).date()
-                    or not recipe_series.posting_day(env, publish_at)
-                ):
+                send_day = calendar.day(publish_at)
+                if series and (send_day.date != current.date or not send_day.posting_day):
                     raise Withdrawn("series posting day ended during preparation")
                 stamp = publish_at.isoformat(timespec="seconds")
                 _record(conn, draft_id, stamp, "started")
@@ -492,7 +493,7 @@ def tick(conn, env: dict, media_dir: Path, now: datetime, client: GraphClient | 
                 "UPDATE drafts SET status='published', media_id=? WHERE draft_id=?", (media_id, row["draft_id"])
             )
         if series:
-            _reschedule_series_reels(conn, env, publish_at, day_full=True)
+            _reschedule_series_reels(conn, recipe_series.calendar(conn, env), publish_at, day_full=True)
         try:
             with conn:
                 storage.link_published(conn, row["draft_id"], media_id)
