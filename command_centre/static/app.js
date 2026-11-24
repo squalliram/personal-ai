@@ -1907,6 +1907,7 @@
     const notes = slides.flatMap(slide => (Array.isArray(slide.attempts) ? slide.attempts : []).map((v, i) =>
       `Slide ${slide.slide}, attempt ${i + 1}: ${v.status}. ${(v.reasons || []).join("; ")}`));
     notes.push(...frames.map(v => `Frame ${v.second} s: ${v.status}. ${(v.reasons || []).join("; ")}`));
+    if (!frames.length && Array.isArray(review.reasons)) notes.push(...review.reasons);
     return el("details", {}, el("summary", {}, `Image sanity review: ${review.status}`),
       el("ul", {}, notes.map(note => el("li", {}, note))));
   }

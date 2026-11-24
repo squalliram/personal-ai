@@ -677,6 +677,14 @@ class DailyNotificationTests(unittest.TestCase):
         self.assertEqual(self.tick(), "skipped")
         self.assertEqual(len(self.notes()), 1)
 
+    def test_rejected_drafts_are_not_included_in_the_awaiting_approval_notice(self):
+        self.assertEqual(self.tick(), "ok")
+        with self.conn:
+            self.conn.execute("UPDATE drafts SET status='rejected'")
+        self.db.unlink()
+        cli._notify_daily(self.conn, self.env, "ok", MORNING)
+        self.assertEqual(self.notes(), [])
+
     def test_drafts_ready_without_auto_posting(self):
         for key in ("INSTAGRAM_AUTO_PUBLISH", "INSTAGRAM_ACCESS_TOKEN", "INSTAGRAM_PUBLIC_URL"):
             with self.subTest(missing=key):

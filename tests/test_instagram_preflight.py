@@ -217,6 +217,15 @@ class PreflightTests(unittest.TestCase):
         report = self.preflight()
         self.assertTrue(report["ok"], report)
 
+    def test_approved_status_without_recorded_decision_does_not_block_another_draft(self):
+        self.add()
+        self.add(OTHER, slot="2026-11-15T19:00+00:00")
+        with self.conn:
+            self.conn.execute("UPDATE drafts SET decided_at=NULL WHERE draft_id=?", (OTHER,))
+        report = self.preflight()
+        self.assertEqual(report["eligible_drafts"], [DRAFT])
+        self.assertTrue(self.check(report, "single_candidate")["ok"])
+
     def test_reel_held_for_approval_is_not_a_candidate_until_approved(self):
         self.add()
         self.add(OTHER, slot="2026-11-15T19:00+00:00", approved=False)

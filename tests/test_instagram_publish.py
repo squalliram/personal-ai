@@ -238,7 +238,7 @@ class PublishTests(PublishCase):
         self.assertEqual(self.tick(FakeGraph(), friday + timedelta(days=3)), "published 1, failed 0")
         self.assertEqual([self.status(d)[0] for d in (carryover, fresh)], ["published", "published"])
 
-    def test_late_approval_does_not_reschedule_an_expired_reel(self):
+    def test_late_approval_reschedules_with_a_recorded_decision(self):
         friday = DUE + timedelta(days=1)
         slot = (friday - timedelta(minutes=5)).isoformat()
         late = self.add("a" * 16, slot=slot, approved=False)
@@ -250,11 +250,14 @@ class PublishTests(PublishCase):
                 ('{"file":"reel.mp4","hold":true,"image_review":{"status":"passed"}}', late),
             )
         self.assertEqual(self.tick(FakeGraph(), friday), "published 1, failed 0")
-        with self.conn:
-            self.conn.execute("UPDATE drafts SET status='approved' WHERE draft_id=?", (late,))
+        stamp = friday.isoformat(timespec="seconds")
+        self.assertTrue(storage.decide_draft(self.conn, late, "approved", stamp))
+        self.assertEqual(
+            self.conn.execute("SELECT scheduled_for FROM drafts WHERE draft_id=?", (late,)).fetchone()[0], stamp
+        )
         self.assertEqual(self.tick(FakeGraph(), friday + publish.STALE_AFTER), "published 0, failed 0")
-        self.assertEqual(self.tick(FakeGraph(), friday + timedelta(days=3)), "published 0, failed 0")
-        self.assertEqual(self.status(late)[0], "approved")
+        self.assertEqual(self.tick(FakeGraph(), friday + timedelta(days=3)), "published 1, failed 0")
+        self.assertEqual(self.status(late)[0], "published")
 
     def test_after_midnight_approval_within_grace_moves_to_a_posting_day(self):
         friday = (DUE + timedelta(days=1)).replace(hour=23, minute=30)
@@ -493,8 +496,7 @@ class PublishTests(PublishCase):
 
         def reject_while_checking(url, size):
             if not self.checked:
-                with other:
-                    other.execute("UPDATE drafts SET status='rejected' WHERE draft_id=?", (draft_id,))
+                self.assertTrue(storage.decide_draft(other, draft_id, "rejected", "2026-11-12T18:04:00+00:00"))
             self.checked.append(url)
 
         graph = FakeGraph()
@@ -518,8 +520,7 @@ class PublishTests(PublishCase):
 
         def reject_while_checking(url, size):
             if not self.checked:
-                with other:
-                    other.execute("UPDATE drafts SET status='rejected' WHERE draft_id=?", (draft_id,))
+                self.assertTrue(storage.decide_draft(other, draft_id, "rejected", "2026-11-12T18:04:00+00:00"))
             self.checked.append(url)
 
         publish.tick(

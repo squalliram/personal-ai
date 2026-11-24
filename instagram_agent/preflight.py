@@ -38,6 +38,7 @@ def _eligible_drafts(conn, now: datetime) -> list[str]:
             when
             and now <= when + publish.STALE_AFTER
             and publish.will_post(row["status"], row["review_score"], publish.held(row))
+            and bool(row["decided_at"])
             and row["fails"] < publish.MAX_ATTEMPTS
             and not storage.publishing_started(conn, row["draft_id"])
         ):

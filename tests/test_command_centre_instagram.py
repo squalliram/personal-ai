@@ -160,16 +160,19 @@ class InstagramQueueTests(unittest.TestCase):
             with self.subTest(query=query):
                 self.assertIn(client.request("GET", "/api/v1/instagram/slide", query=query).status, (400, 404))
 
-    def test_approve_records_the_decision_and_memory_once(self):
+    def test_approve_then_reject_updates_the_decision_and_memory_once(self):
         client = self.client()
         response = self.decide(client, "approve")
         self.assertEqual((response.status, response.json()), (200, {"draft_id": DRAFT, "status": "approved"}))
+        self.assertEqual(self.decide(client, "reject").status, 200)
         self.assertEqual(self.decide(client, "reject").status, 409)
         conn = storage.connect(self.db)
-        self.assertEqual(conn.execute("SELECT decision FROM examples").fetchone()[0], "approved")
+        self.assertEqual(conn.execute("SELECT decision FROM examples").fetchone()[0], "rejected")
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM examples").fetchone()[0], 1)
         conn.close()
         outcomes = [(e["action"], e["outcome"]) for e in self.app.audit.recent(10)]
         self.assertIn(("instagram_decision", "approved"), outcomes)
+        self.assertIn(("instagram_decision", "rejected"), outcomes)
         self.assertIn(("instagram_decision", "already_decided"), outcomes)
 
     def test_decision_shows_at_once_on_cached_sections(self):

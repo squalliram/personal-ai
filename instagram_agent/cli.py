@@ -267,7 +267,7 @@ def _notify_daily(conn, env: dict, outcome: str, now: datetime) -> None:
             notify("instagram", "ok", title, page, key=f"instagram-clip-draft:{row['clip_id']}", env=env, now=now)
     if outcome == "ok":
         rows = conn.execute(
-            "SELECT status, review_score, scheduled_for, created_at FROM drafts WHERE created_on=? AND draft_id NOT "
+            "SELECT status, review_score, scheduled_for, created_at FROM drafts WHERE created_on=? AND status='pending' AND draft_id NOT "
             "IN (SELECT draft_id FROM uploads WHERE draft_id IS NOT NULL UNION "
             "SELECT draft_id FROM clips WHERE draft_id IS NOT NULL)",
             (today,),

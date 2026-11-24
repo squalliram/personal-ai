@@ -570,11 +570,12 @@ class ReelPublishTests(Case):
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM publish_runs").fetchone()[0], 0)
 
     def test_a_hold_set_while_rendering_survives_the_render(self):
+        self.assertEqual(storage.hold_reel(self.conn, "b" * 16, False), "ok")
         with self.conn:
             self.conn.execute("UPDATE drafts SET reel=json_set(reel, '$.render', 'pending')")
 
         def held_meanwhile(conn, media_dir, draft_id, reel):
-            storage.hold_reel(self.conn, draft_id, True)
+            self.assertEqual(storage.hold_reel(self.conn, draft_id, True), "ok")
             return {**reel, "render": "done"}
 
         with (

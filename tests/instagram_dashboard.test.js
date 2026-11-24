@@ -84,6 +84,15 @@ assert.ok(!buttonLabels(vm.runInContext('draftCard(draft, false, true)', cards))
 cards.draft.publishing = true;
 assert.ok(!buttonLabels(vm.runInContext('draftCard(draft, true, true)', cards)).includes('Reject'));
 
+vm.runInContext(source.slice(source.indexOf('  function visualReview('), source.indexOf('  function draftCard(')), cards);
+function textNodes(node) {
+  return node instanceof Element ? node.children.flatMap(textNodes) : typeof node === 'string' ? [node] : [];
+}
+cards.review = {status:'unavailable', reasons:['image review unavailable'], frames:[]};
+assert.ok(textNodes(vm.runInContext('visualReview(review)', cards)).includes('image review unavailable'));
+cards.review.frames = [{second:0,status:'unavailable',reasons:['image review unavailable']}];
+assert.equal(textNodes(vm.runInContext('visualReview(review)', cards)).filter(text => text.includes('image review unavailable')).length, 1);
+
 async function dashboard(savedHolds = {}, permission = 'recommend', holdFailures = new Map()) {
   const renderedDrafts = [];
   const sentHolds = [];
