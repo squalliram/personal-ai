@@ -91,6 +91,12 @@ class InstagramAnalyticsTests(unittest.TestCase):
         self.assertEqual(item["posted_at"], POSTED)
         self.assertEqual(item["time_basis"], "instagram")
         self.assertEqual(item["topic"], "Coffee")
+        # With no synced media, a checkpoint report still promotes the observed timestamp.
+        self.conn.execute("DELETE FROM posts")
+        self.report("reel", "24h")
+        (item,) = performance(self.conn, NOW)["items"]
+        self.assertEqual(item["posted_at"], POSTED)
+        self.assertEqual(item["time_basis"], "instagram")
 
     def test_limits_window_and_payload(self):
         self.post("old", (NOW - timedelta(days=91)).isoformat())

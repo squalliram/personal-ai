@@ -55,6 +55,9 @@ def performance(conn: sqlite3.Connection, now: datetime) -> dict:
                 "snapshots": {},
             },
         )
+        if item["time_basis"] == "publish_record" and basis == "instagram":
+            item["posted_at"] = posted.isoformat(timespec="seconds")
+            item["time_basis"] = basis
         for key in ("permalink", "draft_id", "topic"):
             if row.get(key):
                 item[key] = row[key]

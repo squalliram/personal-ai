@@ -2300,7 +2300,8 @@
       igSelect("metric", "Measure", Object.entries(IG_METRICS), draw),
       igSelect("checkpoint", "Report checkpoint", [["24h", "24-hour report"], ["72h", "72-hour report"]], draw));
     function draw() {
-      const since = Date.now() - Number(igView.days) * 86400000;
+      const now = Date.now();
+      const since = now - Number(igView.days) * 86400000;
       const items = history.items.filter((p) => Date.parse(p.posted_at) >= since && (igView.format === "all" || p.format === igView.format));
       const snapshot = (p) => p.snapshots[igView.checkpoint];
       const value = (p) => snapshot(p) && snapshot(p)[igView.metric];
@@ -2314,8 +2315,8 @@
 
       const weeks = new Map();
       // ISO Monday buckets in London, rather than the browser's timezone.
-      for (let day = Number(igView.days) - 1; day >= 0; day--) {
-        const date = new Date(Date.now() - day * 86400000);
+      for (let time = since; time <= now; time += 86400000) {
+        const date = new Date(time);
         weeks.set(igWeek(date), { reel: 0, story: 0, post: 0 });
       }
       for (const item of items) {
@@ -2430,6 +2431,8 @@
     const nav = el("div", { class: "ig-sections", role: "group", "aria-label": "Instagram sections" });
     const root = el("div", { class: "ig-dashboard" },
       card("@instafoodielove", muted(`${data.auto_publish ? "Automatic posting on" : "Automatic posting off"} · ${review.length} awaiting review · All times London`)), nav);
+    // Lazy panels close over this snapshot. DOM equality alone cannot detect hidden queue changes.
+    root.igSnapshot = JSON.stringify(data);
     if (data.state !== "available") root.append(card("Instagram data unavailable", muted(data.state === "not_configured"
       ? "No Instagram database is connected yet. Graphs will appear after media and reports are captured." : "The Instagram database could not be read. Empty graphs are not evidence of zero performance.")));
     const tokenWarning = data.token && ["expired", "expiring", "refresh_failed", "not_configured"].includes(data.token.state) ? tokenCard(data.token) : null;
@@ -2570,7 +2573,7 @@
     const previous = sectionViews.get(section[0]);
     // Reuse the nodes already built for identical content: images stay loaded and nothing re-flows.
     const same = previous && previous.title === title && previous.status === $("view-status").textContent
-      && previous.nodes.length === fresh.length && previous.nodes.every((node, i) => node.isEqualNode(fresh[i]));
+      && previous.nodes.length === fresh.length && previous.nodes.every((node, i) => node.igSnapshot === fresh[i].igSnapshot && node.isEqualNode(fresh[i]));
     const nodes = same ? previous.nodes : fresh;
     const shown = $("view").childNodes;
     if (shown.length !== nodes.length || nodes.some((node, i) => shown[i] !== node)) {
