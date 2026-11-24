@@ -93,6 +93,14 @@ class PublishCase(unittest.TestCase):
 
 
 class PublishTests(PublishCase):
+    def test_series_carries_an_off_day_reel_to_the_next_posting_day(self):
+        self.add()
+        recipe_series.start(self.conn, MADE)
+        self.assertEqual(self.tick(FakeGraph()), "published 0, failed 0")
+        graph = FakeGraph()
+        self.assertEqual(self.tick(graph, DUE + timedelta(days=1)), "published 1, failed 0")
+        self.assertEqual(tuple(self.status()), ("published", "9001"))
+
     def test_recipe_series_enforces_posting_days_and_one_reel_story_pair_per_day(self):
         self.add()
         recipe_series.start(self.conn, MADE)

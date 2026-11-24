@@ -140,6 +140,40 @@ def due(conn, now: datetime) -> list:
     return found
 
 
+def _carry_off_day_reels(conn, env: dict, now: datetime) -> None:
+    rows = conn.execute(
+        "SELECT * FROM drafts WHERE status IN ('approved','pending') "
+        "AND kind='reel' AND scheduled_for IS NOT NULL ORDER BY julianday(scheduled_for), draft_id"
+    ).fetchall()
+    local = now.astimezone(LONDON)
+    occupied = {
+        slot.date()
+        for row in rows
+        if (slot := _instant(row["scheduled_for"]).astimezone(LONDON)) >= local.replace(hour=0, minute=0, second=0)
+    }
+    with conn:
+        for row in rows:
+            slot = _instant(row["scheduled_for"]).astimezone(LONDON)
+            if (
+                slot.date() >= local.date()
+                or not recipe_series.active(conn, slot)
+                or recipe_series.posting_day(env, slot)
+            ):
+                continue
+            target = datetime.combine(local.date(), slot.time(), LONDON)
+            while (
+                target + STALE_AFTER < now
+                or target.date() in occupied
+                or (recipe_series.active(conn, target) and not recipe_series.posting_day(env, target))
+            ):
+                target += timedelta(days=1)
+            conn.execute(
+                "UPDATE drafts SET scheduled_for=? WHERE draft_id=? AND scheduled_for=? AND status IN ('approved','pending')",
+                (target.isoformat(timespec="seconds"), row["draft_id"], row["scheduled_for"]),
+            )
+            occupied.add(target.date())
+
+
 def _is_jpeg(data: bytes) -> bool:
     return data[:3] == b"\xff\xd8\xff"
 
@@ -368,6 +402,8 @@ def tick(conn, env: dict, media_dir: Path, now: datetime, client: GraphClient | 
     series = recipe_series.active(conn, now)
     if series and (not recipe_series.posting_day(env, now) or recipe_series.already_published(conn, now)):
         return "published 0, failed 0"
+    if series:
+        _carry_off_day_reels(conn, env, now)
     for row in due(conn, now):
         if kind(row) != "reel":
             continue
