@@ -391,6 +391,7 @@ def configured(env: dict) -> bool:
 
 def tick(conn, env: dict, media_dir: Path, now: datetime, client: GraphClient | None = None, **kwargs) -> str:
     """Publish every due draft. Off unless INSTAGRAM_AUTO_PUBLISH=1 and the token and public folder are set."""
+    checked_at = time.monotonic()
     public_dir, public_url = env.get("INSTAGRAM_PUBLIC_DIR"), env.get("INSTAGRAM_PUBLIC_URL", "")
     if client is None and configured(env):
         from .cli import graph_client
@@ -429,11 +430,13 @@ def tick(conn, env: dict, media_dir: Path, now: datetime, client: GraphClient | 
             continue
         if series and _instant(row["scheduled_for"]).astimezone(LONDON).date() != now.astimezone(LONDON).date():
             continue
-        stamp = now.isoformat(timespec="seconds")
+        publish_at = now
+        stamp = publish_at.isoformat(timespec="seconds")
 
         sent = []
 
-        def started(draft_id=row["draft_id"], stamp=stamp, sent=sent):
+        def started(draft_id=row["draft_id"], sent=sent):
+            nonlocal publish_at, stamp
             # Re-check under a write lock: a Reject during preparation must win.
             conn.execute("BEGIN IMMEDIATE")
             try:
@@ -442,6 +445,13 @@ def tick(conn, env: dict, media_dir: Path, now: datetime, client: GraphClient | 
                 ).fetchone()
                 if kind(now_row) != "reel" or not will_post(now_row["status"], now_row["review_score"], held(now_row)):
                     raise Withdrawn("rejected or held before posting")
+                publish_at = now + timedelta(seconds=time.monotonic() - checked_at)
+                if series and (
+                    publish_at.astimezone(LONDON).date() != now.astimezone(LONDON).date()
+                    or not recipe_series.posting_day(env, publish_at)
+                ):
+                    raise Withdrawn("series posting day ended during preparation")
+                stamp = publish_at.isoformat(timespec="seconds")
                 _record(conn, draft_id, stamp, "started")
             except BaseException:
                 conn.rollback()
@@ -482,7 +492,7 @@ def tick(conn, env: dict, media_dir: Path, now: datetime, client: GraphClient | 
                 "UPDATE drafts SET status='published', media_id=? WHERE draft_id=?", (media_id, row["draft_id"])
             )
         if series:
-            _reschedule_series_reels(conn, env, now, day_full=True)
+            _reschedule_series_reels(conn, env, publish_at, day_full=True)
         try:
             with conn:
                 storage.link_published(conn, row["draft_id"], media_id)
@@ -491,7 +501,7 @@ def tick(conn, env: dict, media_dir: Path, now: datetime, client: GraphClient | 
         link = permalink(client, media_id) or page
         notify("instagram", "ok", f"Instagram post is live: {row['topic']}", link, env=env)
         try:
-            publish_story_once(conn, client, row, media_dir, Path(public_dir), public_url, env, now, **kwargs)
+            publish_story_once(conn, client, row, media_dir, Path(public_dir), public_url, env, publish_at, **kwargs)
         except Exception:
             notify("instagram", "failed", "Reel is live; Story recording failed, check Instagram", page, env=env)
         published += 1

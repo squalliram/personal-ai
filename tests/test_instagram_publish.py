@@ -93,6 +93,39 @@ class PublishCase(unittest.TestCase):
 
 
 class PublishTests(PublishCase):
+    def test_prepared_reel_is_not_sent_after_midnight_on_a_series_off_day(self):
+        friday = (DUE + timedelta(days=1)).replace(hour=23, minute=59, second=30)
+        reel = self.add(slot=friday.isoformat())
+        recipe_series.start(self.conn, MADE)
+        graph = FakeGraph()
+        elapsed = 0
+
+        def sleep(seconds):
+            nonlocal elapsed
+            elapsed += seconds
+
+        with patch.object(publish.time, "monotonic", side_effect=lambda: elapsed):
+            self.assertEqual(
+                publish.tick(self.conn, self.env, self.media, friday, graph, check=self.check, sleep=sleep),
+                "published 0, failed 0",
+            )
+        self.assertFalse(any(path.endswith("/media_publish") for path, _, _ in graph.posts))
+        self.assertEqual(self.status(reel)[0], "pending")
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM publish_runs").fetchone()[0], 0)
+        self.assertEqual(self.tick(FakeGraph(), friday + timedelta(minutes=1)), "published 0, failed 0")
+        self.assertEqual(self.tick(FakeGraph(), friday + timedelta(days=3)), "published 1, failed 0")
+
+    def test_publish_run_uses_time_after_reel_preparation(self):
+        self.add()
+        elapsed = iter((0, publish.REEL_WAIT))
+        with patch.object(publish.time, "monotonic", side_effect=lambda: next(elapsed, publish.REEL_WAIT)):
+            self.assertEqual(self.tick(FakeGraph()), "published 1, failed 0")
+        expected = (DUE + timedelta(seconds=publish.REEL_WAIT)).isoformat(timespec="seconds")
+        self.assertEqual(
+            [row[0] for row in self.conn.execute("SELECT started_at FROM publish_runs ORDER BY id")],
+            [expected, expected],
+        )
+
     def test_late_series_launch_caps_the_number_of_due_reels(self):
         monday = (DUE + timedelta(days=4)).replace(hour=20)
         self.add("a" * 16, slot=monday.isoformat())
