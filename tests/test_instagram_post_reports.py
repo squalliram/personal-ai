@@ -88,6 +88,25 @@ class Case(unittest.TestCase):
 
 
 class StoryInsightsTests(Case):
+    def test_capture_stops_requesting_metrics_at_budget_and_keeps_partial_snapshot(self):
+        graph = mock.Mock(user_id="123")
+        graph.paginated.return_value = iter([{"id": "42", "timestamp": PUBLISHED.isoformat()}])
+        elapsed = 0
+
+        def read(path, params):
+            nonlocal elapsed
+            elapsed = story_insights.CAPTURE_BUDGET
+            return {"data": [{"name": params["metric"], "values": [{"value": 10}]}]}
+
+        graph.get.side_effect = read
+        with mock.patch.object(story_insights, "monotonic", side_effect=lambda: elapsed):
+            self.assertEqual(story_insights.capture(self.conn, graph, PUBLISHED + timedelta(hours=23)), 1)
+        graph.get.assert_called_once_with("42/insights", {"metric": "reach"})
+        self.assertEqual(
+            json.loads(self.conn.execute("SELECT metrics FROM story_insights WHERE media_id='42'").fetchone()[0]),
+            {"reach": 10},
+        )
+
     def test_new_story_report_ranks_above_newer_captures(self):
         captured = PUBLISHED + timedelta(hours=23)
         with self.conn:

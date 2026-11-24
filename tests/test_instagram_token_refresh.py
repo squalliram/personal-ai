@@ -269,9 +269,15 @@ class DailyRefreshIntegrationTests(unittest.TestCase):
                 events.append("refresh")
                 return "not_due"
 
+            def capture(*args):
+                with (root / "media" / ".daily.lock").open("r+") as lock:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                events.append("stories")
+                return "stories_off"
+
             with (
                 patch.object(cli.token_refresh, "tick", side_effect=refresh),
-                patch.object(cli, "_capture_stories", side_effect=lambda *a: events.append("stories") or "stories_off"),
+                patch.object(cli, "_capture_stories", side_effect=capture),
                 patch.object(cli, "daily", side_effect=lambda *a: events.append("draft") or "skipped"),
                 patch.object(cli.render, "render_due"),
                 patch.object(cli.publish, "tick", side_effect=lambda *a: events.append("publish") or "publish_off"),
@@ -279,7 +285,7 @@ class DailyRefreshIntegrationTests(unittest.TestCase):
                 redirect_stdout(io.StringIO()) as output,
             ):
                 self.assertEqual(cli.main(args), 0)
-        self.assertEqual(events, ["refresh", "stories", "draft", "publish", "reports"])
+        self.assertEqual(events, ["refresh", "draft", "publish", "reports", "stories"])
         self.assertEqual(output.getvalue().strip(), "skipped; not_due; publish_off; stories_off; reports_off")
 
     def test_daily_reloads_config_after_concurrent_rotation(self):

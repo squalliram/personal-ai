@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
+from time import monotonic
 
 from notifications import safe_link
 
@@ -13,6 +14,7 @@ METRICS = ("reach", "views", "replies", "navigation", *CONVERSION_METRICS, "shar
 NAVIGATION = {"metric": "navigation", "breakdown": "story_navigation_action_type"}
 LIFETIME = timedelta(hours=24)
 FINAL_WINDOW = timedelta(hours=22)
+CAPTURE_BUDGET = 30
 
 
 def parse_metric(payload: dict, metric: str) -> tuple[int | None, dict[str, int]]:
@@ -95,9 +97,11 @@ def capture(conn, client, now: datetime | None = None) -> int:
     drafts = _drafts_by_story(conn)
     latest = {row[0]: parse_time(row[1]) for row in conn.execute("SELECT media_id,captured_at FROM story_insights")}
     captured = 0
-    for media in client.paginated(
+    deadline = monotonic() + CAPTURE_BUDGET
+    stories = client.paginated(
         f"{client.user_id}/stories", {"fields": "id,timestamp,permalink", "limit": "100"}, limit=None
-    ):
+    )
+    while monotonic() < deadline and (media := next(stories, None)) is not None:
         media_id, posted = media.get("id"), parse_time(media.get("timestamp"))
         current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
         if not isinstance(media_id, str) or not media_id.isdigit() or not posted:
@@ -111,6 +115,8 @@ def capture(conn, client, now: datetime | None = None) -> int:
             continue
 
         def get(params, media_id=media_id, posted=posted):
+            if monotonic() >= deadline:
+                return None
             if now is None and datetime.now(timezone.utc) - posted >= LIFETIME:
                 return None
             try:
