@@ -138,13 +138,17 @@ def run(conn, env: dict, media_dir: Path, now: datetime, *, draft_id: str, clien
         row = conn.execute("SELECT * FROM drafts WHERE draft_id=?", (draft_id,)).fetchone()
     check("selected_draft", row is not None, "Selected draft exists" if row else "Selected draft was not found")
     if row:
-        eligible = publish.will_post(row["status"], row["review_score"], publish.held(row))
+        eligible = (
+            bool(row["decided_at"])
+            and publish.rendered(row)
+            and publish.will_post(row["status"], row["review_score"], publish.held(row))
+        )
         check(
             "draft_eligibility",
             eligible,
-            "Draft is approved or passed review"
+            "Owner approved this draft and visual review is complete"
             if eligible
-            else "Draft is rejected, decided, held for approval, or below 70 without approval",
+            else "Explicit owner approval and completed visual review are required",
         )
         try:
             when = publish.posts_at(row["scheduled_for"], row["created_at"])

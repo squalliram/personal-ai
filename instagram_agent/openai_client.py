@@ -38,7 +38,8 @@ IMAGE_TYPES = {b"\x89PNG\r\n\x1a\n": "png", b"\xff\xd8\xff": "jpg"}
 
 
 def jpeg_data_url(data: bytes) -> str:
-    return "data:image/jpeg;base64," + base64.b64encode(data).decode()
+    mime = "png" if data.startswith(b"\x89PNG\r\n\x1a\n") else "jpeg"
+    return f"data:image/{mime};base64," + base64.b64encode(data).decode()
 
 
 def image_extension(data: bytes) -> str | None:

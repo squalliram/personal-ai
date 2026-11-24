@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from . import music, video
+from . import image_review, music, video
 from .host_probe import find_tool
 
 WIDTH, HEIGHT, FPS = 1080, 1920, 30
@@ -368,7 +368,7 @@ def slot_after_render(row, now: datetime) -> str | None:
 
 
 def render_due(
-    conn, media_dir: Path, notify_failure=lambda row, error, final: None, now: datetime | None = None
+    conn, media_dir: Path, notify_failure=lambda row, error, final: None, now: datetime | None = None, *, reviewer=None
 ) -> str:
     """Render every reel draft waiting for it, one at a time; skipped while another render runs."""
     media_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -385,10 +385,30 @@ def render_due(
         done = failed = 0
         for row in rows:
             reel = json.loads(row["reel"] or "{}")
-            if reel.get("render") != "pending":
+            needs_review = reel.get("render") == "pending" or reel.get("image_review", {}).get("status") == "pending"
+            if reel.get("render") != "pending" and not needs_review:
                 continue
             try:
-                reel = render(conn, media_dir, row["draft_id"], reel)
+                if reel.get("render") == "pending":
+                    reel = render(conn, media_dir, row["draft_id"], reel)
+                if needs_review:
+                    path = media_dir / row["draft_id"] / reel["file"]
+                    if reel["file"] not in ("reel.mp4", "reel.mov") or path.is_symlink() or path.parent.is_symlink():
+                        raise RenderError("the reel's video is missing or unsafe")
+                    _safe(path)
+                    result = image_review.frames(path, reel["seconds"], reviewer, capabilities().get("ffmpeg"), _run)
+                    reel["image_review"] = {**reel.get("image_review", {}), **result}
+                    if result["status"] != "passed":
+                        with conn:
+                            conn.execute(
+                                "UPDATE drafts SET status='rejected', review_notes=?, decided_at=? WHERE draft_id=?",
+                                (
+                                    "Image review: " + "; ".join(result["reasons"]),
+                                    (now or datetime.now(timezone.utc)).isoformat(timespec="seconds"),
+                                    row["draft_id"],
+                                ),
+                            )
+                        notify_failure(row, "image review: " + "; ".join(result["reasons"]), True)
                 done += 1
                 slot = slot_after_render(row, now or datetime.now(timezone.utc))  # the clock after a long render
                 if slot is None:

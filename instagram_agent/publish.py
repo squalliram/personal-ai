@@ -25,7 +25,6 @@ from notifications import command_centre_link, notify
 
 from . import recipe_series, storage, video
 from .analysis import LONDON
-from .drafts import PASS_SCORE
 from .graph import GraphAPIError, GraphClient
 
 VETO_LEAD = timedelta(hours=1)
@@ -74,9 +73,7 @@ def held(row) -> bool:
 
 
 def will_post(status: str, review_score: int | None, is_held: bool = False) -> bool:
-    if is_held:
-        return status == "approved"
-    return status == "approved" or (status == "pending" and (review_score or 0) >= PASS_SCORE)
+    return status == "approved"
 
 
 def set_state(conn, value: str, now: datetime) -> None:
@@ -118,7 +115,12 @@ def rendered(row) -> bool:
     if kind(row) != "reel" or "reel" not in row.keys():
         return True
     try:
-        state = json.loads(row["reel"] or "{}").get("render")
+        reel = json.loads(row["reel"] or "{}")
+        state = reel.get("render")
+        if "image_review" in reel and (
+            not isinstance(reel["image_review"], dict) or reel["image_review"].get("status") != "passed"
+        ):
+            return False
     except (ValueError, AttributeError):
         return False
     return state in (None, "done")
@@ -133,7 +135,12 @@ def _scheduled_reels(conn) -> list:
 
 
 def _eligible(row) -> bool:
-    return rendered(row) and row["fails"] < MAX_ATTEMPTS and will_post(row["status"], row["review_score"], held(row))
+    return (
+        bool(row["decided_at"])
+        and rendered(row)
+        and row["fails"] < MAX_ATTEMPTS
+        and will_post(row["status"], row["review_score"], held(row))
+    )
 
 
 def due(conn, now: datetime) -> list:
@@ -254,6 +261,10 @@ def publish_reel(
     story: bool = False,
 ) -> str:
     """A REELS container from the clip's public URL, polled until Meta has processed it, then media_publish."""
+    if row["status"] != ("published" if story else "approved") or not row["decided_at"]:
+        raise Withdrawn("owner approval is required")
+    if not rendered(row):
+        raise Withdrawn("visual review and rendering must finish before posting")
     reel = json.loads(row["reel"] or "{}")
     name = str(reel.get("file", ""))
     if name not in ("reel.mp4", "reel.mov"):
@@ -322,7 +333,7 @@ def publish_story_once(conn, client, row, media_dir, public_dir, public_url, env
     try:
         current = conn.execute("SELECT * FROM drafts WHERE draft_id=?", (draft_id,)).fetchone()
         reel = json.loads(current["reel"] or "{}")
-        if kind(current) != "reel" or current["status"] != "published" or "story" in reel:
+        if kind(current) != "reel" or current["status"] != "published" or not current["decided_at"] or "story" in reel:
             conn.rollback()
             return
         reel["story"] = {"state": "started", "started_at": now.isoformat(timespec="seconds")}
@@ -444,9 +455,14 @@ def tick(conn, env: dict, media_dir: Path, now: datetime, client: GraphClient | 
             conn.execute("BEGIN IMMEDIATE")
             try:
                 now_row = conn.execute(
-                    "SELECT status, review_score, kind, reel FROM drafts WHERE draft_id=?", (draft_id,)
+                    "SELECT status, review_score, kind, reel, decided_at FROM drafts WHERE draft_id=?", (draft_id,)
                 ).fetchone()
-                if kind(now_row) != "reel" or not will_post(now_row["status"], now_row["review_score"], held(now_row)):
+                if (
+                    kind(now_row) != "reel"
+                    or not now_row["decided_at"]
+                    or not rendered(now_row)
+                    or not will_post(now_row["status"], now_row["review_score"], held(now_row))
+                ):
                     raise Withdrawn("rejected or held before posting")
                 publish_at = now + timedelta(seconds=time.monotonic() - checked_at)
                 send_day = calendar.day(publish_at)

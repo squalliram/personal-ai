@@ -155,7 +155,7 @@ async function sender() {
     scheduled: {token: 'saved-hold', body: {draft_id: 'scheduled', hold: true, version: 0}},
   };
   const pending = await dashboard(saved);
-  assert.equal(pending.context.igView.section, 'drafts', 'a reload must instantiate the saved hold retry immediately');
+  assert.equal(pending.context.igView.section, 'review', 'unapproved drafts stay in review while saved hold requests recover');
   assert.ok(pending.renderedDrafts.some(draft => draft.draft_id === 'scheduled'));
   assert.equal(pending.root.find('ig-section-performance').hidden, true);
   assert.deepEqual(pending.sentHolds.map(call => call.id).sort(), ['held', 'scheduled'], 'both cross-section holds must be sent, even if the first never answers');

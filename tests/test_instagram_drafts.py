@@ -9,10 +9,10 @@ import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from urllib.error import HTTPError
 
-from instagram_agent import cli, cron_install, drafts, storage
+from instagram_agent import cli, cron_install, drafts, image_review, storage
 from instagram_agent.cloudflare_client import CloudflareAI, CloudflareError
 from instagram_agent.openai_client import OpenAIClient, OpenAIError
 
@@ -57,6 +57,9 @@ class DraftTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         self.conn = storage.connect(self.root / "instagram.sqlite3")
+        vision = patch.object(image_review, "check", return_value={"status": "passed", "reasons": []})
+        vision.start()
+        self.addCleanup(vision.stop)
 
     def tearDown(self):
         self.conn.close()
@@ -225,7 +228,12 @@ class DailyTickTests(unittest.TestCase):
 
     def tick(self, now, ai=None):
         ai = ai or FakeAI([[raw_draft("a"), raw_draft("b"), raw_draft("c")]], [[90, 80, 70]])
-        with patch.object(cli, "model_client", return_value=ai):
+        with (
+            patch.object(cli, "model_client", return_value=ai),
+            patch.object(
+                image_review, "client", return_value=Mock(chat_json=Mock(return_value={"pass": True, "reasons": []}))
+            ),
+        ):
             return cli.daily(self.conn, self.env, self.root / "drafts", now=now)
 
     def test_runs_once_a_day_from_nine(self):
@@ -249,7 +257,7 @@ class DailyTickTests(unittest.TestCase):
         ai = FakeAI([[raw_draft("a"), raw_draft("b"), raw_draft("c")]], [[90, 80, 70]])
         self.assertEqual(self.tick(MORNING, ai), "ok")
         create = next(system for system, _ in ai.calls if system.startswith("You are the Create"))
-        self.assertIn("Write 1 carousel", create)
+        self.assertIn("Write 1 slide reel", create)
         [row] = self.conn.execute("SELECT topic, scheduled_for FROM drafts").fetchall()
         self.assertEqual(tuple(row), ("a", "2026-11-12T19:00+00:00"))
 
@@ -323,7 +331,13 @@ class DailyTickTests(unittest.TestCase):
         ai.image = flaky
         dropped = []
         stored = drafts.render_and_store(
-            self.conn, ai, [drafts.normalise(raw_draft("one"))], self.root / "drafts", MORNING, dropped
+            self.conn,
+            ai,
+            [drafts.normalise(raw_draft("one"))],
+            self.root / "drafts",
+            MORNING,
+            dropped,
+            reviewer=Mock(chat_json=Mock(return_value={"pass": True, "reasons": []})),
         )
         self.assertEqual((stored, dropped), (1, []))
 
@@ -414,13 +428,31 @@ class SlidePromptTests(unittest.TestCase):
             self.assertNotIn("pouring", logs.output[0])
         self.assertIsNone(drafts.PEOPLE.search("handcrafted mango coffee"))
 
-    def test_text_is_drawn_only_by_models_that_spell_it(self):
+    def test_all_models_generate_textless_static_brand_photos(self):
         slide = {"text": "Flat white 101", "image_prompt": "a flat white on marble"}
-        self.assertIn('spelled exactly: "Flat white 101"', drafts.slide_prompt(slide, draws_text=True))
-        self.assertIn("central 60%", drafts.slide_prompt(slide, draws_text=True))
-        clean = drafts.slide_prompt(slide, draws_text=False)
-        self.assertNotIn("Flat white 101", clean)
-        self.assertIn("No text", clean)
+        for draws_text in (True, False):
+            clean = drafts.slide_prompt(slide, draws_text=draws_text)
+            self.assertNotIn("Flat white 101", clean)
+            for phrase in (
+                "No text",
+                "35mm",
+                "home kitchen",
+                "warm amber and brown",
+                "natural window light",
+                "rustic wooden",
+                "crumbs, drips and linen",
+                "Static still-life",
+                "No pouring, stirring, dipping or drizzling",
+            ):
+                self.assertIn(phrase, clean)
+        self.assertIn("cosy seasonal home cooking", drafts.CREATE)
+        self.assertIn("easy enough for weeknights", drafts.CREATE)
+        self.assertIn("UK ingredients", drafts.CREATE)
+        self.assertIn("£", drafts.CREATE)
+        self.assertNotIn(
+            "liquid pouring into a cup",
+            drafts.slide_prompt({**slide, "image_prompt": "liquid pouring into a cup"}, draws_text=True),
+        )
         self.assertFalse(CloudflareAI.draws_text)
 
 
@@ -586,7 +618,12 @@ class DailyNotificationTests(unittest.TestCase):
 
     def tick(self, ai=None, now=MORNING, env=None):
         ai = ai or FakeAI([[raw_draft("a"), raw_draft("b"), raw_draft("c")]], [[90, 80, 70]])
-        with patch.object(cli, "model_client", return_value=ai if ai != "none" else None):
+        with (
+            patch.object(cli, "model_client", return_value=ai if ai != "none" else None),
+            patch.object(
+                image_review, "client", return_value=Mock(chat_json=Mock(return_value={"pass": True, "reasons": []}))
+            ),
+        ):
             return cli.daily(self.conn, env or self.env, self.root / "drafts", now=now)
 
     def notes(self):
@@ -595,11 +632,11 @@ class DailyNotificationTests(unittest.TestCase):
         with sqlite3.connect(self.db) as conn:
             return conn.execute("SELECT outcome, title, link FROM notifications ORDER BY id").fetchall()
 
-    def test_drafts_ready_says_when_the_first_one_posts(self):
+    def test_creation_does_not_claim_ready_before_visual_review(self):
         self.assertEqual(self.tick(), "ok")
         [(outcome, title, link)] = self.notes()
         self.assertEqual((outcome, link), ("ok", "https://iramkhan.com/command-centre/#instagram"))
-        self.assertRegex(title, r"^1 Instagram draft ready to review, posts at [0-2][0-9]:[0-5][0-9]$")
+        self.assertEqual(title, "1 Instagram draft created; awaiting image review and your approval")
         self.assertEqual(self.tick(), "skipped")
         self.assertEqual(len(self.notes()), 1)
 
@@ -611,16 +648,14 @@ class DailyNotificationTests(unittest.TestCase):
                 self.conn.commit()
                 self.db.unlink(missing_ok=True)
                 self.tick(env={k: v for k, v in self.env.items() if k != key})
-                self.assertEqual(self.notes()[0][1], "1 Instagram draft ready to review, posting is manual")
+                self.assertEqual(
+                    self.notes()[0][1], "1 Instagram draft created; awaiting image review and your approval"
+                )
 
-    def test_first_post_time_is_london_time(self):
+    def test_no_automatic_posting_promise_before_approval(self):
         self.tick()
         title = self.notes()[0][1]
-        rows = self.conn.execute("SELECT scheduled_for, created_at FROM drafts").fetchall()
-        from instagram_agent import publish
-
-        first = min(publish.posts_at(r["scheduled_for"], r["created_at"]) for r in rows)
-        self.assertTrue(title.endswith(first.astimezone(cli.LONDON).strftime("%H:%M")))
+        self.assertTrue(title.endswith("awaiting image review and your approval"))
 
     def test_failures_partial_and_gave_up_are_reported(self):
         for _ in range(3):
