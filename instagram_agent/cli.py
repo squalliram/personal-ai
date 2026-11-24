@@ -298,7 +298,11 @@ def make_drafts(conn, env: dict, media_dir: Path, now: datetime | None = None) -
         rules = drafts.load_rules(Path(skills).expanduser() if skills else None)
         voice = _read(env.get("INSTAGRAM_VOICE_FILE", "agents/instagram-voice.md"))
         clip = _queued_clip(conn, media_dir, note_matches=recipe_series.is_recipe) if series else None
-        recipe_upload = uploads.oldest(conn, note_matches=recipe_series.is_recipe) if series and clip is None else None
+        recipe_upload = (
+            uploads.oldest(conn, note_matches=recipe_series.is_recipe)
+            if series and clip is None and render.can_render("photos")
+            else None
+        )
         if clip is None and recipe_upload is None:
             clip = _queued_clip(conn, media_dir)
         if clip is not None:
