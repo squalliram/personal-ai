@@ -163,7 +163,7 @@ class CreationTests(unittest.TestCase):
 
     def test_three_failed_attempts_reject_with_visible_verdicts_and_notify(self):
         vision = reviewer(*[{"pass": False, "reasons": ["floating ladle"]}] * 3)
-        self.assertEqual(self.create(vision), 1)
+        self.assertEqual(self.create(vision), 0)
         row = self.row()
         self.assertEqual((self.ai.images, row["status"]), (3, "rejected"))
         self.assertIn("floating ladle", row["review_notes"])
@@ -178,7 +178,7 @@ class CreationTests(unittest.TestCase):
         self.assertEqual(notify.call_args.args[1], "failed")
 
     def test_no_vision_rejects_and_marks_unavailable_without_retrying(self):
-        self.assertEqual(self.create(None), 1)
+        self.assertEqual(self.create(None), 0)
         row = self.row()
         self.assertEqual((self.ai.images, row["status"]), (1, "rejected"))
         self.assertIn("image review unavailable", row["review_notes"])

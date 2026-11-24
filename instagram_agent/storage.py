@@ -216,7 +216,26 @@ def insert_draft(conn: sqlite3.Connection, draft: dict, created_on: str, created
 
 
 def drafts_on(conn: sqlite3.Connection, day: str) -> int:
-    return conn.execute("SELECT COUNT(*) FROM drafts WHERE created_on=?", (day,)).fetchone()[0]
+    return conn.execute("SELECT COUNT(*) FROM drafts WHERE created_on=?", (day,)).fetchone()[0] - review_rejections_on(
+        conn, day
+    )
+
+
+def image_review_rejected(row) -> bool:
+    if row["status"] != "rejected":
+        return False
+    try:
+        review = json.loads(row["reel"] or "{}").get("image_review")
+        return isinstance(review, dict) and review.get("status") in ("failed", "unavailable")
+    except (ValueError, AttributeError):
+        return False
+
+
+def review_rejections_on(conn: sqlite3.Connection, day: str) -> int:
+    return sum(
+        image_review_rejected(row)
+        for row in conn.execute("SELECT status,reel FROM drafts WHERE created_on=? AND status='rejected'", (day,))
+    )
 
 
 def record_run(

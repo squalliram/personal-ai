@@ -266,6 +266,28 @@ class DailyTickTests(unittest.TestCase):
         self.assertEqual(self.tick(MORNING), "ok")
         self.assertEqual(storage.drafts_on(self.conn, "2026-11-12"), 1)
 
+    def test_image_review_rejection_is_replaced_in_the_same_slot(self):
+        with patch.object(image_review, "check", return_value={"status": "failed", "reasons": ["hand"]}):
+            self.assertEqual(self.tick(MORNING), "failed")
+        slot = self.conn.execute("SELECT scheduled_for FROM drafts").fetchone()[0]
+        self.assertEqual(storage.drafts_on(self.conn, "2026-11-12"), 0)
+        self.assertEqual(storage.review_rejections_on(self.conn, "2026-11-12"), 1)
+        self.assertEqual(self.tick(MORNING), "ok")
+        rows = self.conn.execute("SELECT status,scheduled_for FROM drafts ORDER BY rowid").fetchall()
+        self.assertEqual([row[0] for row in rows], ["rejected", "pending"])
+        self.assertEqual(rows[1][1], slot)
+
+    def test_two_review_rejections_stop_further_generation_that_day(self):
+        with patch.object(
+            image_review, "check", return_value={"status": "unavailable", "reasons": ["image review unavailable"]}
+        ):
+            for _ in range(2):
+                self.assertEqual(self.tick(MORNING), "failed")
+        with patch.object(cli, "model_client") as model:
+            self.assertEqual(cli.make_drafts(self.conn, self.env, self.root / "drafts", MORNING), "gave_up")
+        model.assert_not_called()
+        self.assertEqual(storage.review_rejections_on(self.conn, "2026-11-12"), 2)
+
     def test_british_summer_time_is_respected(self):
         self.assertEqual(self.tick(datetime(2026, 6, 1, 8, 30, tzinfo=timezone.utc)), "ok")  # 09:30 BST
 

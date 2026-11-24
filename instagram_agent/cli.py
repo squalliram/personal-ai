@@ -42,6 +42,7 @@ DEFAULT_MEDIA = Path("data/instagram/drafts")
 DAILY_FROM_HOUR = 9
 DAILY_ATTEMPTS = 3
 DAILY_DRAFTS = 1
+DAILY_REVIEW_REJECTIONS = 2
 
 INSIGHT_WINDOW = timedelta(days=30)
 
@@ -320,7 +321,10 @@ def make_drafts(conn, env: dict, media_dir: Path, now: datetime | None = None) -
         ):
             return "skipped"
         slot_args = {"slot": slot}
-    if storage.runs_on(conn, today) >= DAILY_ATTEMPTS:
+    if (
+        storage.runs_on(conn, today) >= DAILY_ATTEMPTS
+        or storage.review_rejections_on(conn, today) >= DAILY_REVIEW_REJECTIONS
+    ):
         return "gave_up"
     ai = model_client(env)
     if ai is None:

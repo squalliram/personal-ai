@@ -597,7 +597,11 @@ def store_clip_draft(conn, draft: dict, clip, media_dir: Path, now: datetime, *,
 
 def _free_slots(conn, now: datetime, count: int) -> list[str]:
     day = now.astimezone(LONDON).date().isoformat()
-    taken = {r[0] for r in conn.execute("SELECT scheduled_for FROM drafts WHERE created_on=?", (day,))}
+    taken = {
+        row["scheduled_for"]
+        for row in conn.execute("SELECT scheduled_for,status,reel FROM drafts WHERE created_on=?", (day,))
+        if not storage.image_review_rejected(row)
+    }
     return [s for s in publish_slots(conn, now, count + len(taken)) if s not in taken][:count]
 
 
@@ -804,5 +808,5 @@ def render_and_store(
         except BaseException:
             shutil.rmtree(folder, ignore_errors=True)
             raise
-        stored += 1
+        stored += verdict["status"] == "passed"
     return stored
