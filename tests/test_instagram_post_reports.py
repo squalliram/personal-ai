@@ -374,6 +374,18 @@ class PostReportTests(Case):
         latest = learnings.summary(self.conn, PUBLISHED + timedelta(hours=73))["reports"][0]
         self.assertEqual(latest["creative"], report["creative"])
 
+    def test_generated_reel_snapshot_uses_opening_overlay_not_topic(self):
+        draft_id = self.publish(kind="reel", topic="Squash soup", hook="Roast it for deeper flavour")
+        self.conn.execute(
+            "UPDATE drafts SET reel=? WHERE draft_id=?",
+            (json.dumps({"source": "photos", "hook": "Squash soup", "seconds": 9}), draft_id),
+        )
+        at = PUBLISHED + timedelta(hours=25)
+        post_report.tick(self.conn, self.env, at, client=InsightsGraph({"reach": 50}, product="REELS"))
+        self.assertEqual(
+            learnings.summary(self.conn, at)["reports"][0]["creative"]["hook"], "Roast it for deeper flavour"
+        )
+
     def test_follower_snapshot_retries_missing_and_uses_london_calendar_days(self):
         graph = mock.Mock(user_id="123")
         graph.get.side_effect = [GraphAPIError("unavailable"), {}, {"followers_count": 0}, {"followers_count": 3}]

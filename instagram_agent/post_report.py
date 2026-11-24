@@ -97,10 +97,15 @@ def creative_snapshot(conn, post, fmt: str, posted: datetime | None) -> dict:
     reel = json.loads(draft["reel"] or "{}") if draft else {}
     slides = json.loads(draft["slides"] or "[]") if draft else []
     caption = draft["caption"] if draft and fmt != "story" else ""
+    generated_slides = (
+        reel.get("source") == "photos"
+        and not conn.execute("SELECT 1 FROM uploads WHERE draft_id=?", (post["draft_id"],)).fetchone()
+    )
+    opening_slide = slides[0].get("text") if slides else None
     return {
         "publish_slot": posted.astimezone(LONDON).isoformat(timespec="seconds") if posted else None,
-        "hook": reel.get("hook")
-        or (slides[0].get("text") if slides and fmt in ("carousel", "reel") else None)
+        "hook": (opening_slide if generated_slides else reel.get("hook"))
+        or (opening_slide if fmt in ("carousel", "reel") else None)
         or (caption.splitlines()[0].strip() if caption else None),
         "duration_seconds": reel.get("seconds") if fmt in ("reel", "story") else None,
         "cta": caption_ask(caption),
