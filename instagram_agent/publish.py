@@ -154,7 +154,9 @@ def recipe_slot_taken(conn, now: datetime) -> bool:
     return False
 
 
-def _reschedule_series_reels(conn, env: dict, now: datetime, *, day_full: bool = False) -> None:
+def _reschedule_series_reels(
+    conn, env: dict, now: datetime, *, day_full: bool = False, in_series: bool = False
+) -> None:
     rows = _scheduled_reels(conn)
     local = now.astimezone(LONDON)
     today = local.date()
@@ -167,16 +169,13 @@ def _reschedule_series_reels(conn, env: dict, now: datetime, *, day_full: bool =
     with conn:
         for row in rows:
             slot = _instant(row["scheduled_for"]).astimezone(LONDON)
-            off_day = (
-                slot.date() < today and recipe_series.active(conn, slot) and not recipe_series.posting_day(env, slot)
-            )
-            overflow = (
-                day_full
-                and slot.date() == today
-                and _eligible(row)
-                and now <= posts_at(row["scheduled_for"], row["created_at"]) + STALE_AFTER
-            )
-            if not (off_day or overflow):
+            earlier_series_slot = slot.date() < today and recipe_series.active(conn, slot)
+            off_day = earlier_series_slot and not recipe_series.posting_day(env, slot)
+            eligible = _eligible(row)
+            within_grace = now <= posts_at(row["scheduled_for"], row["created_at"]) + STALE_AFTER
+            overnight = in_series and earlier_series_slot and eligible and within_grace
+            overflow = day_full and slot.date() == today and eligible and within_grace
+            if not (off_day or overnight or overflow):
                 continue
             target = datetime.combine(first_open, slot.time(), LONDON)
             while (
@@ -189,7 +188,7 @@ def _reschedule_series_reels(conn, env: dict, now: datetime, *, day_full: bool =
                 "UPDATE drafts SET scheduled_for=? WHERE draft_id=? AND scheduled_for=? AND status IN ('approved','pending')",
                 (target.isoformat(timespec="seconds"), row["draft_id"], row["scheduled_for"]),
             )
-            if _eligible(row):
+            if eligible:
                 occupied.add(target.date())
 
 
@@ -419,12 +418,11 @@ def tick(conn, env: dict, media_dir: Path, now: datetime, client: GraphClient | 
             env=env,
         )
     series = recipe_series.active(conn, now)
-    if series and not recipe_series.posting_day(env, now):
-        return "published 0, failed 0"
-    day_full = series and recipe_series.already_published(conn, now)
-    if series or recipe_series.started(conn):
-        _reschedule_series_reels(conn, env, now, day_full=day_full)
-    if day_full:
+    off_day = series and not recipe_series.posting_day(env, now)
+    day_full = series and not off_day and recipe_series.already_published(conn, now)
+    if recipe_series.started(conn):
+        _reschedule_series_reels(conn, env, now, day_full=day_full, in_series=series)
+    if off_day or day_full:
         return "published 0, failed 0"
     for row in due(conn, now):
         if kind(row) != "reel":

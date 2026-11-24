@@ -149,6 +149,18 @@ class PublishTests(PublishCase):
         self.assertEqual(self.tick(FakeGraph(), friday + timedelta(days=3)), "published 0, failed 0")
         self.assertEqual(self.status(late)[0], "approved")
 
+    def test_after_midnight_approval_within_grace_moves_to_a_posting_day(self):
+        friday = (DUE + timedelta(days=1)).replace(hour=23, minute=30)
+        reel = self.add(slot=friday.isoformat())
+        recipe_series.start(self.conn, MADE)
+        with self.conn:
+            self.conn.execute("UPDATE drafts SET reel=? WHERE draft_id=?", ('{"file":"reel.mp4","hold":true}', reel))
+        self.assertEqual(self.tick(FakeGraph(), friday), "published 0, failed 0")
+        with self.conn:
+            self.conn.execute("UPDATE drafts SET status='approved' WHERE draft_id=?", (reel,))
+        self.assertEqual(self.tick(FakeGraph(), friday + timedelta(hours=1)), "published 0, failed 0")
+        self.assertEqual(self.tick(FakeGraph(), friday + timedelta(days=3)), "published 1, failed 0")
+
     def test_recipe_series_enforces_posting_days_and_one_reel_story_pair_per_day(self):
         self.add()
         recipe_series.start(self.conn, MADE)
