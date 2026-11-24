@@ -87,6 +87,18 @@ class VisionTests(unittest.TestCase):
         self.assertTrue(jpeg_data_url(PNG).startswith("data:image/png;base64,"))
         self.assertTrue(jpeg_data_url(b"\xff\xd8\xffdata").startswith("data:image/jpeg;base64,"))
 
+    def test_owner_frames_allow_people_but_still_check_sanity(self):
+        ai = reviewer()
+        self.assertEqual(image_review.check(ai, PNG, frame=True, owner_media=True)["status"], "passed")
+        self.assertEqual(ai.chat_json.call_args.args[0], image_review.OWNER_PROMPT)
+        self.assertNotIn("Reject any person or body part", image_review.OWNER_PROMPT)
+        for problem in ("warped", "garbled", "floating", "impossible geometry", "unappetising"):
+            self.assertIn(problem, image_review.OWNER_PROMPT)
+        image_review.check(ai, PNG, frame=True)
+        self.assertEqual(ai.chat_json.call_args.args[0], image_review.PROMPT)
+        image_review.check(ai, PNG, owner_media=True)
+        self.assertEqual(ai.chat_json.call_args.args[0], image_review.PROMPT)
+
     def test_first_middle_last_frames_are_all_reviewed_and_cleaned_up(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "reel.mp4"
@@ -107,6 +119,11 @@ class VisionTests(unittest.TestCase):
             self.assertEqual([float(argv[4]) for argv in calls], [0, 4.5, 8.9])
             self.assertEqual(list(Path(folder).iterdir()), [path])
             self.assertEqual(image_review.frames(path, 9.0, reviewer(), "ffmpeg", extract)["status"], "passed")
+            owner = reviewer()
+            self.assertEqual(
+                image_review.frames(path, 9.0, owner, "ffmpeg", extract, owner_media=True)["status"], "passed"
+            )
+            self.assertTrue(all(c.args[0] == image_review.OWNER_PROMPT for c in owner.chat_json.call_args_list))
             self.assertEqual(image_review.frames(path, 9.0, None, "ffmpeg", extract)["status"], "unavailable")
             self.assertEqual(image_review.frames(path, 9.0, reviewer(), None, extract)["status"], "unavailable")
             self.assertEqual(
@@ -178,6 +195,7 @@ class CreationTests(unittest.TestCase):
                 render.render_due(self.conn, self.media, now=MORNING, reviewer=reviewer()), "rendered 1, failed 0"
             )
         frames.assert_called_once()
+        self.assertFalse(frames.call_args.kwargs["owner_media"])
         row = self.row()
         review = json.loads(row["reel"])["image_review"]
         self.assertEqual((review["status"], len(review["slides"]), len(review["frames"])), ("passed", 3, 1))
@@ -185,6 +203,39 @@ class CreationTests(unittest.TestCase):
             cli._notify_visual_review(self.conn, {}, MORNING)
         self.assertIn("ready for your approval", notify.call_args.args[2])
         self.assertTrue(storage.decide_draft(self.conn, row["draft_id"], "approved", MORNING.isoformat()))
+
+    def test_real_upload_and_clip_provenance_selects_owner_frame_review(self):
+        self.create(reviewer())
+        draft_id = self.row()["draft_id"]
+        for table in ("uploads", "clips"):
+            with self.subTest(table=table):
+                with self.conn:
+                    self.conn.execute(
+                        "UPDATE drafts SET reel=json_set(reel,'$.render','pending','$.image_review.status','pending')"
+                    )
+                    self.conn.execute("DELETE FROM uploads")
+                    self.conn.execute("DELETE FROM clips")
+                    if table == "uploads":
+                        self.conn.execute(
+                            "INSERT INTO uploads(upload_id,created_at,note,photos,status,draft_id) VALUES('owner','now','Food',1,'used',?)",
+                            (draft_id,),
+                        )
+                    else:
+                        self.conn.execute(
+                            "INSERT INTO clips(clip_id,created_at,note,size,status,draft_id) VALUES('owner','now','Food',100,'used',?)",
+                            (draft_id,),
+                        )
+                with (
+                    patch.object(
+                        render, "render", side_effect=lambda c, m, d, r: {**r, "render": "done", "file": "reel.mp4"}
+                    ),
+                    patch.object(
+                        image_review, "frames", return_value={"status": "passed", "frames": [], "reasons": []}
+                    ) as frames,
+                ):
+                    render.render_due(self.conn, self.media, now=MORNING, reviewer=reviewer())
+                self.assertTrue(frames.call_args.kwargs["owner_media"])
+                self.assertEqual(self.row()["status"], "pending")
 
     def test_bad_rendered_frame_rejects_even_when_slides_passed(self):
         for status in ("failed", "unavailable"):

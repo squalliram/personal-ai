@@ -396,7 +396,17 @@ def render_due(
                     if reel["file"] not in ("reel.mp4", "reel.mov") or path.is_symlink() or path.parent.is_symlink():
                         raise RenderError("the reel's video is missing or unsafe")
                     _safe(path)
-                    result = image_review.frames(path, reel["seconds"], reviewer, capabilities().get("ffmpeg"), _run)
+                    owner_media = (
+                        conn.execute(
+                            "SELECT 1 FROM uploads WHERE draft_id=? AND status='used' UNION ALL "
+                            "SELECT 1 FROM clips WHERE draft_id=? AND status='used' LIMIT 1",
+                            (row["draft_id"], row["draft_id"]),
+                        ).fetchone()
+                        is not None
+                    )
+                    result = image_review.frames(
+                        path, reel["seconds"], reviewer, capabilities().get("ffmpeg"), _run, owner_media=owner_media
+                    )
                     reel["image_review"] = {**reel.get("image_review", {}), **result}
                     if result["status"] != "passed":
                         with conn:

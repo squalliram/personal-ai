@@ -155,8 +155,9 @@ REVIEW = (
     "draft that names a venue, dish, rating or price the note doesn't, or changes its rating. "
     "For AI-generated slides only, score under 50 a draft outside 3-4 slides or whose first image_prompt "
     "does not show the finished, plated dish or ready-to-drink drink as the payoff. "
-    "For both AI-generated and owner media, score under 50 if the draft or owner note indicates people in any "
-    "image or clip, including faces, hands, arms, bodies, silhouettes or reflections of people. "
+    "For AI-generated slides only, score under 50 if the draft indicates people in any image, "
+    "including faces, hands, arms, bodies, silhouettes or reflections of people. "
+    "For the owner's real photos or clips, people and hands are allowed; do not penalise their presence. "
     "Be strict; 70 means "
     'ready to post. Reply with JSON: {"reviews": [{"score": 0, "notes": "one or two sentences"}]}, in order.'
 )
