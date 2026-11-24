@@ -362,6 +362,7 @@ class PostReportTests(Case):
             {
                 "publish_slot": "2026-11-12T18:12:04+00:00",
                 "hook": "Flat white 101",
+                "hook_style": "none",
                 "cta": "follow",
                 "hashtags": ["#coffee", "#latte"],
                 "duration_seconds": 12.0,

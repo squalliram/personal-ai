@@ -10,7 +10,7 @@ from hashlib import sha256
 from pathlib import Path
 from unittest.mock import patch
 
-from instagram_agent import cli, env_install, recipe_series, storage, token_refresh
+from instagram_agent import cli, content_plan, env_install, storage, token_refresh
 from instagram_agent.graph import GRAPH_HOST, INSTAGRAM_HOST, GraphAPIError, GraphClient
 
 NOW = datetime(2026, 11, 15, 12, 0, tzinfo=timezone.utc)
@@ -248,7 +248,7 @@ class RefreshTransportTests(unittest.TestCase):
 
 
 class DailyRefreshIntegrationTests(unittest.TestCase):
-    def test_late_recipe_series_launch_does_not_spend_a_posting_day(self):
+    def test_late_launch_keeps_the_plan_but_does_not_draft_for_an_elapsed_slot(self):
         monday = NOW + timedelta(days=1, hours=8)
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -260,7 +260,7 @@ class DailyRefreshIntegrationTests(unittest.TestCase):
                 patch.object(cli.token_refresh, "tick", return_value="not_due"),
                 patch.object(cli.publish, "configured", return_value=True),
                 patch.object(cli.publish, "tick", return_value="publish_off"),
-                patch.object(cli, "daily", return_value="skipped") as draft,
+                patch.object(cli, "model_client") as model,
                 patch.object(cli.render, "render_due"),
                 patch.object(cli, "_capture_followers", return_value="followers_off"),
                 patch.object(cli, "_capture_stories", return_value="stories_off"),
@@ -271,10 +271,9 @@ class DailyRefreshIntegrationTests(unittest.TestCase):
                 clock.return_value += timedelta(days=1)
                 self.assertEqual(cli.main(args), 0)
             with storage.connect(db) as conn:
-                calendar = recipe_series.calendar(conn, {})
-                self.assertIsNone(calendar.day(monday).number)
-                self.assertEqual(calendar.day(monday + recipe_series.WINDOW).number, 28)
-            draft.assert_called_once()
+                self.assertEqual(len(content_plan.rows(conn, monday)), 3)
+                self.assertIsNone(content_plan.slot_today(conn, monday))
+            model.assert_not_called()
 
     def test_refresh_runs_before_drafting_and_publishing_inside_daily_lock(self):
         events = []

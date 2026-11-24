@@ -11,7 +11,7 @@ from test_instagram_drafts import MORNING, FakeAI, raw_draft
 
 import notifications
 from command_centre.security import Permission
-from instagram_agent import cli, drafts, recipe_series, storage, uploads
+from instagram_agent import cli, content_plan, drafts, recipe_series, storage, uploads
 from instagram_agent.openai_client import OpenAIError
 
 try:
@@ -396,6 +396,24 @@ class DailyFromUploadTests(Fixture):
         ai = PhotoAI([photo_draft()], [[85]])
         self.assertEqual(self.tick(ai, now=friday + timedelta(minutes=5)), "skipped")
         self.assertTrue(uploads.is_waiting(self.conn, upload_id))
+
+    def test_planned_slot_uses_matching_owner_note_and_links_draft(self):
+        content_plan.ensure_week(self.conn, MORNING)
+        friday = MORNING + timedelta(days=1)
+        entry = content_plan.slot_today(self.conn, friday)
+        unmatched = self.add_upload()
+        pillar = content_plan.PILLARS[entry["pillar"]]
+        note = f"{pillar}: homemade squash soup."
+        matching = self.add_upload(note)
+        ai = PhotoAI([photo_draft()], [[85]])
+        self.assertEqual(self.tick(ai, now=friday), "ok")
+        self.assertEqual(ai.calls[0][1]["owner_note"], note)
+        self.assertIn(f"Assigned content pillar: {pillar}", ai.calls[0][0])
+        self.assertTrue(uploads.is_waiting(self.conn, unmatched))
+        self.assertFalse(uploads.is_waiting(self.conn, matching))
+        draft = self.conn.execute("SELECT plan_id,scheduled_for,reel FROM drafts").fetchone()
+        self.assertEqual((draft["plan_id"], draft["scheduled_for"]), (entry["id"], entry["slot"]))
+        self.assertTrue(json.loads(draft["reel"])["hold"])
 
     def test_unapproved_carryovers_do_not_stop_the_next_recipe_draft(self):
         recipe_series.start(self.conn, MORNING)

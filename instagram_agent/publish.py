@@ -23,7 +23,7 @@ from urllib.request import Request, urlopen
 
 from notifications import command_centre_link, notify
 
-from . import recipe_series, storage, video
+from . import content_plan, recipe_series, storage, video
 from .analysis import LONDON
 from .drafts import PASS_SCORE
 from .graph import GraphAPIError, GraphClient
@@ -155,7 +155,11 @@ def recipe_slot_taken(conn, now: datetime) -> bool:
 
 
 def _reschedule_series_reels(
-    conn, calendar: recipe_series.SeriesCalendar, now: datetime, *, day_full: bool = False
+    conn,
+    calendar: content_plan.PostingCalendar | recipe_series.SeriesCalendar,
+    now: datetime,
+    *,
+    day_full: bool = False,
 ) -> None:
     rows = _scheduled_reels(conn)
     current = calendar.day(now)
@@ -419,7 +423,7 @@ def tick(conn, env: dict, media_dir: Path, now: datetime, client: GraphClient | 
             key=f"instagram-legacy-skipped:{old['draft_id']}",
             env=env,
         )
-    calendar = recipe_series.calendar(conn, env)
+    calendar = content_plan.calendar(conn) or recipe_series.calendar(conn, env)
     current = calendar.day(now)
     series = current.in_series
     off_day = series and not current.posting_day
@@ -493,7 +497,9 @@ def tick(conn, env: dict, media_dir: Path, now: datetime, client: GraphClient | 
                 "UPDATE drafts SET status='published', media_id=? WHERE draft_id=?", (media_id, row["draft_id"])
             )
         if series:
-            _reschedule_series_reels(conn, recipe_series.calendar(conn, env), publish_at, day_full=True)
+            _reschedule_series_reels(
+                conn, content_plan.calendar(conn) or recipe_series.calendar(conn, env), publish_at, day_full=True
+            )
         try:
             with conn:
                 storage.link_published(conn, row["draft_id"], media_id)

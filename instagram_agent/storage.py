@@ -48,6 +48,7 @@ LATER_COLUMNS = {
     "drafts": {
         "kind": "TEXT NOT NULL DEFAULT 'carousel' CHECK (kind IN ('carousel', 'reel'))",
         "reel": "TEXT",
+        "plan_id": "INTEGER REFERENCES content_plan(id)",
     },
 }
 
@@ -188,9 +189,13 @@ def link_published(conn: sqlite3.Connection, draft_id: str, media_id: str) -> No
 
 
 def insert_draft(conn: sqlite3.Connection, draft: dict, created_on: str, created_at: str) -> None:
+    plan_id = draft.get("plan_id")
+    reel = draft.get("reel")
+    if plan_id is not None and draft.get("kind") == "reel":
+        reel = {**(reel or {}), "hold": True}
     conn.execute(
         "INSERT INTO drafts(draft_id,created_on,created_at,category,topic,angle,slides,caption,hashtags,"
-        "review_score,review_notes,scheduled_for,kind,reel) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "review_score,review_notes,scheduled_for,kind,reel,plan_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             draft["draft_id"],
             created_on,
@@ -205,9 +210,12 @@ def insert_draft(conn: sqlite3.Connection, draft: dict, created_on: str, created
             draft.get("review_notes"),
             draft.get("scheduled_for"),
             draft.get("kind", "carousel"),
-            json.dumps(draft["reel"], ensure_ascii=False) if draft.get("reel") else None,
+            json.dumps(reel, ensure_ascii=False) if reel else None,
+            plan_id,
         ),
     )
+    if plan_id is not None:
+        conn.execute("UPDATE content_plan SET status='Scripted' WHERE id=? AND status='Idea'", (plan_id,))
 
 
 def drafts_on(conn: sqlite3.Connection, day: str) -> int:

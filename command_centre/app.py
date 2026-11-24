@@ -30,6 +30,7 @@ from zoneinfo import ZoneInfo
 import notifications
 from instagram_agent import clips as instagram_clips
 from instagram_agent import cloudflare_client, openai_client
+from instagram_agent import content_plan as instagram_content_plan
 from instagram_agent import music as instagram_music
 from instagram_agent import storage as instagram_storage
 from instagram_agent import uploads as instagram_uploads
@@ -315,6 +316,9 @@ class CommandCentreApp:
             ("GET", "/api/v1/sessions"): Route(self.session_list, Permission.READ),
             ("POST", "/api/v1/sessions/revoke"): Route(self.session_revoke, Permission.READ, csrf=True),
             ("GET", "/api/v1/instagram/drafts"): Route(self.instagram_drafts, Permission.READ),
+            ("POST", "/api/v1/instagram/calendar/advance"): Route(
+                self.instagram_calendar_advance, Permission.RECOMMEND, csrf=True
+            ),
             ("GET", "/api/v1/instagram/slide"): Route(self.instagram_slide, Permission.READ),
             ("POST", "/api/v1/instagram/decision"): Route(self.instagram_decision, Permission.RECOMMEND, csrf=True),
             ("POST", "/api/v1/instagram/hold"): Route(self.instagram_hold, Permission.RECOMMEND, csrf=True),
@@ -1235,6 +1239,30 @@ class CommandCentreApp:
 
     def instagram_drafts(self, request: Request) -> Result:
         return 200, {**sources.instagram_drafts(self.settings), "uploads_on": instagram_uploads.available()}, []
+
+    def instagram_calendar_advance(self, request: Request) -> Result:
+        body, error = _json_body(request.environ)
+        if error:
+            return error
+        if (
+            not isinstance(body, dict)
+            or set(body) != {"id", "status"}
+            or type(body["id"]) is not int
+            or not 0 < body["id"] < 2**63
+            or body["status"] not in instagram_content_plan.MANUAL[:-1]
+        ):
+            return _error(400, "invalid_request")
+        path = self.settings.instagram_db
+        if path is None or path.is_symlink() or not path.is_file():
+            return _error(404, "not_found")
+        with closing(sqlite3.connect(path, timeout=5)) as conn:
+            if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='content_plan'").fetchone():
+                return _error(409, "calendar_changed")
+            status = instagram_content_plan.advance(conn, body["id"], body["status"])
+        if not status:
+            return _error(409, "calendar_changed")
+        self.audit.record("instagram_calendar", status, actor="owner", entry=body["id"], client=request.client)
+        return 200, {"id": body["id"], "status": status}, []
 
     def _instagram_ready(self) -> bool:
         path, media = self.settings.instagram_db, self.settings.instagram_media

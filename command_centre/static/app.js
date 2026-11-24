@@ -2487,6 +2487,35 @@
         unpublishedHistory.map((d) => draftCard(d, canDecide, data.auto_publish))) : null);
   }
 
+  function igCalendar(entries, canDecide, showReview) {
+    const content = el("div", {}, card("Content calendar",
+      muted("Monday, Wednesday and Friday · London time. To add photos or a clip for a slot, include its pillar name in the upload note.")));
+    if (!entries.length) content.append(muted("The calendar will appear after the next Instagram run."));
+    for (const entry of entries) {
+      const feedback = el("p", { role: "status", class: "muted", hidden: "" });
+      const advance = entry.next_status && canDecide ? el("button", { type: "button" }, `Mark ${entry.next_status}`) : null;
+      if (advance) advance.addEventListener("click", async () => {
+        advance.disabled = true;
+        const result = await api("api/v1/instagram/calendar/advance", {
+          method: "POST", body: { id: entry.id, status: entry.status }
+        });
+        if (result.status === 401) { showLogin("Your session has ended. Sign in again."); return; }
+        if (result.ok) { clearCache(); render(); return; }
+        feedback.hidden = false;
+        feedback.textContent = result.status === 409 ? "This entry changed. Refresh to see its status." : "Could not save the status.";
+        advance.disabled = false;
+      });
+      const review = entry.needs_approval && canDecide ? el("button", { type: "button" }, "Go to awaiting review") : null;
+      if (review) review.addEventListener("click", showReview);
+      content.append(card(entry.pillar_name, muted(`${when(entry.slot)} · ${entry.status}`),
+        entry.topic ? el("p", {}, entry.topic) : null,
+        entry.scheduled_for && Date.parse(entry.scheduled_for) !== Date.parse(entry.slot)
+          ? muted(`Moved to ${when(entry.scheduled_for)}`) : null,
+        advance, review, feedback));
+    }
+    return content;
+  }
+
   async function instagram(view) {
     const data = await load("api/v1/instagram/drafts");
     if (!data) return;
@@ -2495,7 +2524,7 @@
       && (!data.auto_publish || (d.reel && d.reel.hold) || !igNumber(d.review_score) || d.review_score < 70);
     const review = data.drafts.filter(needsReview);
     const drafts = data.drafts.filter((d) => ["pending", "approved", "failed"].includes(d.status) && !needsReview(d));
-    const sections = [["performance", "Performance"], ["review", `Awaiting review (${review.length})`], ["drafts", `Drafts (${drafts.length})`],
+    const sections = [["performance", "Performance"], ["calendar", "Calendar"], ["review", `Awaiting review (${review.length})`], ["drafts", `Drafts (${drafts.length})`],
       ["published", "Published"], ["uploads", "Uploads & music"], ["activity", "Activity & audit"]];
     const panels = new Map();
     const buttons = new Map();
@@ -2511,6 +2540,7 @@
     root.append(el("div", { id: "ig-hold-notices" }, ...holdFailureCards()));
     const fills = {
       performance: () => igPerformance(data),
+      calendar: () => igCalendar(data.calendar || [], canDecide, () => show("review")),
       review: () => el("div", {}, card("Awaiting review", muted("Held or unapproved drafts that will not post automatically. Approve or reject below.")),
         review.length ? review.map((d) => draftCard(d, canDecide, data.auto_publish)) : muted("Nothing needs a decision.")),
       drafts: () => el("div", {}, card("Drafts, scheduled & failed", muted("Failed attempts stay here with their last error. Check Instagram before taking any further action; publishing is never retried here."), muted(data.auto_publish
@@ -2521,7 +2551,7 @@
       uploads: () => el("div", {}, uploadCard(data, canDecide), waitingCard(data.uploads || [], canDecide),
         clipCard(data, canDecide), waitingClipsCard(data.clips || [], canDecide), musicCard(data, canDecide)),
       activity: () => el("div", {}, tokenCard(data.token), card("Daily generation runs",
-        muted("One reel draft is due by 12:00 London time. Skipped ticks are normal when today's draft is already made."),
+        muted("Drafts run on planned posting days. Skipped ticks are normal outside those slots or when a draft already exists."),
         table([["When", (r) => when(r.started_at)], ["Result", (r) => r.outcome], ["Drafts", (r) => r.drafts], ["Detail", (r) => r.error || "—"]], data.runs)),
         el("details", {}, el("summary", {}, "Rejected drafts"), data.drafts.filter((d) => d.status === "rejected").map((d) => draftCard(d, canDecide, data.auto_publish))))
     };

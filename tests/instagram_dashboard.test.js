@@ -69,9 +69,11 @@ async function dashboard(savedHolds = {}, permission = 'recommend', holdFailures
   const renderedDrafts = [];
   const sentHolds = [];
   const renderCalls = [];
+  const calendarCalls = [];
   const root = new Element('root');
   const data = {
     state: 'available', auto_publish: true, runs: [], token: {state: 'valid'},
+    calendar: [{id: 1, pillar_name: '£3 soup test', slot: '2026-11-20T16:00:00+00:00', status: 'Idea', next_status: 'Scripted'}],
     drafts: [
       {draft_id: 'failed', status: 'failed', publish_error: 'outcome unknown; check Instagram'},
       {draft_id: 'scheduled', kind: 'reel', status: 'pending', review_score: 90, reel: {hold: false}},
@@ -82,6 +84,8 @@ async function dashboard(savedHolds = {}, permission = 'recommend', holdFailures
   const context = vm.createContext({
     session: {permission}, load: async () => data, holdFailures, render: () => renderCalls.push(true), $: id => root.find(id),
     igView: {section: 'performance'}, igNumber: Number.isFinite,
+    when: date => date, clearCache: () => {},
+    api: async (path, options) => { calendarCalls.push({path, ...options}); return {ok: true, status: 200}; },
     el: (tag, attrs, ...children) => new Element(tag, attrs, children),
     card: (title, ...children) => new Element('card', {title}, children), muted: text => text,
     tokenCard: () => new Element('token'), igPerformance: () => new Element('performance'),
@@ -94,10 +98,10 @@ async function dashboard(savedHolds = {}, permission = 'recommend', holdFailures
   });
   vm.runInContext(source.slice(source.indexOf('  function holdFailureCards()'), source.indexOf('  const pendingHold =')), context);
   vm.runInContext(source.slice(source.indexOf('  const pendingHold ='), source.indexOf('  // Shared by dashboard recovery')), context);
-  vm.runInContext(source.slice(source.indexOf('  async function instagram(view)'), source.indexOf('  const OUTCOME_LABELS')), context);
+  vm.runInContext(source.slice(source.indexOf('  function igCalendar('), source.indexOf('  const OUTCOME_LABELS')), context);
   context.root = root;
   await vm.runInContext('instagram(root)', context);
-  return {root, context, renderedDrafts, sentHolds, renderCalls};
+  return {root, context, renderedDrafts, sentHolds, renderCalls, calendarCalls};
 }
 
 // Exercise the real sender: retries share the same version and token, with no duplicate
@@ -149,6 +153,16 @@ async function sender() {
   assert.equal(panel.hidden, false);
   assert.ok(normal.renderedDrafts.some(draft => draft.draft_id === 'failed'), 'failed publishing drafts must not disappear');
   assert.ok(!normal.renderedDrafts.some(draft => draft.draft_id === 'held'), 'held drafts belong in review only');
+  nav.children.find(button => button.attrs['aria-controls'] === 'ig-section-calendar').events.click();
+  const calendar = normal.root.find('ig-section-calendar');
+  assert.equal(calendar.hidden, false);
+  const entry = calendar.children[0].children.find(child => child.attrs.title === '£3 soup test');
+  const advance = entry.children.find(child => child instanceof Element && child.tag === 'button');
+  assert.equal(advance.children[0], 'Mark Scripted');
+  await advance.events.click();
+  assert.equal(normal.calendarCalls[0].path, 'api/v1/instagram/calendar/advance');
+  assert.equal(normal.calendarCalls[0].body.status, 'Idea');
+  assert.equal(normal.renderCalls.length, 1);
 
   const saved = {
     held: {token: 'saved-release', body: {draft_id: 'held', hold: false, version: 2}},

@@ -8,7 +8,7 @@ from unittest import mock
 from command_centre_fixtures import Client, Clock, make_app, make_settings
 
 from command_centre.security import Permission
-from instagram_agent import storage
+from instagram_agent import content_plan, storage
 
 DRAFT = "0123456789abcdef"
 PNG = b"\x89PNG\r\n\x1a\n" + b"1" * 16
@@ -70,6 +70,23 @@ class InstagramQueueTests(unittest.TestCase):
         self.assertEqual(draft["hashtags"], ["#coffee", "#flatwhite"])
         self.assertEqual([s["text"] for s in draft["slides"]], ["Slide one", "Slide two", "Slide three"])
         self.assertEqual((draft["status"], data["runs"][0]["outcome"]), ("pending", "ok"))
+
+    def test_calendar_advancement_requires_owner_permissions_and_current_status(self):
+        with storage.connect(self.db) as conn:
+            content_plan.ensure_week(conn, datetime.now(timezone.utc))
+        client = self.client(Permission.READ)
+        path = "/api/v1/instagram/calendar/advance"
+        entry = client.request("GET", "/api/v1/instagram/drafts").json()["calendar"][0]
+        body = {"id": entry["id"], "status": "Idea"}
+        self.assertEqual(client.request("POST", path, body=body, headers={"X-CSRF-Token": client.csrf}).status, 403)
+        owner = self.client()
+        self.assertEqual(owner.request("POST", path, body=body).status, 403)
+        headers = {"X-CSRF-Token": owner.csrf}
+        self.assertEqual(owner.request("POST", path, body=body, headers=headers).json()["status"], "Scripted")
+        self.assertEqual(owner.request("POST", path, body=body, headers=headers).status, 409)
+        self.assertEqual(owner.request("POST", path, body={**body, "status": "Approved"}, headers=headers).status, 400)
+        changed = owner.request("GET", "/api/v1/instagram/drafts").json()["calendar"][0]
+        self.assertEqual((changed["status"], changed["next_status"]), ("Scripted", "Filmed"))
 
     def test_token_lifecycle_states_are_safe_and_visible(self):
         client = self.client(Permission.READ)

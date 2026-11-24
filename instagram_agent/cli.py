@@ -19,6 +19,7 @@ from . import (
     analysis,
     clips,
     cloudflare_client,
+    content_plan,
     drafts,
     following,
     learnings,
@@ -31,11 +32,13 @@ from . import (
     story_insights,
     token_refresh,
     uploads,
+    weekly_performance,
 )
 from .analysis import LONDON
 from .cloudflare_client import CloudflareAI
 from .graph import GRAPH_HOST, GRAPH_VERSION, INSTAGRAM_HOST, REEL_METRICS, GraphAPIError, GraphClient
 from .openai_client import IMAGE_MODEL, IMAGE_SIZE, TEXT_MODEL, AIError, OpenAIClient
+from .pillar_config import GUIDANCE, PILLARS
 
 DEFAULT_MEDIA = Path("data/instagram/drafts")
 DAILY_FROM_HOUR = 9
@@ -273,9 +276,17 @@ def make_drafts(conn, env: dict, media_dir: Path, now: datetime | None = None) -
     have = storage.drafts_on(conn, today)
     if local.hour < DAILY_FROM_HOUR or have >= DAILY_DRAFTS or (have and local.time() >= drafts.READY_BY):
         return "skipped"
-    series_day = recipe_series.calendar(conn, env).day(now)
-    series = series_day.in_series
     slot_args = {}
+    series = False
+    if content_plan.started(conn):
+        entry = content_plan.slot_today(conn, now)
+        if not entry or recipe_series.already_published(conn, now) or publish.recipe_slot_taken(conn, now):
+            return "skipped"
+        slot_args = {"slot": entry["slot"], "plan_id": entry["id"]}
+    else:
+        entry = None
+        series_day = recipe_series.calendar(conn, env).day(now)
+        series = series_day.in_series
     if series:
         if (
             series_day.number is None
@@ -303,6 +314,13 @@ def make_drafts(conn, env: dict, media_dir: Path, now: datetime | None = None) -
     wanted, stored = DAILY_DRAFTS - have, 0
     try:
         rules = drafts.load_rules(Path(skills).expanduser() if skills else None)
+        if entry:
+            pillar = PILLARS[entry["pillar"]]
+            rules = (
+                f"Assigned content pillar: {pillar}. {GUIDANCE[entry['pillar']]} "
+                "Keep to cosy seasonal home cooking; use UK measures and prices. Never invent the owner's experience.\n"
+                f"{rules}"
+            )
         voice = _read(env.get("INSTAGRAM_VOICE_FILE", "agents/instagram-voice.md"))
         clip = _queued_clip(conn, media_dir, note_matches=recipe_series.is_recipe) if series else None
         recipe_upload = (
@@ -310,8 +328,18 @@ def make_drafts(conn, env: dict, media_dir: Path, now: datetime | None = None) -
             if series and clip is None and render.can_render("photos")
             else None
         )
-        if clip is None and recipe_upload is None:
+        if entry:
+
+            def matches(note):
+                return pillar.casefold() in note.casefold()
+
+            clip = _queued_clip(conn, media_dir, note_matches=matches)
+            if clip is None and render.can_render("photos"):
+                recipe_upload = uploads.oldest(conn, note_matches=matches)
+        elif clip is None and recipe_upload is None:
             clip = _queued_clip(conn, media_dir)
+        if entry and entry["pillar"] == "east-london" and clip is None and recipe_upload is None:
+            return "skipped"
         if clip is not None:
             rendered = render.can_render("clip")
             clip_rules = rules
@@ -325,7 +353,7 @@ def make_drafts(conn, env: dict, media_dir: Path, now: datetime | None = None) -
             stored += drafts.store_clip_draft(conn, draft, clip, media_dir, now, **slot_args) is not None
         if stored < wanted and not render.can_render("photos"):
             raise AIError("photo reel rendering unavailable; queued photos preserved")
-        upload = (recipe_upload or uploads.oldest(conn)) if stored < wanted else None
+        upload = (recipe_upload or (None if entry else uploads.oldest(conn))) if stored < wanted else None
         if upload is not None:
             upload_rules = rules
             if series and recipe_series.is_recipe(upload["note"]):
@@ -445,21 +473,14 @@ def main(argv: list[str] | None = None) -> int:
                 if refreshed in ("refreshed", "failed", "metadata_failed", "token_changed"):
                     env = {**load_env(env_file), **os.environ}
                 now = _now()
-                calendar = recipe_series.calendar(conn, env)
-                if publish.configured(env) and calendar.launched_on is None:
-                    recipe_series.start(
-                        conn,
-                        now,
-                        defer_first_day=calendar.day(now).posting_day and drafts.recipe_slot(conn, now) is None,
-                    )
-                    calendar = recipe_series.calendar(conn, env)
-                series_day = calendar.day(now)
-                defer_series = series_day.in_series and series_day.number is None
-                outcome = "skipped" if defer_series else daily(conn, env, args.media)
+                content_plan.ensure_week(conn, now)
+                outcome = daily(conn, env, args.media)
                 render.render_due(conn, args.media, _notify_render(env, _now()))
+                content_plan.notify_progress(conn, env, _now(), publish.configured(env))
                 published = publish.tick(conn, env, args.media, _now())
                 reports = _post_reports(conn, env)
                 followers = _capture_followers(conn, env, _now())
+                weekly_performance.tick(conn, env, _now())
             with open(args.media / ".story-insights.lock", "w") as lock:
                 try:
                     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)

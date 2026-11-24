@@ -17,6 +17,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from instagram_agent import content_plan as instagram_content_plan
 from instagram_agent import learnings as instagram_learnings
 from instagram_agent import music as instagram_music
 from instagram_agent import publish as instagram_publish
@@ -590,6 +591,7 @@ def instagram_drafts(settings: Settings, limit: int = 30, now: datetime | None =
         "auto_publish": False,
         "token": _token_snapshot(None, now) | {"state": "not_configured"},
         "drafts": [],
+        "calendar": [],
         "uploads": [],
         "clips": [],
         "music": [],
@@ -618,6 +620,7 @@ def instagram_drafts(settings: Settings, limit: int = 30, now: datetime | None =
                 "SELECT run_on,started_at,outcome,drafts,error FROM daily_runs ORDER BY id DESC LIMIT 10"
             ).fetchall()
             publishing = _publishing(conn)
+            result["calendar"] = instagram_content_plan.rows(conn, now, publishing["on"])
             waiting, notes = _uploads(conn)
             clips, clip_notes = _clips(conn)
             notes.update(clip_notes)
