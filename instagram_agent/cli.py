@@ -314,6 +314,8 @@ def make_drafts(conn, env: dict, media_dir: Path, now: datetime | None = None) -
     wanted, stored = DAILY_DRAFTS - have, 0
     try:
         rules = drafts.load_rules(Path(skills).expanduser() if skills else None)
+        owner_rules = rules
+        alternate = False
         if entry:
             pillar = PILLARS[entry["pillar"]]
             rules = (
@@ -336,13 +338,23 @@ def make_drafts(conn, env: dict, media_dir: Path, now: datetime | None = None) -
             clip = _queued_clip(conn, media_dir, note_matches=matches)
             if clip is None and render.can_render("photos"):
                 recipe_upload = uploads.oldest(conn, note_matches=matches)
+            if clip is None and recipe_upload is None:
+                clip = _queued_clip(conn, media_dir)
+                if clip is None and render.can_render("photos"):
+                    recipe_upload = uploads.oldest(conn)
+                alternate = clip is not None or recipe_upload is not None
+                if alternate:
+                    owner_rules = (
+                        "Use only claims supported by the owner's note. Keep the framing within cosy seasonal "
+                        "home cooking, using UK measures and prices.\n" + owner_rules
+                    )
         elif clip is None and recipe_upload is None:
             clip = _queued_clip(conn, media_dir)
         if entry and entry["pillar"] == "east-london" and clip is None and recipe_upload is None:
             return "skipped"
         if clip is not None:
             rendered = render.can_render("clip")
-            clip_rules = rules
+            clip_rules = owner_rules if alternate else rules
             if series and recipe_series.is_recipe(clip["note"]):
                 clip_rules = f"{recipe_series.GUIDANCE}\n{rules}"
             draft = drafts.generate_from_clip(
@@ -350,17 +362,21 @@ def make_drafts(conn, env: dict, media_dir: Path, now: datetime | None = None) -
             )
             if draft is None:
                 raise AIError("the agents wrote no usable reel from your clip")
+            if alternate:
+                draft["reel"]["pillar_match"] = False
             stored += drafts.store_clip_draft(conn, draft, clip, media_dir, now, **slot_args) is not None
         if stored < wanted and not render.can_render("photos"):
             raise AIError("photo reel rendering unavailable; queued photos preserved")
         upload = (recipe_upload or (None if entry else uploads.oldest(conn))) if stored < wanted else None
         if upload is not None:
-            upload_rules = rules
+            upload_rules = owner_rules if alternate else rules
             if series and recipe_series.is_recipe(upload["note"]):
                 upload_rules = f"{recipe_series.GUIDANCE}\n{rules}"
             draft = drafts.generate_from_upload(conn, ai, now, upload, media_dir, rules=upload_rules, voice=voice)
             if draft is None:
                 raise AIError("the agents wrote no usable post from your photos")
+            if alternate:
+                draft["reel"]["pillar_match"] = False
             stored += drafts.store_upload_draft(conn, draft, upload, media_dir, now, **slot_args) is not None
         dropped: list[str] = []
         if stored < wanted:

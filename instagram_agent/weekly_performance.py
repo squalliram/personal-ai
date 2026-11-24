@@ -8,7 +8,7 @@ from statistics import median
 from notifications import command_centre_link, notify
 
 from .analysis import LONDON
-from .content_plan import monday
+from .content_plan import alternate, monday
 from .pillar_config import PILLARS, RESERVE
 from .post_report import hook_style
 
@@ -72,12 +72,14 @@ def _make(conn, week):
     end = start + timedelta(weeks=1)
     reels = []
     for row in conn.execute(
-        "SELECT r.*, d.topic, p.pillar FROM post_reports r LEFT JOIN drafts d ON d.draft_id=r.draft_id "
+        "SELECT r.*, d.topic, d.reel AS draft_reel, p.pillar FROM post_reports r LEFT JOIN drafts d ON d.draft_id=r.draft_id "
         "LEFT JOIN content_plan p ON p.id=d.plan_id WHERE r.checkpoint='24h' AND r.format='reel' "
         "AND r.captured_at IS NOT NULL AND julianday(r.posted_at)>=julianday(?) AND julianday(r.posted_at)<julianday(?)",
         (start.isoformat(), end.isoformat()),
     ):
         reel = dict(row)
+        if alternate(reel.pop("draft_reel")):
+            reel["pillar"] = None
         creative = json.loads(row["creative"] or "{}")
         reel["hook_style"] = creative.get("hook_style") or hook_style(creative.get("hook"))
         reels.append(reel)

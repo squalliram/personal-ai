@@ -127,6 +127,26 @@ class ContentPlanTests(unittest.TestCase):
         self.assertEqual((change["old_pillar"], change["new_pillar"]), (worst["pillar"], RESERVE[0]))
         self.assertEqual(change["effective_on"], (MONDAY + timedelta(weeks=3)).date().isoformat())
 
+    def test_alternate_upload_counts_as_a_reel_but_not_as_its_slots_pillar(self):
+        content_plan.ensure_week(self.conn, MONDAY)
+        alternate, matched, _ = content_plan.rows(self.conn, MONDAY)
+        for entry, ident, views in ((alternate, "alternate", 100), (matched, "matched", 40)):
+            self.add_draft(entry, ident, ident)
+            with self.conn:
+                self.conn.execute(
+                    "INSERT INTO post_reports(media_id,draft_id,checkpoint,format,posted_at,captured_at,views) "
+                    "VALUES(?,?,'24h','reel',?,?,?)",
+                    (ident, ident, entry["slot"], entry["slot"], views),
+                )
+        with self.conn:
+            self.conn.execute(
+                "UPDATE drafts SET reel=? WHERE draft_id='alternate'", (json.dumps({"pillar_match": False}),)
+            )
+        parts, worst = weekly_performance._make(self.conn, MONDAY.date())
+        self.assertIn("Top: alternate (100 views", parts[0])
+        self.assertIn(f"pillar {matched['pillar_name']}.", parts[1])
+        self.assertIsNone(worst)
+
     def test_hook_labels(self):
         self.assertEqual(post_report.hook_style("Stop skipping this step"), "mistake-fix")
         self.assertEqual(post_report.hook_style("Attempt 1 was a crime"), "fail-to-win")

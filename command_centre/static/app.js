@@ -2489,7 +2489,7 @@
 
   function igCalendar(entries, canDecide, showReview) {
     const content = el("div", {}, card("Content calendar",
-      muted("Monday, Wednesday and Friday · London time. To add photos or a clip for a slot, include its pillar name in the upload note.")));
+      muted("Monday, Wednesday and Friday · London time. Include a pillar name in your upload note to prioritise it for a matching slot.")));
     if (!entries.length) content.append(muted("The calendar will appear after the next Instagram run."));
     for (const entry of entries) {
       const feedback = el("p", { role: "status", class: "muted", hidden: "" });
@@ -2508,7 +2508,7 @@
       const review = entry.needs_approval && canDecide ? el("button", { type: "button" }, "Go to awaiting review") : null;
       if (review) review.addEventListener("click", showReview);
       content.append(card(entry.pillar_name, muted(`${when(entry.slot)} · ${entry.status}`),
-        entry.topic ? el("p", {}, entry.topic) : null,
+        entry.topic ? el("p", {}, entry.alternate ? `Alternate upload: ${entry.topic}` : entry.topic) : null,
         entry.scheduled_for && Date.parse(entry.scheduled_for) !== Date.parse(entry.slot)
           ? muted(`Moved to ${when(entry.scheduled_for)}`) : null,
         advance, review, feedback));

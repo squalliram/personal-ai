@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 
@@ -84,6 +85,13 @@ def calendar(conn):
     return PostingCalendar(date.fromisoformat(first)) if first else None
 
 
+def alternate(reel: str | None) -> bool:
+    try:
+        return json.loads(reel or "{}").get("pillar_match") is False
+    except (ValueError, AttributeError):
+        return False
+
+
 def rows(conn, now, auto_publish=False):
     from .publish import held, rendered, will_post
 
@@ -113,6 +121,7 @@ def rows(conn, now, auto_publish=False):
             status = "Edited"
         entry.update(
             status=status,
+            alternate=alternate(draft["reel"]),
             needs_approval=draft_status == "pending"
             and rendered(draft)
             and not (auto_publish and will_post(draft_status, score, held(draft))),

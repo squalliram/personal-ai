@@ -415,6 +415,20 @@ class DailyFromUploadTests(Fixture):
         self.assertEqual((draft["plan_id"], draft["scheduled_for"]), (entry["id"], entry["slot"]))
         self.assertTrue(json.loads(draft["reel"])["hold"])
 
+    def test_untagged_upload_can_fill_a_planned_slot_without_claiming_its_pillar(self):
+        content_plan.ensure_week(self.conn, MORNING)
+        friday = MORNING + timedelta(days=1)
+        entry = content_plan.slot_today(self.conn, friday)
+        upload_id = self.add_upload("Homemade squash soup. Roast for 45 minutes.")
+        ai = PhotoAI([photo_draft()], [[85]])
+        self.assertEqual(self.tick(ai, now=friday), "ok")
+        self.assertFalse(uploads.is_waiting(self.conn, upload_id))
+        self.assertNotIn("Assigned content pillar", ai.calls[0][0])
+        row = next(row for row in content_plan.rows(self.conn, friday) if row["id"] == entry["id"])
+        self.assertTrue(row["alternate"])
+        draft = self.conn.execute("SELECT reel FROM drafts WHERE draft_id=?", (row["draft_id"],)).fetchone()
+        self.assertTrue(json.loads(draft["reel"])["hold"])
+
     def test_unapproved_carryovers_do_not_stop_the_next_recipe_draft(self):
         recipe_series.start(self.conn, MORNING)
         friday = MORNING + timedelta(days=1)
