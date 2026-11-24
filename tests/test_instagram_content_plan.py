@@ -88,6 +88,20 @@ class ContentPlanTests(unittest.TestCase):
             cli._notify_daily(self.conn, {}, "ok", MONDAY)
         self.assertIn("won't post unless you approve it", notify.call_args.args[2])
 
+    def test_as_filmed_reel_keeps_manual_filmed_and_edited_transitions(self):
+        content_plan.ensure_week(self.conn, MONDAY)
+        slot = content_plan.slot_today(self.conn, MONDAY)
+        self.add_draft(slot, "raw", "As-filmed soup clip")
+        with self.conn:
+            self.conn.execute("UPDATE drafts SET reel=? WHERE draft_id='raw'", (json.dumps({"file": "reel.mp4"}),))
+        entry = content_plan.rows(self.conn, MONDAY)[0]
+        self.assertEqual((entry["status"], entry["next_status"]), ("Scripted", "Filmed"))
+        self.assertFalse(entry["needs_approval"])
+        self.assertEqual(content_plan.advance(self.conn, slot["id"], "Scripted"), "Filmed")
+        self.assertEqual(content_plan.rows(self.conn, MONDAY)[0]["next_status"], "Edited")
+        self.assertEqual(content_plan.advance(self.conn, slot["id"], "Filmed"), "Edited")
+        self.assertTrue(content_plan.rows(self.conn, MONDAY)[0]["needs_approval"])
+
     def test_sunday_report_uses_same_checkpoint_and_rotates_after_third_unique_loss(self):
         with patch.object(weekly_performance, "notify") as notify:
             for n in range(3):

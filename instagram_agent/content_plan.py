@@ -85,11 +85,16 @@ def calendar(conn):
     return PostingCalendar(date.fromisoformat(first)) if first else None
 
 
-def alternate(reel: str | None) -> bool:
+def _reel_metadata(reel: str | None) -> dict:
     try:
-        return json.loads(reel or "{}").get("pillar_match") is False
-    except (ValueError, AttributeError):
-        return False
+        metadata = json.loads(reel or "{}")
+        return metadata if isinstance(metadata, dict) else {}
+    except ValueError:
+        return {}
+
+
+def alternate(reel: str | None) -> bool:
+    return _reel_metadata(reel).get("pillar_match") is False
 
 
 def rows(conn, now, auto_publish=False):
@@ -110,6 +115,7 @@ def rows(conn, now, auto_publish=False):
         entry = dict(row)
         status = entry.pop("status")
         draft = {"reel": entry.pop("reel"), "kind": entry.pop("kind")}
+        metadata = _reel_metadata(draft["reel"])
         score = entry.pop("review_score")
         draft_status = entry.pop("draft_status")
 
@@ -117,12 +123,13 @@ def rows(conn, now, auto_publish=False):
             status = "Posted"
         elif draft_status == "approved":
             status = "Scheduled" if auto_publish and entry["scheduled_for"] and rendered(draft) else "Approved"
-        elif draft_status == "pending" and rendered(draft):
+        elif draft_status == "pending" and metadata.get("render") == "done":
             status = "Edited"
         entry.update(
             status=status,
-            alternate=alternate(draft["reel"]),
+            alternate=metadata.get("pillar_match") is False,
             needs_approval=draft_status == "pending"
+            and status == "Edited"
             and rendered(draft)
             and not (auto_publish and will_post(draft_status, score, held(draft))),
             pillar_name=PILLARS[entry["pillar"]],
