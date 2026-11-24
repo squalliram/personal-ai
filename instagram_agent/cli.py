@@ -19,6 +19,7 @@ from . import (
     analysis,
     clips,
     cloudflare_client,
+    content_plan,
     drafts,
     following,
     image_review,
@@ -32,11 +33,13 @@ from . import (
     story_insights,
     token_refresh,
     uploads,
+    weekly_performance,
 )
 from .analysis import LONDON
 from .cloudflare_client import CloudflareAI
 from .graph import GRAPH_HOST, GRAPH_VERSION, INSTAGRAM_HOST, REEL_METRICS, GraphAPIError, GraphClient
 from .openai_client import IMAGE_MODEL, IMAGE_SIZE, TEXT_MODEL, AIError, OpenAIClient
+from .pillar_config import GUIDANCE, PILLARS
 
 DEFAULT_MEDIA = Path("data/instagram/drafts")
 DAILY_FROM_HOUR = 9
@@ -267,7 +270,7 @@ def _notify_daily(conn, env: dict, outcome: str, now: datetime) -> None:
             notify("instagram", "ok", title, page, key=f"instagram-clip-draft:{row['clip_id']}", env=env, now=now)
     if outcome == "ok":
         rows = conn.execute(
-            "SELECT status, review_score, scheduled_for, created_at FROM drafts WHERE created_on=? AND status='pending' AND draft_id NOT "
+            "SELECT 1 FROM drafts WHERE created_on=? AND status='pending' AND draft_id NOT "
             "IN (SELECT draft_id FROM uploads WHERE draft_id IS NOT NULL UNION "
             "SELECT draft_id FROM clips WHERE draft_id IS NOT NULL)",
             (today,),
@@ -308,9 +311,17 @@ def make_drafts(conn, env: dict, media_dir: Path, now: datetime | None = None) -
     have = storage.drafts_on(conn, today)
     if local.hour < DAILY_FROM_HOUR or have >= DAILY_DRAFTS or (have and local.time() >= drafts.READY_BY):
         return "skipped"
-    series_day = recipe_series.calendar(conn, env).day(now)
-    series = series_day.in_series
     slot_args = {}
+    series = False
+    if content_plan.started(conn):
+        entry = content_plan.slot_today(conn, now)
+        if not entry or recipe_series.already_published(conn, now) or publish.recipe_slot_taken(conn, now):
+            return "skipped"
+        slot_args = {"slot": entry["slot"], "plan_id": entry["id"]}
+    else:
+        entry = None
+        series_day = recipe_series.calendar(conn, env).day(now)
+        series = series_day.in_series
     if series:
         if (
             series_day.number is None
@@ -341,6 +352,15 @@ def make_drafts(conn, env: dict, media_dir: Path, now: datetime | None = None) -
     wanted, stored = DAILY_DRAFTS - have, 0
     try:
         rules = drafts.load_rules(Path(skills).expanduser() if skills else None)
+        owner_rules = rules
+        alternate = False
+        if entry:
+            pillar = PILLARS[entry["pillar"]]
+            rules = (
+                f"Assigned content pillar: {pillar}. {GUIDANCE[entry['pillar']]} "
+                "Keep to cosy seasonal home cooking; use UK measures and prices. Never invent the owner's experience.\n"
+                f"{rules}"
+            )
         voice = _read(env.get("INSTAGRAM_VOICE_FILE", "agents/instagram-voice.md"))
         clip = _queued_clip(conn, media_dir, note_matches=recipe_series.is_recipe) if series else None
         recipe_upload = (
@@ -348,11 +368,38 @@ def make_drafts(conn, env: dict, media_dir: Path, now: datetime | None = None) -
             if series and clip is None and render.can_render("photos")
             else None
         )
-        if clip is None and recipe_upload is None:
+        if entry:
+
+            def matches(note):
+                return pillar.casefold() in note.casefold()
+
+            clip = _queued_clip(conn, media_dir, note_matches=matches)
+            if clip is None and render.can_render("photos"):
+                recipe_upload = uploads.oldest(conn, note_matches=matches)
+            if clip is None and recipe_upload is None:
+                retired = content_plan.replacements(conn, entry["week"])
+                protected_names = [name.casefold() for key, name in PILLARS.items() if key not in retired]
+
+                def untagged(note):
+                    folded = note.casefold()
+                    return not any(name in folded for name in protected_names)
+
+                clip = _queued_clip(conn, media_dir, note_matches=untagged)
+                if clip is None and render.can_render("photos"):
+                    recipe_upload = uploads.oldest(conn, note_matches=untagged)
+                alternate = clip is not None or recipe_upload is not None
+                if alternate:
+                    owner_rules = (
+                        "Use only claims supported by the owner's note. Keep the framing within cosy seasonal "
+                        "home cooking, using UK measures and prices.\n" + owner_rules
+                    )
+        elif clip is None and recipe_upload is None:
             clip = _queued_clip(conn, media_dir)
+        if entry and entry["pillar"] == "east-london" and clip is None and recipe_upload is None:
+            return "skipped"
         if clip is not None:
             rendered = render.can_render("clip")
-            clip_rules = rules
+            clip_rules = owner_rules if alternate else rules
             if series and recipe_series.is_recipe(clip["note"]):
                 clip_rules = f"{recipe_series.GUIDANCE}\n{rules}"
             draft = drafts.generate_from_clip(
@@ -360,17 +407,21 @@ def make_drafts(conn, env: dict, media_dir: Path, now: datetime | None = None) -
             )
             if draft is None:
                 raise AIError("the agents wrote no usable reel from your clip")
+            if alternate:
+                draft["reel"]["pillar_match"] = False
             stored += drafts.store_clip_draft(conn, draft, clip, media_dir, now, **slot_args) is not None
         if stored < wanted and not render.can_render("photos"):
             raise AIError("photo reel rendering unavailable; queued photos preserved")
-        upload = (recipe_upload or uploads.oldest(conn)) if stored < wanted else None
+        upload = (recipe_upload or (None if entry else uploads.oldest(conn))) if stored < wanted else None
         if upload is not None:
-            upload_rules = rules
+            upload_rules = owner_rules if alternate else rules
             if series and recipe_series.is_recipe(upload["note"]):
                 upload_rules = f"{recipe_series.GUIDANCE}\n{rules}"
             draft = drafts.generate_from_upload(conn, ai, now, upload, media_dir, rules=upload_rules, voice=voice)
             if draft is None:
                 raise AIError("the agents wrote no usable post from your photos")
+            if alternate:
+                draft["reel"]["pillar_match"] = False
             stored += drafts.store_upload_draft(conn, draft, upload, media_dir, now, **slot_args) is not None
         dropped: list[str] = []
         if stored < wanted:
@@ -485,22 +536,15 @@ def main(argv: list[str] | None = None) -> int:
                 if refreshed in ("refreshed", "failed", "metadata_failed", "token_changed"):
                     env = {**load_env(env_file), **os.environ}
                 now = _now()
-                calendar = recipe_series.calendar(conn, env)
-                if publish.configured(env) and calendar.launched_on is None:
-                    recipe_series.start(
-                        conn,
-                        now,
-                        defer_first_day=calendar.day(now).posting_day and drafts.recipe_slot(conn, now) is None,
-                    )
-                    calendar = recipe_series.calendar(conn, env)
-                series_day = calendar.day(now)
-                defer_series = series_day.in_series and series_day.number is None
-                outcome = "skipped" if defer_series else daily(conn, env, args.media)
+                content_plan.ensure_week(conn, now)
+                outcome = daily(conn, env, args.media)
                 render.render_due(conn, args.media, _notify_render(env, _now()), reviewer=image_review.client(env))
                 _notify_visual_review(conn, env, _now())
+                content_plan.notify_scripts(conn, env, _now())
                 published = publish.tick(conn, env, args.media, _now())
                 reports = _post_reports(conn, env)
                 followers = _capture_followers(conn, env, _now())
+                weekly_performance.tick(conn, env, _now())
             with open(args.media / ".story-insights.lock", "w") as lock:
                 try:
                     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)

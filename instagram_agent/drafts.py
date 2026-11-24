@@ -546,7 +546,9 @@ def generate_from_clip(
     return best
 
 
-def store_clip_draft(conn, draft: dict, clip, media_dir: Path, now: datetime, *, slot: str | None = None) -> str | None:
+def store_clip_draft(
+    conn, draft: dict, clip, media_dir: Path, now: datetime, *, slot: str | None = None, plan_id: int | None = None
+) -> str | None:
     """Move the clip in as the draft's video and mark it used, in one go. None if the owner deleted it meanwhile."""
     _private_dir(media_dir)
     day = now.astimezone(LONDON).date().isoformat()
@@ -584,7 +586,7 @@ def store_clip_draft(conn, draft: dict, clip, media_dir: Path, now: datetime, *,
                 return None
             storage.insert_draft(
                 conn,
-                {**draft, "reel": reel, "draft_id": draft_id, "scheduled_for": slot},
+                {**draft, "reel": reel, "draft_id": draft_id, "scheduled_for": slot, "plan_id": plan_id},
                 day,
                 now.isoformat(timespec="seconds"),
             )
@@ -606,7 +608,7 @@ def _free_slots(conn, now: datetime, count: int) -> list[str]:
 
 
 def store_upload_draft(
-    conn, draft: dict, upload, media_dir: Path, now: datetime, *, slot: str | None = None
+    conn, draft: dict, upload, media_dir: Path, now: datetime, *, slot: str | None = None, plan_id: int | None = None
 ) -> str | None:
     """Copy the upload's photos in as the draft's slides and mark the upload used, in one go.
 
@@ -640,7 +642,10 @@ def store_upload_draft(
                 shutil.rmtree(folder, ignore_errors=True)
                 return None
             storage.insert_draft(
-                conn, {**draft, "draft_id": draft_id, "scheduled_for": slot}, day, now.isoformat(timespec="seconds")
+                conn,
+                {**draft, "draft_id": draft_id, "scheduled_for": slot, "plan_id": plan_id},
+                day,
+                now.isoformat(timespec="seconds"),
             )
     except BaseException:
         shutil.rmtree(folder, ignore_errors=True)
@@ -728,6 +733,7 @@ def render_and_store(
     dropped: list[str] | None = None,
     *,
     slot: str | None = None,
+    plan_id: int | None = None,
     reviewer=None,
 ) -> int:
     """An image for each slide, then the draft row. A draft whose images fail is dropped and its reason kept."""
@@ -802,13 +808,14 @@ def render_and_store(
             with conn:
                 storage.insert_draft(
                     conn,
-                    {**draft, "draft_id": draft_id, "scheduled_for": slot},
+                    {**draft, "draft_id": draft_id, "scheduled_for": slot, "plan_id": plan_id},
                     day,
                     now.isoformat(timespec="seconds"),
+                    status="pending" if verdict["status"] == "passed" else "rejected",
                 )
                 if verdict["status"] != "passed":
                     conn.execute(
-                        "UPDATE drafts SET status='rejected', review_notes=?, decided_at=? WHERE draft_id=?",
+                        "UPDATE drafts SET review_notes=?, decided_at=? WHERE draft_id=?",
                         ("Image review: " + "; ".join(verdict["reasons"]), now.isoformat(timespec="seconds"), draft_id),
                     )
                     if dropped is not None:

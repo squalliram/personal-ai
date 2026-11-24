@@ -10,7 +10,7 @@ from unittest.mock import patch
 from urllib.error import HTTPError
 
 import notifications
-from instagram_agent import cli, env_install, publish, recipe_series, storage
+from instagram_agent import cli, content_plan, env_install, publish, recipe_series, storage
 from instagram_agent.graph import GraphAPIError, GraphClient
 
 JPEG = b"\xff\xd8\xff" + b"1" * 32
@@ -203,6 +203,19 @@ class PublishTests(PublishCase):
         graph = FakeGraph()
         self.assertEqual(self.tick(graph, DUE + timedelta(days=1)), "published 1, failed 0")
         self.assertEqual(tuple(self.status()), ("published", "9001"))
+
+    def test_pillar_calendar_restricts_days_and_retains_overflow_carryover(self):
+        self.add()
+        self.add("b" * 16)
+        content_plan.ensure_week(self.conn, MADE)
+        self.env["INSTAGRAM_RECIPE_SERIES_DAYS"] = "tue,thu,sat"
+        graph = FakeGraph()
+        self.assertEqual(self.tick(graph), "published 0, failed 0")
+        self.assertEqual(graph.posts, [])
+        self.assertEqual(self.tick(graph, DUE + timedelta(days=1)), "published 1, failed 0")
+        self.assertEqual(self.tick(graph, DUE + timedelta(days=2)), "published 0, failed 0")
+        self.assertEqual(self.tick(graph, DUE + timedelta(days=4)), "published 1, failed 0")
+        self.assertEqual([self.status(d)[0] for d in ("a" * 16, "b" * 16)], ["published", "published"])
 
     def test_series_carries_an_off_day_reel_when_the_series_ends(self):
         first = MADE + timedelta(days=4)

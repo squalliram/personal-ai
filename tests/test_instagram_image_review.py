@@ -10,7 +10,7 @@ from test_instagram_drafts import MORNING, PNG, FakeAI, raw_draft
 from test_instagram_publish import DUE, FakeGraph, PublishCase
 
 from command_centre import sources
-from instagram_agent import cli, drafts, image_review, publish, render, storage
+from instagram_agent import cli, content_plan, drafts, image_review, publish, render, storage
 from instagram_agent.cloudflare_client import CloudflareAI
 from instagram_agent.openai_client import AIError, OpenAIClient, jpeg_data_url
 
@@ -149,6 +149,33 @@ class CreationTests(unittest.TestCase):
 
     def row(self):
         return self.conn.execute("SELECT * FROM drafts").fetchone()
+
+    def test_rejected_generated_slides_leave_the_planned_slot_at_idea(self):
+        monday = MORNING + timedelta(days=(-MORNING.weekday()) % 7)
+        content_plan.ensure_week(self.conn, monday)
+        slot = content_plan.slot_today(self.conn, monday)
+        vision = reviewer(*[{"pass": False, "reasons": ["floating ladle"]}] * 3)
+        self.assertEqual(
+            drafts.render_and_store(
+                self.conn,
+                self.ai,
+                [drafts.normalise(raw_draft("Soup", slides=3))],
+                self.media,
+                monday,
+                slot=slot["slot"],
+                plan_id=slot["id"],
+                reviewer=vision,
+            ),
+            0,
+        )
+        row = self.row()
+        self.assertEqual((row["status"], row["plan_id"]), ("rejected", slot["id"]))
+        self.assertEqual(content_plan.slot_today(self.conn, monday)["id"], slot["id"])
+        entry = content_plan.rows(self.conn, monday)[0]
+        self.assertEqual((entry["status"], entry["next_status"], entry["draft_id"]), ("Idea", "Scripted", None))
+        with patch.object(content_plan, "notify") as notify:
+            content_plan.notify_scripts(self.conn, {}, monday)
+        notify.assert_not_called()
 
     def test_every_slide_is_reviewed_and_retries_are_stored(self):
         vision = reviewer({"pass": False, "reasons": ["floating ladle"]}, *[{"pass": True, "reasons": []}] * 3)

@@ -1,0 +1,243 @@
+import json
+import tempfile
+import unittest
+from datetime import datetime, timedelta
+from pathlib import Path
+from unittest.mock import patch
+
+from instagram_agent import cli, content_plan, post_report, publish, storage, weekly_performance
+from instagram_agent.analysis import LONDON
+from instagram_agent.pillar_config import RESERVE
+
+MONDAY = datetime(2026, 3, 23, 12, tzinfo=LONDON)
+
+
+class ContentPlanTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.conn = storage.connect(Path(directory.name) / "instagram.sqlite3")
+        self.addCleanup(self.conn.close)
+
+    def test_week_has_stable_london_slots_and_never_repeats_adjacent_pillars(self):
+        with patch.object(content_plan.learnings, "growth_hours", side_effect=[[], [17], []]):
+            for n in range(3):
+                day = MONDAY + timedelta(weeks=n)
+                content_plan.ensure_week(self.conn, day)
+                content_plan.ensure_week(self.conn, day)
+        entries = content_plan.rows(self.conn, MONDAY)
+        timings = [datetime.fromisoformat(e["slot"]) for e in entries]
+        pillars = [e["pillar"] for e in entries]
+        self.assertEqual([t.weekday() for t in timings], [0, 2, 4] * 3)
+        self.assertEqual([t.hour for t in timings], [16] * 3 + [17] * 3 + [16] * 3)
+        self.assertNotEqual(timings[0].utcoffset(), timings[3].utcoffset())
+        self.assertTrue(all(a != b for a, b in zip(pillars, pillars[1:], strict=False)))
+        self.assertEqual(len(set(pillars[1::3])), 1)
+
+    def add_draft(self, entry, draft_id, topic, render="done", *, reviewed=False):
+        reel = {"render": render}
+        if reviewed:
+            reel["image_review"] = {"status": "passed"}
+        with self.conn:
+            storage.insert_draft(
+                self.conn,
+                {
+                    "draft_id": draft_id,
+                    "plan_id": entry["id"],
+                    "scheduled_for": entry["slot"],
+                    "category": "food",
+                    "topic": topic,
+                    "slides": [],
+                    "caption": "",
+                    "hashtags": [],
+                    "kind": "reel",
+                    "reel": reel,
+                },
+                entry["slot"][:10],
+                entry["slot"],
+            )
+
+    def test_statuses_follow_manual_production_and_existing_publisher_states(self):
+        content_plan.ensure_week(self.conn, MONDAY)
+        entry = content_plan.slot_today(self.conn, MONDAY)
+        self.add_draft(entry, "dish", "Soup", "pending")
+        metadata = json.loads(self.conn.execute("SELECT reel FROM drafts").fetchone()[0])
+        self.assertTrue(metadata["hold"])
+        self.assertEqual(metadata["image_review"]["status"], "pending")
+        self.assertIsNone(content_plan.slot_today(self.conn, MONDAY))
+        self.assertEqual(content_plan.rows(self.conn, MONDAY)[0]["status"], "Scripted")
+        self.assertEqual(content_plan.advance(self.conn, entry["id"], "Scripted"), "Filmed")
+        self.assertEqual(content_plan.advance(self.conn, entry["id"], "Filmed"), "Edited")
+        scheduled = datetime.fromisoformat(entry["slot"])
+        due_at = scheduled + publish.VETO_LEAD
+        self.assertFalse(storage.decide_draft(self.conn, "dish", "approved", scheduled.isoformat()))
+        with patch.object(content_plan, "notify") as scripts, patch.object(cli, "notify") as approvals:
+            content_plan.notify_scripts(self.conn, {}, MONDAY)
+            cli._notify_visual_review(self.conn, {}, MONDAY)
+            approvals.assert_not_called()
+        self.assertEqual([c.kwargs["key"] for c in scripts.call_args_list], [f"instagram-plan-script:{entry['id']}"])
+        with self.conn:
+            metadata.update(render="done", image_review={"status": "passed"}, hold=False)
+            self.conn.execute(
+                "UPDATE drafts SET reel=?, review_score=95 WHERE draft_id='dish'", (json.dumps(metadata),)
+            )
+        with patch.object(cli, "notify") as notify:
+            cli._notify_visual_review(self.conn, {}, MONDAY)
+        self.assertEqual(
+            [c.kwargs["key"] for c in notify.call_args_list],
+            ["instagram-approval-ready:dish"],
+        )
+        self.assertEqual(publish.due(self.conn, due_at), [])
+        self.assertTrue(storage.decide_draft(self.conn, "dish", "approved", scheduled.isoformat()))
+        self.assertEqual([row["draft_id"] for row in publish.due(self.conn, due_at)], ["dish"])
+        self.assertEqual(content_plan.rows(self.conn, MONDAY)[0]["status"], "Approved")
+        self.assertEqual(content_plan.rows(self.conn, MONDAY, True)[0]["status"], "Scheduled")
+        with self.conn:
+            self.conn.execute("UPDATE drafts SET status='published' WHERE draft_id='dish'")
+        self.assertEqual(content_plan.rows(self.conn, MONDAY, True)[0]["status"], "Posted")
+
+    def test_draft_ready_notification_does_not_promise_posting_a_held_passing_reel(self):
+        content_plan.ensure_week(self.conn, MONDAY)
+        self.add_draft(content_plan.slot_today(self.conn, MONDAY), "dish", "Soup")
+        with self.conn:
+            self.conn.execute("UPDATE drafts SET review_score=95 WHERE draft_id='dish'")
+        with patch.object(cli.publish, "configured", return_value=True), patch.object(cli, "notify") as notify:
+            cli._notify_daily(self.conn, {}, "ok", MONDAY)
+        self.assertIn("awaiting image review and your approval", notify.call_args.args[2])
+
+    def test_as_filmed_reel_keeps_manual_filmed_and_edited_transitions(self):
+        content_plan.ensure_week(self.conn, MONDAY)
+        slot = content_plan.slot_today(self.conn, MONDAY)
+        self.add_draft(slot, "raw", "As-filmed soup clip")
+        with self.conn:
+            self.conn.execute(
+                "UPDATE drafts SET reel=? WHERE draft_id='raw'",
+                (json.dumps({"file": "reel.mp4", "image_review": {"status": "passed"}}),),
+            )
+        entry = content_plan.rows(self.conn, MONDAY)[0]
+        self.assertEqual((entry["status"], entry["next_status"]), ("Scripted", "Filmed"))
+        self.assertFalse(entry["needs_approval"])
+        self.assertEqual(content_plan.advance(self.conn, slot["id"], "Scripted"), "Filmed")
+        self.assertEqual(content_plan.rows(self.conn, MONDAY)[0]["next_status"], "Edited")
+        self.assertEqual(content_plan.advance(self.conn, slot["id"], "Filmed"), "Edited")
+        self.assertTrue(content_plan.rows(self.conn, MONDAY)[0]["needs_approval"])
+
+    def test_rendered_reel_keeps_manual_status_but_can_notify_owner(self):
+        content_plan.ensure_week(self.conn, MONDAY)
+        slot = content_plan.slot_today(self.conn, MONDAY)
+        self.add_draft(slot, "rendered", "Edited soup clip", reviewed=True)
+        entry = content_plan.rows(self.conn, MONDAY, True)[0]
+        self.assertEqual((entry["status"], entry["next_status"]), ("Scripted", "Filmed"))
+        self.assertTrue(entry["needs_approval"])
+        self.assertEqual(content_plan.advance(self.conn, slot["id"], "Scripted"), "Filmed")
+        self.assertEqual(content_plan.advance(self.conn, slot["id"], "Filmed"), "Edited")
+
+    def test_sunday_report_uses_same_checkpoint_and_rotates_after_third_unique_loss(self):
+        with patch.object(weekly_performance, "notify") as notify:
+            for n in range(3):
+                week = MONDAY + timedelta(weeks=n)
+                content_plan.ensure_week(self.conn, week)
+                best, worst, missing = [
+                    e for e in content_plan.rows(self.conn, week) if e["week"] == week.date().isoformat()
+                ]
+                for entry, views, watch, name, hook in (
+                    (best, 400, 5000, "Bowl A", "Which swirl?"),
+                    (worst, 0, None, "Bowl B", "£3 soup"),
+                    (missing, None, 25000, "Bowl C", "Attempt 1"),
+                ):
+                    ident = f"{n}-{entry['id']}"
+                    self.add_draft(entry, ident, name)
+                    with self.conn:
+                        self.conn.execute(
+                            "INSERT INTO post_reports(media_id,draft_id,checkpoint,format,posted_at,captured_at,"
+                            "views,avg_watch_ms,saved,creative) VALUES(?,?,'24h','reel',?,?,?,?,?,?)",
+                            (ident, ident, entry["slot"], entry["slot"], views, watch, 0, json.dumps({"hook": hook})),
+                        )
+                        self.conn.execute(
+                            "INSERT INTO post_reports(media_id,draft_id,checkpoint,format,posted_at,captured_at,views) "
+                            "VALUES(?,?,'72h','reel',?,?,9999)",
+                            (ident, ident, entry["slot"], entry["slot"]),
+                        )
+                sunday = week + timedelta(days=6, hours=7)
+                with self.conn:
+                    self.conn.execute(
+                        "INSERT INTO account_followers VALUES(?,?,?)",
+                        (sunday.date().isoformat(), sunday.isoformat(), 282 + n),
+                    )
+                weekly_performance.tick(self.conn, {}, sunday)
+                weekly_performance.tick(self.conn, {}, sunday + timedelta(minutes=15))
+            results, findings, advice = [c.args[2] for c in notify.call_args_list[-3:]]
+            keys = [c.kwargs["key"] for c in notify.call_args_list]
+            self.assertEqual((len(keys), len(set(keys))), (9, 9))
+        self.assertIn("Bottom: Bowl B (0 views, n/a watch, n/a shares, 0 saves", results)
+        self.assertNotIn("Bowl C", results)
+        self.assertIn("choice/poll", findings)
+        self.assertIn("follower change: +1", findings)
+        self.assertIn("Replace", advice)
+        change = self.conn.execute("SELECT * FROM content_pillar_replacements").fetchone()
+        self.assertEqual((change["old_pillar"], change["new_pillar"]), (worst["pillar"], RESERVE[0]))
+        self.assertEqual(change["effective_on"], (MONDAY + timedelta(weeks=3)).date().isoformat())
+
+    def test_alternate_upload_counts_as_a_reel_but_not_as_its_slots_pillar(self):
+        content_plan.ensure_week(self.conn, MONDAY)
+        alternate, matched, _ = content_plan.rows(self.conn, MONDAY)
+        for entry, ident, views in ((alternate, "alternate", 100), (matched, "matched", 40)):
+            self.add_draft(entry, ident, ident)
+            with self.conn:
+                self.conn.execute(
+                    "INSERT INTO post_reports(media_id,draft_id,checkpoint,format,posted_at,captured_at,views) "
+                    "VALUES(?,?,'24h','reel',?,?,?)",
+                    (ident, ident, entry["slot"], entry["slot"], views),
+                )
+        with self.conn:
+            self.conn.execute(
+                "UPDATE drafts SET reel=? WHERE draft_id='alternate'", (json.dumps({"pillar_match": False}),)
+            )
+        parts, worst = weekly_performance._make(self.conn, MONDAY.date())
+        self.assertIn("Top: alternate (100 views", parts[0])
+        self.assertIn(f"pillar {matched['pillar_name']}.", parts[1])
+        self.assertIsNone(worst)
+
+    def test_sunday_report_does_not_single_out_either_reel_tied_for_last(self):
+        content_plan.ensure_week(self.conn, MONDAY)
+        entries = content_plan.rows(self.conn, MONDAY)
+        for entry, ident, views in zip(entries, ("winner", "tied-a", "tied-b"), (100, 10, 10), strict=True):
+            self.add_draft(entry, ident, ident)
+            with self.conn:
+                self.conn.execute(
+                    "INSERT INTO post_reports(media_id,draft_id,checkpoint,format,posted_at,captured_at,views,avg_watch_ms) "
+                    "VALUES(?,?,'24h','reel',?,?,?,2000)",
+                    (ident, ident, entry["slot"], entry["slot"], views),
+                )
+        parts, worst = weekly_performance._make(self.conn, MONDAY.date())
+        self.assertIn("Bottom: 2 Reels tied at 10 views.", parts[0])
+        self.assertNotIn("lowest-viewed concept", parts[2])
+        self.assertIsNone(worst)
+        self.assertIn("tied-a (10 views, 2s watch, n/a shares, n/a saves, n/a comments)", " ".join(parts[3:]))
+        self.assertIn("tied-b (10 views, 2s watch", " ".join(parts[3:]))
+        with self.conn:
+            self.conn.execute("UPDATE post_reports SET views=10, saved=0, shares=4, comments=1 WHERE media_id='winner'")
+        all_tied, _ = weekly_performance._make(self.conn, MONDAY.date())
+        metrics = " ".join(all_tied[3:])
+        self.assertIn("no unique top/bottom", all_tied[0])
+        self.assertIn("winner (10 views, 2s watch, 4 shares, 0 saves, 1 comments)", metrics)
+        self.assertEqual(metrics.count("tied-a ("), 1)
+        self.assertEqual(metrics.count("tied-b ("), 1)
+        self.assertTrue(all(len(part) <= post_report.TITLE_LIMIT for part in all_tied))
+
+    def test_unstored_sunday_report_notification_retries_on_monday(self):
+        sunday = MONDAY + timedelta(days=6, hours=11, minutes=45)
+        with patch.object(weekly_performance, "notify", side_effect=[1, None, 3, 1, 2, 3]) as notify:
+            weekly_performance.tick(self.conn, {}, sunday)
+            weekly_performance.tick(self.conn, {}, sunday + timedelta(minutes=15))
+            calls = [call.kwargs["key"] for call in notify.call_args_list]
+            self.assertEqual(len(calls), 6)
+            self.assertEqual(calls[:3], calls[3:])
+            weekly_performance.tick(self.conn, {}, sunday + timedelta(days=1))
+            self.assertEqual(notify.call_count, 6)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM content_weekly_reports").fetchone()[0], 1)
+
+    def test_hook_labels(self):
+        self.assertEqual(post_report.hook_style("Stop skipping this step"), "mistake-fix")
+        self.assertEqual(post_report.hook_style("Attempt 1 was a crime"), "fail-to-win")
+        self.assertEqual(post_report.hook_style(None), "none")

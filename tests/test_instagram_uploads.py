@@ -11,7 +11,7 @@ from test_instagram_drafts import MORNING, FakeAI, raw_draft
 
 import notifications
 from command_centre.security import Permission
-from instagram_agent import cli, drafts, recipe_series, storage, uploads
+from instagram_agent import cli, content_plan, drafts, recipe_series, storage, uploads
 from instagram_agent.openai_client import OpenAIError
 
 try:
@@ -403,6 +403,72 @@ class DailyFromUploadTests(Fixture):
         ai = PhotoAI([photo_draft()], [[85]])
         self.assertEqual(self.tick(ai, now=friday + timedelta(minutes=5)), "skipped")
         self.assertTrue(uploads.is_waiting(self.conn, upload_id))
+
+    def test_planned_slot_uses_matching_owner_note_and_links_draft(self):
+        content_plan.ensure_week(self.conn, MORNING)
+        friday = MORNING + timedelta(days=1)
+        entry = content_plan.slot_today(self.conn, friday)
+        unmatched = self.add_upload()
+        pillar = content_plan.PILLARS[entry["pillar"]]
+        note = f"{pillar}: homemade squash soup."
+        matching = self.add_upload(note)
+        ai = PhotoAI([photo_draft()], [[85]])
+        self.assertEqual(self.tick(ai, now=friday), "ok")
+        self.assertEqual(ai.calls[0][1]["owner_note"], note)
+        self.assertIn(f"Assigned content pillar: {pillar}", ai.calls[0][0])
+        self.assertTrue(uploads.is_waiting(self.conn, unmatched))
+        self.assertFalse(uploads.is_waiting(self.conn, matching))
+        draft = self.conn.execute("SELECT plan_id,scheduled_for,reel FROM drafts").fetchone()
+        self.assertEqual((draft["plan_id"], draft["scheduled_for"]), (entry["id"], entry["slot"]))
+        self.assertTrue(json.loads(draft["reel"])["hold"])
+
+    def test_untagged_upload_can_fill_a_planned_slot_without_claiming_its_pillar(self):
+        content_plan.ensure_week(self.conn, MORNING)
+        friday = MORNING + timedelta(days=1)
+        entry = content_plan.slot_today(self.conn, friday)
+        upload_id = self.add_upload("Homemade squash soup. Roast for 45 minutes.")
+        ai = PhotoAI([photo_draft()], [[85]])
+        self.assertEqual(self.tick(ai, now=friday), "ok")
+        self.assertFalse(uploads.is_waiting(self.conn, upload_id))
+        self.assertNotIn("Assigned content pillar", ai.calls[0][0])
+        row = next(row for row in content_plan.rows(self.conn, friday) if row["id"] == entry["id"])
+        self.assertTrue(row["alternate"])
+        draft = self.conn.execute("SELECT reel FROM drafts WHERE draft_id=?", (row["draft_id"],)).fetchone()
+        self.assertTrue(json.loads(draft["reel"])["hold"])
+
+    def test_an_earlier_slot_does_not_take_a_later_pillars_upload_as_an_alternate(self):
+        friday = MORNING + timedelta(days=1)
+        monday = friday + timedelta(days=3)
+        content_plan.ensure_week(self.conn, friday)
+        content_plan.ensure_week(self.conn, monday)
+        later = content_plan.slot_today(self.conn, monday)
+        tagged_note = f"{content_plan.PILLARS[later['pillar']]}: homemade squash soup."
+        tagged = self.add_upload(tagged_note, when="2026-11-11T12:00:00+00:00")
+        ordinary = self.add_upload("A cosy autumn dinner.", when="2026-11-12T12:00:00+00:00")
+        earlier_ai = PhotoAI([photo_draft()], [[85]])
+        self.assertEqual(self.tick(earlier_ai, now=friday), "ok")
+        self.assertTrue(uploads.is_waiting(self.conn, tagged))
+        self.assertFalse(uploads.is_waiting(self.conn, ordinary))
+        later_ai = PhotoAI([photo_draft()], [[85]])
+        self.assertEqual(self.tick(later_ai, now=monday), "ok")
+        self.assertEqual(later_ai.calls[0][1]["owner_note"], tagged_note)
+        self.assertFalse(uploads.is_waiting(self.conn, tagged))
+
+    def test_upload_for_a_retired_pillar_can_fill_a_different_slot_as_an_alternate(self):
+        monday = MORNING + timedelta(days=4)
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO content_pillar_replacements VALUES('soup-swirl','ingredient-swap',?)",
+                (monday.date().isoformat(),),
+            )
+        content_plan.ensure_week(self.conn, monday)
+        note = "Soup swirl showdown: homemade squash soup."
+        upload_id = self.add_upload(note)
+        ai = PhotoAI([photo_draft()], [[85]])
+        self.assertEqual(self.tick(ai, now=monday), "ok")
+        self.assertFalse(uploads.is_waiting(self.conn, upload_id))
+        self.assertEqual(ai.calls[0][1]["owner_note"], note)
+        self.assertTrue(content_plan.rows(self.conn, monday)[0]["alternate"])
 
     def test_unapproved_carryovers_do_not_stop_the_next_recipe_draft(self):
         recipe_series.start(self.conn, MORNING)

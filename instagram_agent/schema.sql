@@ -57,8 +57,27 @@ CREATE TABLE IF NOT EXISTS examples (
     hashtags TEXT,
     media_id TEXT REFERENCES posts(media_id)
 );
+CREATE TABLE IF NOT EXISTS content_plan (
+    id INTEGER PRIMARY KEY,
+    week TEXT NOT NULL,
+    pillar TEXT NOT NULL,
+    slot TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL DEFAULT 'Idea' CHECK (status IN ('Idea','Scripted','Filmed','Edited'))
+);
+CREATE TABLE IF NOT EXISTS content_weekly_reports (
+    week TEXT PRIMARY KEY,
+    summary TEXT NOT NULL,
+    worst TEXT,
+    notified_at TEXT
+);
+CREATE TABLE IF NOT EXISTS content_pillar_replacements (
+    old_pillar TEXT PRIMARY KEY,
+    new_pillar TEXT NOT NULL UNIQUE,
+    effective_on TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS drafts (
     draft_id TEXT PRIMARY KEY,
+    plan_id INTEGER REFERENCES content_plan(id),
     created_on TEXT NOT NULL,
     created_at TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending'

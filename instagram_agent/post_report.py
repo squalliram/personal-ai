@@ -84,13 +84,26 @@ def caption_ask(caption: str) -> str | None:
     return None
 
 
+def hook_style(hook: str | None) -> str:
+    for pattern, style in (
+        (r"\bwhich\b|\b(?:vote|pick|choose)\b", "choice/poll"),
+        (r"£|\b(?:budget|cost)\b", "price"),
+        (r"\bmistake\b|\b(?:stop|skipping|fix)\b", "mistake-fix"),
+        (r"\b(?:fail\w*|attempt\s*\d+)\b", "fail-to-win"),
+    ):
+        if re.search(pattern, hook or "", re.I):
+            return style
+    return "none"
+
+
 def creative_snapshot(conn, post, fmt: str, posted: datetime | None) -> dict:
     previous = conn.execute(
         "SELECT creative FROM post_reports WHERE media_id=? AND creative IS NOT NULL ORDER BY captured_at LIMIT 1",
         (post["media_id"],),
     ).fetchone()
     if previous:
-        return json.loads(previous["creative"])
+        creative = json.loads(previous["creative"])
+        return {"hook_style": hook_style(creative.get("hook")), **creative}
     draft = conn.execute(
         "SELECT caption,hashtags,slides,reel FROM drafts WHERE draft_id=?", (post["draft_id"],)
     ).fetchone()
@@ -109,6 +122,7 @@ def creative_snapshot(conn, post, fmt: str, posted: datetime | None) -> dict:
     return {
         "publish_slot": posted.astimezone(LONDON).isoformat(timespec="seconds") if posted else None,
         "hook": hook,
+        "hook_style": hook_style(hook),
         "duration_seconds": reel.get("seconds") if fmt in ("reel", "story") else None,
         "cta": caption_ask(caption),
         "hashtags": (hashtags(draft["hashtags"] or "") if fmt != "story" else []) if draft else None,
