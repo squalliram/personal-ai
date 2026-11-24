@@ -120,8 +120,13 @@ class CommandTests(unittest.TestCase):
                 graph = argv[argv.index("-filter_complex") + 1]
                 count = render.photo_segments(photos)
                 self.assertEqual(seconds, count * 3)
-                self.assertEqual(graph.count("fade=t=in:st=0:d=0.2"), count)
-                self.assertEqual(graph.count("fade=t=out:st=2.8:d=0.2"), count)
+                self.assertEqual(graph.count("fade=t=in:st=0:d=0.2"), count - 1)
+                self.assertEqual(graph.count("fade=t=out:st=2.8:d=0.2"), count - 1)
+                segments = [part for part in graph.split(";") if "zoompan=" in part]
+                self.assertNotIn("fade=t=in", segments[0])
+                self.assertIn("fade=t=out", segments[0])
+                self.assertNotIn("fade=t=out", segments[-1])
+                self.assertIn("fade=t=in", segments[-1])
                 self.assertIn(f"concat=n={count}", graph)
                 self.assertNotIn("xfade=", graph)
 

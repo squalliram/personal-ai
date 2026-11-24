@@ -224,7 +224,12 @@ def command(draft_dir: Path, reel: dict, work: Path, caps: dict, track: Path | N
             _safe(image)
             inputs += ["-i", str(image)]
             length = each + (TRANSITION if transitions and n < count - 1 else 0)
-            fade = "" if transitions else f",fade=t=in:st=0:d={FADE},fade=t=out:st={each - FADE}:d={FADE}"
+            fade = ""
+            if not transitions:
+                if n > 0:
+                    fade += f",fade=t=in:st=0:d={FADE}"
+                if n < count - 1:
+                    fade += f",fade=t=out:st={each - FADE}:d={FADE}"
             graph.append(
                 _frame(f"{n}:v", f"p{n}", cover=reel.get("framing") == "cover")
                 + _ken_burns(n, length)
