@@ -302,11 +302,11 @@ def report_one(conn, client: GraphClient | None, post, checkpoint: str, env: dic
             storage.upsert_metrics(conn, post["media_id"], now.astimezone(LONDON).date().isoformat(), values)
             storage.link_published_drafts(conn)
         conn.execute(
-            f"INSERT INTO post_reports(media_id,checkpoint,draft_id,format,posted_at,permalink,captured_at,summary,"
-            f"{','.join(METRICS)}) VALUES(?,?,?,?,?,?,?,?,{','.join('?' * len(METRICS))}) "
+            f"INSERT INTO post_reports(media_id,checkpoint,draft_id,format,posted_at,permalink,captured_at,reported_at,"
+            f"summary,{','.join(METRICS)}) VALUES(?,?,?,?,?,?,?,?,?,{','.join('?' * len(METRICS))}) "
             f"ON CONFLICT(media_id,checkpoint) DO UPDATE SET format=excluded.format, posted_at=excluded.posted_at, "
-            f"permalink=excluded.permalink, captured_at=excluded.captured_at, summary=excluded.summary, "
-            + ", ".join(f"{m}=excluded.{m}" for m in METRICS),
+            f"permalink=excluded.permalink, captured_at=excluded.captured_at, reported_at=excluded.reported_at, "
+            f"summary=excluded.summary, " + ", ".join(f"{m}=excluded.{m}" for m in METRICS),
             (
                 post["media_id"],
                 checkpoint,
@@ -315,6 +315,7 @@ def report_one(conn, client: GraphClient | None, post, checkpoint: str, env: dic
                 posted.isoformat(timespec="seconds") if posted else None,
                 link,
                 stamp,
+                now.astimezone(timezone.utc).isoformat(timespec="seconds"),
                 text,
                 *(values.get(m) for m in METRICS),
             ),

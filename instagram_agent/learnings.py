@@ -325,12 +325,14 @@ def summary(conn: sqlite3.Connection, now: datetime | None = None) -> dict:
     else:
         note = f"Based on {count} posts in the last {WINDOW_DAYS} days."
     try:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(post_reports)")}
+        report_time = "COALESCE(r.reported_at,r.captured_at)" if "reported_at" in columns else "r.captured_at"
         reports = [
             dict(row)
             for row in conn.execute(
                 "SELECT r.media_id, r.checkpoint, r.captured_at, r.posted_at, r.permalink, r.summary, r.format, "
                 "d.topic FROM post_reports r LEFT JOIN drafts d ON d.draft_id=r.draft_id "
-                "WHERE r.captured_at IS NOT NULL ORDER BY r.captured_at DESC LIMIT 10"
+                f"WHERE r.captured_at IS NOT NULL ORDER BY {report_time} DESC, r.checkpoint DESC LIMIT 10"
             )
         ]
     except sqlite3.Error:

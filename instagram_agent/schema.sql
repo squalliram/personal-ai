@@ -127,6 +127,7 @@ CREATE TABLE IF NOT EXISTS post_reports (
     permalink TEXT,
     attempts INTEGER NOT NULL DEFAULT 0,
     captured_at TEXT,
+    reported_at TEXT,
     reach INTEGER,
     likes INTEGER,
     comments INTEGER,

@@ -88,6 +88,27 @@ class Case(unittest.TestCase):
 
 
 class StoryInsightsTests(Case):
+    def test_new_story_report_ranks_above_newer_captures(self):
+        captured = PUBLISHED + timedelta(hours=23)
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO story_insights(media_id,posted_at,captured_at,metrics) VALUES(?,?,?,?)",
+                ("42", PUBLISHED.isoformat(), captured.isoformat(), '{"reach":45}'),
+            )
+            for n in range(10):
+                stamp = (captured + timedelta(hours=n + 1)).isoformat()
+                self.conn.execute(
+                    "INSERT INTO post_reports(media_id,checkpoint,format,posted_at,captured_at) "
+                    "VALUES(?,'24h','reel',?,?)",
+                    (str(n), PUBLISHED.isoformat(), stamp),
+                )
+        now = PUBLISHED + timedelta(hours=72)
+        self.assertEqual(post_report.tick(self.conn, self.env, now), "reports 1")
+        first = learnings.summary(self.conn, now)["reports"][0]
+        self.assertEqual(
+            (first["media_id"], first["checkpoint"], first["captured_at"]), ("42", "72h", captured.isoformat())
+        )
+
     def test_live_snapshots_are_updated_and_used_by_both_reports_and_learning(self):
         draft_id = self.publish(kind="reel")
         with self.conn:
