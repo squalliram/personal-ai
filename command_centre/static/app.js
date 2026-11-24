@@ -2502,7 +2502,7 @@
         });
         if (signIn !== signInCount) { if (result.ok) { clearCache(); render(); } return; }
         if (result.status === 401) { showLogin("Your session has ended. Sign in again."); return; }
-        if (result.ok) { clearCache(); render(); return; }
+        if (result.ok) { clearCache(); render({ background: true }); return; }
         feedback.hidden = false;
         feedback.textContent = result.status === 409 ? "This entry changed. Refresh to see its status." : "Could not save the status.";
         advance.disabled = false;
@@ -2513,7 +2513,7 @@
         entry.topic ? el("p", {}, entry.alternate ? `Alternate upload: ${entry.topic}` : entry.topic) : null,
         entry.scheduled_for && Date.parse(entry.scheduled_for) !== Date.parse(entry.slot)
           ? muted(`Moved to ${when(entry.scheduled_for)}`) : null,
-        advance, review, feedback));
+        advance || review ? el("div", { class: "ig-calendar-actions" }, advance, review) : null, feedback));
     }
     return content;
   }

@@ -82,7 +82,7 @@ async function dashboard(savedHolds = {}, permission = 'recommend', holdFailures
     ],
   };
   const context = vm.createContext({
-    session: {permission}, load: async () => data, holdFailures, render: () => renderCalls.push(true), $: id => root.find(id),
+    session: {permission}, load: async () => data, holdFailures, render: options => renderCalls.push(options), $: id => root.find(id),
     igView: {section: 'performance'}, igNumber: Number.isFinite,
     when: date => date, clearCache: () => {}, signInCount: 0,
     api: async (path, options) => { calendarCalls.push({path, ...options}); return {ok: true, status: 200}; },
@@ -157,12 +157,14 @@ async function sender() {
   const calendar = normal.root.find('ig-section-calendar');
   assert.equal(calendar.hidden, false);
   const entry = calendar.children[0].children.find(child => child.attrs.title === '£3 soup test');
-  const advance = entry.children.find(child => child instanceof Element && child.tag === 'button');
+  const actions = entry.children.find(child => child instanceof Element && child.attrs.class === 'ig-calendar-actions');
+  const advance = actions.children.find(child => child instanceof Element && child.tag === 'button');
   assert.equal(advance.children[0], 'Mark Scripted');
   await advance.events.click();
   assert.equal(normal.calendarCalls[0].path, 'api/v1/instagram/calendar/advance');
   assert.equal(normal.calendarCalls[0].body.status, 'Idea');
   assert.equal(normal.renderCalls.length, 1);
+  assert.equal(normal.renderCalls[0].background, true, 'saving a status must not clear the visible calendar while refreshing');
   let loginShown = false;
   normal.context.showLogin = () => { loginShown = true; };
   normal.context.api = async () => {
