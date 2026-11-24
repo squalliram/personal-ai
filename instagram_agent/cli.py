@@ -278,6 +278,7 @@ def make_drafts(conn, env: dict, media_dir: Path, now: datetime | None = None) -
     if series:
         if (
             not recipe_series.posting_day(env, now)
+            or recipe_series.already_published(conn, now)
             or publish.recipe_slot_taken(conn, now)
             or not (slot := drafts.recipe_slot(conn, now))
         ):

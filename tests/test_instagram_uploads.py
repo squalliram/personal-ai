@@ -367,6 +367,36 @@ class DailyFromUploadTests(Fixture):
         self.assertEqual(self.titles(), [f'Your photos ("{NOTE}") are now a reel draft, posting is manual'])
         self.assertEqual(self.tick(PhotoAI([], [])), "skipped")
 
+    def test_a_published_carryover_closes_the_recipe_drafting_day(self):
+        friday = MORNING + timedelta(days=1)
+        recipe_series.start(self.conn, MORNING)
+        upload_id = self.add_upload("Recipe: homemade soup.")
+        draft_id = "a" * 16
+        with self.conn:
+            storage.insert_draft(
+                self.conn,
+                {
+                    "draft_id": draft_id,
+                    "category": "food",
+                    "topic": "Carryover",
+                    "kind": "reel",
+                    "slides": [],
+                    "caption": "",
+                    "hashtags": [],
+                    "review_score": 90,
+                },
+                MORNING.date().isoformat(),
+                MORNING.isoformat(),
+            )
+            self.conn.execute("UPDATE drafts SET status='published' WHERE draft_id=?", (draft_id,))
+            self.conn.execute(
+                "INSERT INTO publish_runs(draft_id,started_at,outcome,media_id) VALUES(?,?,?,?)",
+                (draft_id, friday.isoformat(), "published", "9001"),
+            )
+        ai = PhotoAI([photo_draft()], [[85]])
+        self.assertEqual(self.tick(ai, now=friday + timedelta(minutes=5)), "skipped")
+        self.assertTrue(uploads.is_waiting(self.conn, upload_id))
+
     def test_unapproved_carryovers_do_not_stop_the_next_recipe_draft(self):
         recipe_series.start(self.conn, MORNING)
         friday = MORNING + timedelta(days=1)
