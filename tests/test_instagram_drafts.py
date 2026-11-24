@@ -153,7 +153,7 @@ class DraftTests(unittest.TestCase):
         drafts.render_and_store(self.conn, ai, [item], self.root / "drafts", MORNING)
         reel = json.loads(self.conn.execute("SELECT reel FROM drafts").fetchone()[0])
         self.assertEqual([beat["text"] for beat in reel["on_screen"]], [s["text"] for s in item["slides"]])
-        self.assertEqual([(b["start"], b["end"]) for b in reel["on_screen"]], [(0, 3), (3, 6), (6, 9), (9, 12)])
+        self.assertEqual([(b["start"], b["end"]) for b in reel["on_screen"]], [(0, 2), (3, 6), (6, 9), (9, 12)])
         self.assertEqual(reel["on_screen"][-1]["end"], reel["seconds"])
 
     def test_music_selection_failure_does_not_leave_a_partial_draft(self):
@@ -354,6 +354,49 @@ class DailyTickTests(unittest.TestCase):
 
 
 class SlidePromptTests(unittest.TestCase):
+    def test_negated_people_preserve_the_scene_but_affirmative_mentions_do_not(self):
+        for scene in (
+            "café interior with no people in frame",
+            "café interior without people",
+            "café interior without any humans visible",
+            "people-free café interior",
+            "person-free café interior",
+        ):
+            with self.subTest(scene=scene):
+                prompt = drafts.slide_prompt({"text": "Coffee", "image_prompt": scene}, draws_text=False)
+                self.assertTrue(prompt.startswith(scene + "\n"))
+        for scene in (
+            "a barista pouring latte",
+            "a barista free-pouring milk",
+            "no hands except the one pouring espresso",
+            "no people except a chef",
+            "no people but a chef",
+            "no people apart from a chef",
+            "café interior free of any people",
+        ):
+            with self.subTest(scene=scene), self.assertLogs("instagram_agent.drafts", level="WARNING"):
+                prompt = drafts.slide_prompt({"text": "Coffee", "image_prompt": scene}, draws_text=False)
+                self.assertNotIn(scene, prompt)
+                self.assertIn("photorealistic close-up", prompt)
+
+    def test_no_people_and_insight_instructions(self):
+        self.assertIn("Each has 4-6 slides", drafts.CREATE)
+        self.assertIn("slide count within 4-6", drafts.CREATE)
+        self.assertIn(drafts.NO_PEOPLE, drafts.CREATE)
+        self.assertIn("watch-time lift, reach, follows", drafts.CREATE)
+        self.assertIn("reel duration findings", drafts.CREATE_REEL_FROM_PHOTOS)
+        self.assertIn("upbeat, energetic, catchy", drafts.PICK_MUSIC)
+        for draws_text in (True, False):
+            with self.assertLogs("instagram_agent.drafts", level="WARNING") as logs:
+                prompt = drafts.slide_prompt(
+                    {"text": "Coffee", "image_prompt": "A barista hand pouring coffee"}, draws_text=draws_text
+                )
+            self.assertTrue(prompt.endswith(drafts.NO_PEOPLE))
+            self.assertNotIn("A barista hand pouring coffee", prompt)
+            self.assertIn("photorealistic close-up food or drink photograph illustrating: Coffee", prompt)
+            self.assertNotIn("pouring", logs.output[0])
+        self.assertIsNone(drafts.PEOPLE.search("handcrafted mango coffee"))
+
     def test_text_is_drawn_only_by_models_that_spell_it(self):
         slide = {"text": "Flat white 101", "image_prompt": "a flat white on marble"}
         self.assertIn('spelled exactly: "Flat white 101"', drafts.slide_prompt(slide, draws_text=True))

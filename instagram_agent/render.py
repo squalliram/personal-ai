@@ -11,6 +11,7 @@ from __future__ import annotations
 import fcntl
 import functools
 import json
+import math
 import os
 import re
 import shutil
@@ -25,7 +26,9 @@ from .host_probe import find_tool
 
 WIDTH, HEIGHT, FPS = 1080, 1920, 30
 PHOTO_SECONDS, MIN_TOTAL, MAX_TOTAL = 3.0, 7.0, 30.0
-ZOOM = 0.08
+ZOOM = 0.14
+TRANSITION = 0.35
+TRANSITIONS = ("fade", "slideleft", "smoothup")
 TIMEOUT = 600
 NICE = 10
 THREADS = "4"
@@ -47,10 +50,10 @@ class RenderError(RuntimeError):
 def capabilities() -> dict:
     """What this host's ffmpeg (and Python) can do for reels."""
     found = {"ffmpeg": find_tool("ffmpeg"), "zoompan": False, "drawtext": False, "libx264": False, "aac": False}
-    found.update(loudnorm=False, pillow=_pillow())
+    found.update(loudnorm=False, xfade=False, pillow=_pillow())
     if found["ffmpeg"]:
         filters, encoders = _list(found["ffmpeg"], "-filters"), _list(found["ffmpeg"], "-encoders")
-        for name in ("zoompan", "drawtext", "loudnorm"):
+        for name in ("zoompan", "drawtext", "loudnorm", "xfade"):
             found[name] = name in filters
         found["libx264"], found["aac"] = "libx264" in encoders, "aac" in encoders
     return found
@@ -86,8 +89,16 @@ def can_render(source: str, caps: dict | None = None) -> bool:
 
 
 def photo_seconds(count: int) -> float:
-    """About 3 s a photo, stretched so even one photo makes a 7 s reel; 10 photos make 30 s."""
-    return round(max(PHOTO_SECONDS, MIN_TOTAL / count), 2) if count else 0.0
+    """Every visual segment lasts three seconds, including repeated photos."""
+    return PHOTO_SECONDS if count else 0.0
+
+
+def photo_segments(count: int) -> int:
+    return max(count, math.ceil(MIN_TOTAL / PHOTO_SECONDS)) if count else 0
+
+
+def photo_duration(count: int) -> float:
+    return photo_segments(count) * PHOTO_SECONDS
 
 
 def _safe(path: Path) -> str:
@@ -122,6 +133,7 @@ def _drawtext(beats: list[dict], work: Path) -> list[str]:
             filters.append(
                 f"drawtext=fontfile={_safe(FONT)}:textfile={_safe(file)}:expansion=none:fontsize={size}:"
                 f"fontcolor=white:box=1:boxcolor=black@0.55:boxborderw=18:x=(w-text_w)/2:"
+                f"alpha='max(0.15,min(1,(t-{beat['start']})/0.25))':"
                 f"y={top + row * int(size * 1.45)}:enable='between(t,{beat['start']},{beat['end']})'"
             )
     return filters
@@ -197,16 +209,29 @@ def command(draft_dir: Path, reel: dict, work: Path, caps: dict, track: Path | N
     inputs: list[str] = []
     graph: list[str] = []
     if reel.get("source") == "photos":
-        count = int(reel["photos"])
-        each = photo_seconds(count)
+        photos = int(reel["photos"])
+        count = photo_segments(photos)
+        each = photo_seconds(photos)
+        transitions = bool(caps.get("xfade"))
         for n in range(count):
-            image = draft_dir / f"slide-{n + 1}.jpg"
+            number = n % photos + 1
+            image = draft_dir / f"slide-{number}.jpg"
             if not image.exists():
-                image = draft_dir / f"slide-{n + 1}.png"
+                image = draft_dir / f"slide-{number}.png"
             _safe(image)
             inputs += ["-i", str(image)]
-            graph.append(_frame(f"{n}:v", f"p{n}") + _ken_burns(n, each) + f"[v{n}]")
-        graph.append("".join(f"[v{n}]" for n in range(count)) + f"concat=n={count}:v=1:a=0[base]")
+            length = each + (TRANSITION if transitions and n < count - 1 else 0)
+            graph.append(_frame(f"{n}:v", f"p{n}") + _ken_burns(n, length) + f",settb=AVTB,setpts=PTS-STARTPTS[v{n}]")
+        if transitions:
+            previous = "v0"
+            for n in range(1, count):
+                label = "base" if n == count - 1 else f"x{n}"
+                graph.append(
+                    f"[{previous}][v{n}]xfade=transition={TRANSITIONS[(n - 1) % len(TRANSITIONS)]}:duration={TRANSITION}:offset={n * each}[{label}]"
+                )
+                previous = label
+        else:
+            graph.append("".join(f"[v{n}]" for n in range(count)) + f"concat=n={count}:v=1:a=0[base]")
         seconds, source_audio = round(each * count, 2), None
     else:
         trim = reel.get("trim") or {"in": 0, "out": reel["seconds"]}
@@ -220,10 +245,11 @@ def command(draft_dir: Path, reel: dict, work: Path, caps: dict, track: Path | N
         label = "texted"
     else:
         for index, png in enumerate(_pngs(beats, work)):
-            inputs += ["-i", str(png)]
+            inputs += ["-loop", "1", "-framerate", str(FPS), "-i", str(png)]
             beat = beats[index]
+            graph.append(f"[{count + index}:v]format=rgba,fade=t=in:st={beat['start']}:d=0.25:alpha=1[ink{index}]")
             graph.append(
-                f"[{label}][{count + index}:v]overlay=0:0:enable='between(t,{beat['start']},{beat['end']})'[t{index}]"
+                f"[{label}][ink{index}]overlay=0:0:enable='between(t,{beat['start']},{beat['end']})'[t{index}]"
             )
             label = f"t{index}"
         count += len(beats)
@@ -237,7 +263,7 @@ def command(draft_dir: Path, reel: dict, work: Path, caps: dict, track: Path | N
     if chain:
         graph.append(chain)
     argv = [caps["ffmpeg"], "-hide_banner", "-loglevel", "error", "-nostdin", "-y", *inputs]
-    argv += ["-filter_complex", ";".join(graph), "-map", "[vout]"]
+    argv += ["-filter_complex_threads", THREADS, "-filter_complex", ";".join(graph), "-map", "[vout]"]
     argv += ["-map", f"[{audio}]", "-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-ac", "2"] if audio else ["-an"]
     argv += ["-c:v", "libx264", "-preset", "veryfast", "-profile:v", "high", "-crf", "21", "-maxrate", "10M"]
     argv += ["-bufsize", "20M", "-pix_fmt", "yuv420p", "-r", str(FPS), "-g", str(FPS * 2), "-flags", "+cgop"]
@@ -248,7 +274,11 @@ def command(draft_dir: Path, reel: dict, work: Path, caps: dict, track: Path | N
 def _beats(reel: dict) -> list[dict]:
     """On-screen beats in the rendered reel's own time: shifted by the trim and cut to its length."""
     start = (reel.get("trim") or {}).get("in", 0) if reel.get("source") != "photos" else 0
-    end = reel["seconds"] if reel.get("source") == "photos" else (reel.get("trim") or {}).get("out", reel["seconds"])
+    end = (
+        photo_duration(reel["photos"])
+        if reel.get("source") == "photos"
+        else (reel.get("trim") or {}).get("out", reel["seconds"])
+    )
     beats = []
     for beat in reel.get("on_screen") or []:
         a, b = max(beat["start"], start) - start, min(beat["end"], end) - start

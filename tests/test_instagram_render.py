@@ -39,13 +39,14 @@ def has_ffmpeg() -> bool:
 
 class CapabilityTests(unittest.TestCase):
     def test_lists_filters_and_encoders_from_ffmpeg_output(self):
-        filters = " T.. zoompan  V->V  Apply Zoom & Pan effect.\n ... drawtext  V->V  Draw text\n"
+        filters = " T.. zoompan  V->V  Apply Zoom & Pan effect.\n ... drawtext  V->V  Draw text\n ... xfade VV->V Transition\n"
         encoders = " V..... libx264  libx264 H.264\n A..... aac  AAC (Advanced Audio Coding)\n"
         outputs = {"-filters": filters, "-encoders": encoders}
         run = lambda argv, **kw: subprocess.CompletedProcess(argv, 0, outputs[argv[2]], "")  # noqa: E731
         with patch.object(render, "find_tool", return_value="/usr/bin/ffmpeg"), patch.object(subprocess, "run", run):
             caps = render.capabilities.__wrapped__()
         self.assertTrue(caps["zoompan"] and caps["drawtext"] and caps["libx264"] and caps["aac"])
+        self.assertTrue(caps["xfade"])
         self.assertFalse(caps["loudnorm"])
 
     def test_render_needs_x264_aac_text_and_zoompan_for_photos(self):
@@ -76,8 +77,11 @@ class CommandTests(unittest.TestCase):
         self.work.mkdir()
 
     def test_photo_lengths_stay_between_7_and_30_seconds(self):
-        self.assertEqual(render.photo_seconds(1), 7.0)
-        self.assertEqual(render.photo_seconds(2), 3.5)
+        self.assertEqual(render.photo_seconds(1), 3.0)
+        self.assertEqual(render.photo_seconds(2), 3.0)
+        self.assertEqual(render.photo_duration(1), 9.0)
+        self.assertEqual(render.photo_duration(2), 9.0)
+        self.assertEqual(render.photo_duration(0), 0.0)
         self.assertEqual(render.photo_seconds(10) * 10, 30.0)
 
     def test_ai_png_slides_and_owner_jpegs_use_the_same_photo_reel_path(self):
@@ -86,6 +90,27 @@ class CommandTests(unittest.TestCase):
         argv, _ = render.command(self.dir, photo_reel(photos=2), self.work, CAPS, None)
         self.assertIn(str(self.dir / "slide-1.png"), argv)
         self.assertIn(str(self.dir / "slide-2.jpg"), argv)
+
+    def test_cycling_uses_three_second_segments_and_different_motion(self):
+        for photos in (1, 2):
+            argv, seconds = render.command(self.dir, photo_reel(photos=photos), self.work, CAPS, None)
+            graph = argv[argv.index("-filter_complex") + 1]
+            self.assertEqual(seconds, 9.0)
+            self.assertEqual(graph.count("zoompan="), 3)
+            self.assertIn(f"z='max({1 + render.ZOOM}-", graph)
+            self.assertIn("z='min(1+", graph)
+            self.assertEqual(argv.count(str(self.dir / "slide-1.png")), 3 if photos == 1 else 2)
+
+    def test_xfade_rotates_transitions_at_three_second_offsets(self):
+        argv, seconds = render.command(self.dir, photo_reel(photos=6), self.work, {**CAPS, "xfade": True}, None)
+        graph = argv[argv.index("-filter_complex") + 1]
+        self.assertEqual(seconds, 18)
+        self.assertEqual(graph.count("xfade="), 5)
+        self.assertIn("transition=fade:duration=0.35:offset=3.0", graph)
+        self.assertIn("transition=slideleft:duration=0.35:offset=6.0", graph)
+        self.assertIn("transition=smoothup:duration=0.35:offset=9.0", graph)
+        self.assertNotIn("concat=", graph)
+        self.assertIn("alpha='max(0.15,min(1,(t-0)/0.25))'", graph)
 
     def test_photo_reel_is_ken_burns_9_16_h264_aac_with_moov_first(self):
         argv, seconds = render.command(self.dir, photo_reel(), self.work, CAPS, None)
@@ -104,7 +129,8 @@ class CommandTests(unittest.TestCase):
         argv, _ = render.command(self.dir, photo_reel(), self.work, {**CAPS, "drawtext": False}, None)
         graph = argv[argv.index("-filter_complex") + 1]
         self.assertNotIn("drawtext", graph)
-        self.assertIn("[3:v]overlay=0:0:enable='between(t,0,2)'", graph)
+        self.assertIn("[base][ink0]overlay=0:0:enable='between(t,0,2)'", graph)
+        self.assertIn("fade=t=in:st=0:d=0.25:alpha=1", graph)
         self.assertTrue((self.work / "text-1.png").is_file())
 
     def test_clip_is_trimmed_with_beats_in_reel_time_and_music_mixed_under(self):
@@ -174,7 +200,7 @@ class RealRenderTests(Case):
         caps = PROBE()
         for text_caps in (caps, {**caps, "drawtext": False}):
             reel = render.render(self.conn, self.media, "d1", photo_reel(photos=1, seconds=7.0), text_caps)
-            self.assertEqual((reel["render"], reel["file"], reel["seconds"]), ("done", "reel.mp4", 7.0))
+            self.assertEqual((reel["render"], reel["file"], reel["seconds"]), ("done", "reel.mp4", 9.0))
             facts, problems = video.check(folder / "reel.mp4")
             self.assertEqual(problems, [])
             self.assertEqual((facts["width"], facts["height"]), (1080, 1920))
@@ -336,7 +362,7 @@ class ReelDraftRenderTests(Case):
         self.assertEqual(
             payload["music_tracks"], [{"track_id": track_id, "title": "Warm coffee lo-fi", "performance": {}}]
         )
-        self.assertIn("top-performing food/coffee reel audio", ai.calls[0])
+        self.assertIn("upbeat, energetic, catchy", ai.calls[0])
         self.assertIn("strongest past reel views/reach", ai.calls[0])
 
     def test_clips_default_to_agents_under_and_explicit_off_survives(self):
