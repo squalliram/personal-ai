@@ -26,12 +26,18 @@ def start(conn, now: datetime) -> None:
         )
 
 
-def active(conn, now: datetime) -> bool:
+def _start_date(conn) -> date | None:
     row = conn.execute("SELECT value FROM publisher_state WHERE key=?", (KEY,)).fetchone()
-    if not row:
-        return False
-    first = date.fromisoformat(row[0])
-    return first <= now.astimezone(LONDON).date() < first + WINDOW
+    return date.fromisoformat(row[0]) if row else None
+
+
+def started(conn) -> bool:
+    return _start_date(conn) is not None
+
+
+def active(conn, now: datetime) -> bool:
+    first = _start_date(conn)
+    return first is not None and first <= now.astimezone(LONDON).date() < first + WINDOW
 
 
 def posting_day(env: dict, now: datetime) -> bool:

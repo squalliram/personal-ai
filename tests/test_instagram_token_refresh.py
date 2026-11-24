@@ -10,7 +10,7 @@ from hashlib import sha256
 from pathlib import Path
 from unittest.mock import patch
 
-from instagram_agent import cli, env_install, storage, token_refresh
+from instagram_agent import cli, env_install, recipe_series, storage, token_refresh
 from instagram_agent.graph import GRAPH_HOST, INSTAGRAM_HOST, GraphAPIError, GraphClient
 
 NOW = datetime(2026, 11, 15, 12, 0, tzinfo=timezone.utc)
@@ -248,6 +248,33 @@ class RefreshTransportTests(unittest.TestCase):
 
 
 class DailyRefreshIntegrationTests(unittest.TestCase):
+    def test_late_recipe_series_launch_does_not_spend_a_posting_day(self):
+        monday = NOW + timedelta(days=1, hours=8)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            db = root / "instagram.sqlite3"
+            args = ["--env-file", str(root / ".env"), "--database", str(db), "daily", "--media", str(root / "media")]
+            with (
+                patch.dict(cli.os.environ, {}, clear=True),
+                patch.object(cli, "_now", return_value=monday) as clock,
+                patch.object(cli.token_refresh, "tick", return_value="not_due"),
+                patch.object(cli.publish, "configured", return_value=True),
+                patch.object(cli.publish, "tick", return_value="publish_off"),
+                patch.object(cli, "daily", return_value="skipped") as draft,
+                patch.object(cli.render, "render_due"),
+                patch.object(cli, "_capture_followers", return_value="followers_off"),
+                patch.object(cli, "_capture_stories", return_value="stories_off"),
+                patch.object(cli, "_post_reports", return_value="reports_off"),
+                redirect_stdout(io.StringIO()),
+            ):
+                self.assertEqual(cli.main(args), 0)
+                clock.return_value += timedelta(days=1)
+                self.assertEqual(cli.main(args), 0)
+            with storage.connect(db) as conn:
+                self.assertFalse(recipe_series.active(conn, monday))
+                self.assertTrue(recipe_series.active(conn, monday + recipe_series.WINDOW))
+            draft.assert_called_once()
+
     def test_refresh_runs_before_drafting_and_publishing_inside_daily_lock(self):
         events = []
         with tempfile.TemporaryDirectory() as directory:
