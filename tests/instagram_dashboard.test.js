@@ -59,6 +59,7 @@ class Element {
     }
   }
   remove() { this.parent.children = this.parent.children.filter(child => child !== this); }
+  replaceChildren(...children) { this.children = []; this.append(...children); }
   setAttribute(name, value) { this.attrs[name] = value; }
   addEventListener(name, fn) { this.events[name] = fn; }
   find(id) { return this.attrs.id === id ? this : this.children.map(child => child instanceof Element ? child.find(id) : null).find(Boolean); }
@@ -68,6 +69,7 @@ async function dashboard(savedHolds = {}, permission = 'recommend', holdFailures
   const renderedDrafts = [];
   const sentHolds = [];
   const renderCalls = [];
+  const root = new Element('root');
   const data = {
     state: 'available', auto_publish: true, runs: [], token: {state: 'valid'},
     drafts: [
@@ -78,7 +80,7 @@ async function dashboard(savedHolds = {}, permission = 'recommend', holdFailures
     ],
   };
   const context = vm.createContext({
-    session: {permission}, load: async () => data, holdFailures, render: () => renderCalls.push(true),
+    session: {permission}, load: async () => data, holdFailures, render: () => renderCalls.push(true), $: id => root.find(id),
     igView: {section: 'performance'}, igNumber: Number.isFinite,
     el: (tag, attrs, ...children) => new Element(tag, attrs, children),
     card: (title, ...children) => new Element('card', {title}, children), muted: text => text,
@@ -90,9 +92,9 @@ async function dashboard(savedHolds = {}, permission = 'recommend', holdFailures
     },
     draftCard: draft => { renderedDrafts.push(draft); return new Element('draft', {id: draft.draft_id}); },
   });
+  vm.runInContext(source.slice(source.indexOf('  function holdFailureCards()'), source.indexOf('  const pendingHold =')), context);
   vm.runInContext(source.slice(source.indexOf('  const pendingHold ='), source.indexOf('  // Shared by dashboard recovery')), context);
   vm.runInContext(source.slice(source.indexOf('  async function instagram(view)'), source.indexOf('  const OUTCOME_LABELS')), context);
-  const root = new Element('root');
   context.root = root;
   await vm.runInContext('instagram(root)', context);
   return {root, context, renderedDrafts, sentHolds, renderCalls};
@@ -108,7 +110,7 @@ async function sender() {
   const context = vm.createContext({
     sessionStorage: {getItem: key => storage.get(key), setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key)},
     signInCount: 0, setTimeout: fn => fn(), DECISION_ERRORS: {},
-    clearCache: () => {}, render: () => {}, showLogin: () => {},
+    clearCache: () => {}, render: () => {}, showLogin: () => {}, $: () => null,
     api: async (path, options) => { calls.push({path, ...options}); return calls.length === 1 ? first : {ok: true, status: 200}; },
   });
   vm.runInContext(source.slice(source.indexOf('  const unconfirmedHold ='), source.indexOf('  function holdToggle(')), context);
@@ -164,11 +166,19 @@ async function sender() {
   assert.equal(invalid.sentHolds.length, 0, 'malformed saved bodies cannot be replayed');
   const failures = new Map([['scheduled', {topic:'Earlier reel', message:'The hold was changed elsewhere. Refresh to see it.'}]]);
   const recovered = await dashboard({}, 'recommend', failures);
-  const notice = recovered.root.children[0].children.find(node => node instanceof Element && node.attrs.title === 'Hold changes needing attention');
+  let notice = recovered.root.find('ig-hold-notices').children[0];
   assert.ok(notice, 'completed hold failures remain visible with no saved request');
+  failures.set('scheduled', {topic:'Earlier reel', message:'A second failure'});
+  vm.runInContext('refreshHoldNotices()', recovered.context);
+  notice = recovered.root.find('ig-hold-notices').children[0];
+  assert.match(notice.children[0].children[0].children[0], /A second failure/, 'new failures update the live region immediately');
   notice.children[0].children.find(node => node instanceof Element && node.tag === 'button').events.click();
   assert.equal(failures.size, 0, 'only explicit acknowledgement clears the notice');
   assert.equal(recovered.renderCalls.length, 0, 'notice dismissal must not re-render unsent upload forms');
+  assert.equal(recovered.root.find('ig-hold-notices').children.length, 0);
+  failures.set('scheduled', {topic:'Earlier reel', message:'First failure after loading'});
+  vm.runInContext('refreshHoldNotices()', recovered.context);
+  assert.equal(recovered.root.find('ig-hold-notices').children.length, 1, 'an initially empty notice region must handle new failures');
   await sender();
   console.log('Instagram calendar and section routing regressions passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

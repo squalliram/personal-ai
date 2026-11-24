@@ -1752,6 +1752,21 @@
 
   const holdRequests = new Map();
   const holdFailures = new Map(); // survive dashboard refreshes until acknowledged; cleared on sign-out
+  function holdFailureCards() {
+    return holdFailures.size ? [card("Hold changes needing attention", [...holdFailures].map(([id, notice]) => {
+      const acknowledge = el("button", { type: "button" }, "Dismiss notice");
+      acknowledge.addEventListener("click", () => {
+        holdFailures.delete(id);
+        refreshHoldNotices();
+      });
+      return el("div", {}, el("p", { role: "status" }, `${notice.topic}: ${notice.message}`), acknowledge);
+    }))] : [];
+  }
+  function refreshHoldNotices() {
+    const target = $("ig-hold-notices");
+    // Refresh only the live notice region, never a dashboard/form or a detached render's DOM.
+    if (target) target.replaceChildren(...holdFailureCards());
+  }
   const pendingHold = (draft) => {
     const pending = unconfirmedHold(draft.draft_id);
     return pending && pending.body && pending.body.draft_id === draft.draft_id
@@ -1800,6 +1815,7 @@
         const message = `Could not change the hold. ${DECISION_ERRORS[code] || `(${code})`}`;
         // Save before render(): this card may be hidden or replaced by another replay's success.
         holdFailures.set(draft.draft_id, { topic: draft.topic || draft.draft_id, message });
+        refreshHoldNotices();
         if (code === "hold_changed") { clearCache(); render(); } // rebuild with the current hold and version
         return { ok: false, message };
       }
@@ -2492,22 +2508,7 @@
       ? "No Instagram database is connected yet. Graphs will appear after media and reports are captured." : "The Instagram database could not be read. Empty graphs are not evidence of zero performance.")));
     const tokenWarning = data.token && ["expired", "expiring", "refresh_failed", "not_configured"].includes(data.token.state) ? tokenCard(data.token) : null;
     if (tokenWarning) root.append(tokenWarning);
-    if (holdFailures.size) {
-      const notices = card("Hold changes needing attention");
-      for (const [id, notice] of holdFailures) {
-        const acknowledge = el("button", { type: "button" }, "Dismiss notice");
-        const row = el("div", {}, el("p", { role: "status" }, `${notice.topic}: ${notice.message}`), acknowledge);
-        acknowledge.addEventListener("click", () => {
-          if (holdFailures.get(id) !== notice) return;
-          holdFailures.delete(id);
-          // Dismissing a notice must not rebuild unsent photo/clip/music forms.
-          row.remove();
-          if (!holdFailures.size) notices.remove();
-        });
-        notices.append(row);
-      }
-      root.append(notices);
-    }
+    root.append(el("div", { id: "ig-hold-notices" }, ...holdFailureCards()));
     const fills = {
       performance: () => igPerformance(data),
       review: () => el("div", {}, card("Awaiting review", muted("Held or unapproved drafts that will not post automatically. Approve or reject below.")),
