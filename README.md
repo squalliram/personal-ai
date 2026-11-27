@@ -1,3 +1,4 @@
+![CodeRabbit Pull Request Reviews](https://img.shields.io/coderabbit/prs/github/squalliram/personal-ai?utm_source=oss&utm_medium=github&utm_campaign=squalliram%2Fpersonal-ai&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews)
 # personal-ai
 
 My personal AI toolkit. It collects information I already have (calendar, tasks, smart-meter readings), turns it into short, readable summaries, and keeps everything on my own machine.
