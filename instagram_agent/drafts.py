@@ -34,6 +34,9 @@ TOPIC_DESCRIPTORS = frozenset(
     "autumn autumnal best budget cheap classic comforting cosy creamy easy hearty homemade midweek perfect "
     "quick seasonal simple ultimate warming weeknight".split()
 )
+DISH_TYPES = frozenset(
+    "bake bowl bread cake coffee curry dessert drink latte pasta pie risotto salad sandwich soup stew tart".split()
+)
 FALLBACK_HOURS = (18, 12, 20)
 DRAFT_ID_RE = re.compile(r"[0-9a-f]{16}")
 AI = typing.Any  # OpenAIClient or CloudflareAI: chat_json(system, user, images=...) -> dict, image(prompt) -> bytes
@@ -289,7 +292,8 @@ def repeated_topic(topic: str, recent: list[str]) -> str | None:
         if words == other or (dish and dish == rest):
             return earlier
         smaller = min(len(dish), len(rest))
-        if smaller >= 2 and (dish <= rest or rest <= dish):
+        named = smaller >= 2 or (smaller == 1 and not (dish if len(dish) == 1 else rest) <= DISH_TYPES)
+        if named and (dish <= rest or rest <= dish):
             return earlier
         if smaller and len(dish & rest) * 5 >= len(dish | rest) * 3:
             return earlier
