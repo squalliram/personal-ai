@@ -17,6 +17,7 @@ from pathlib import Path
 from . import analysis, clips, image_review, learnings, music, render, storage, uploads, video
 from .analysis import LONDON
 from .openai_client import AIError, image_extension
+from .pillar_config import PILLARS
 
 CATEGORIES = ("food", "coffee", "restaurant")
 MIN_SLIDES, MAX_SLIDES = 3, 4
@@ -25,6 +26,10 @@ MAX_CAPTION = 2200
 PASS_SCORE = 70
 MAX_ROUNDS = 3
 READY_BY = time(12, 0)
+RECENT_DAYS = 14
+TOPIC_STOPWORDS = frozenset("a an and at by for from how in is it its my of on or the this to vs with your".split())
+TOPIC_SPELLINGS = {"cozy": "cosy", "flavor": "flavour", "flavors": "flavours", "colorful": "colourful"}
+PILLAR_WORDS = frozenset(w for name in PILLARS.values() for w in re.findall(r"[a-z0-9]+", name.casefold()))
 FALLBACK_HOURS = (18, 12, 20)
 DRAFT_ID_RE = re.compile(r"[0-9a-f]{16}")
 AI = typing.Any  # OpenAIClient or CloudflareAI: chat_json(system, user, images=...) -> dict, image(prompt) -> bytes
@@ -78,7 +83,8 @@ CREATE = (
     "The caption (80-180 words, no hashtags) opens with a hook line, then explains every slide in one short line "
     f"each. {CAPTION_ASK}"
     "Favour topics and formats like the approved examples that performed best, avoid ones like rejected drafts, "
-    "and do not repeat recent topics. Make topics fit today's date and season. "
+    "and never repeat a recent topic or its main dish or drink: each draft must be about something different "
+    "from every recent_topics entry and from the other drafts. Make topics fit today's date and season. "
     "Never invent facts a reader could act on and find false: no discount or promo codes, offers, prices, "
     "opening hours or named venues, unless they appear in the data below. "
     'Reply with JSON only: {{"drafts": [{{"category": "...", "topic": "...", "angle": "...", '
@@ -214,7 +220,6 @@ def load_rules(skills_dir: Path | None) -> str:
 
 def context(conn: sqlite3.Connection, now: datetime) -> dict:
     learned = analysis.learned_examples(conn)
-    since = (now.astimezone(LONDON).date() - timedelta(days=14)).isoformat()
     local = now.astimezone(LONDON)
     season = ("winter", "spring", "summer", "autumn")[local.month % 12 // 3]
     return {
@@ -231,10 +236,53 @@ def context(conn: sqlite3.Connection, now: datetime) -> dict:
         ],
         "rejected_topics": [r["topic"] for r in learned["rejected"][:10]],
         "performance_learnings": learnings.for_prompt(learnings.summary(conn, now)),
-        "recent_topics": [
-            row[0] for row in conn.execute("SELECT topic FROM drafts WHERE created_on>=? ORDER BY created_at", (since,))
-        ],
+        "recent_topics": recent_topics(conn, now),
     }
+
+
+def recent_topics(conn: sqlite3.Connection, now: datetime) -> list[str]:
+    """Topics drafted in the last RECENT_DAYS, except drafts the image review discarded before the owner saw them."""
+    since = (now.astimezone(LONDON).date() - timedelta(days=RECENT_DAYS)).isoformat()
+    rows = conn.execute("SELECT topic,status,reel FROM drafts WHERE created_on>=? ORDER BY created_at", (since,))
+    return [row["topic"] for row in rows if not storage.image_review_rejected(row)]
+
+
+def _topic_words(topic: str) -> frozenset[str]:
+    words = (TOPIC_SPELLINGS.get(w, w) for w in re.findall(r"[a-z0-9]+", topic.casefold().replace("'", "")))
+    return frozenset(w[:-1] if len(w) > 3 and w.endswith("s") and not w.endswith("ss") else w for w in words)
+
+
+def repeated_topic(topic: str, recent: list[str]) -> str | None:
+    """The recent topic this one repeats: the same words, or the same dish once pillar names are set aside.
+
+    Pillar names (e.g. "Fridge raid soup") recur by design, so only the words beyond them must differ.
+    """
+    words = _topic_words(topic) - TOPIC_STOPWORDS
+    specific = words - PILLAR_WORDS
+    for earlier in recent:
+        other = _topic_words(earlier) - TOPIC_STOPWORDS
+        if words == other:
+            return earlier
+        rest = other - PILLAR_WORDS
+        if (
+            specific
+            and rest
+            and (specific <= rest or rest <= specific or len(specific & rest) * 5 >= len(specific | rest) * 3)
+        ):
+            return earlier
+    return None
+
+
+def drop_repeats(batch: list[dict], recent: list[str]) -> tuple[list[dict], list[str]]:
+    """Split off drafts repeating a recent topic or each other, with feedback for the Create agent."""
+    fresh, feedback, seen = [], [], list(recent)
+    for draft in batch:
+        if earlier := repeated_topic(draft["topic"], seen):
+            feedback.append(f"{draft['topic']}: repeats the recent topic {earlier!r}; choose a different dish or drink")
+        else:
+            fresh.append(draft)
+            seen.append(draft["topic"])
+    return fresh, feedback
 
 
 def _prompt(system: str, rules: str, voice: str) -> str:
@@ -300,11 +348,16 @@ def review(ai: AI, ctx: dict, drafts: list[dict], *, rules: str) -> None:
 
 
 def generate(conn, ai: AI, now: datetime, *, count: int = 3, rules: str = "", voice: str = "") -> list[dict]:
-    """Create, tag and review; weak drafts go back to Create with the reviewer's notes, up to MAX_ROUNDS."""
+    """Create, tag and review; weak or repeated drafts go back to Create with notes, up to MAX_ROUNDS.
+
+    A draft repeating a recent topic is never returned, even when nothing else is left.
+    """
     ctx = context(conn, now)
     passed, weak, feedback = [], [], []
     for _ in range(MAX_ROUNDS):
-        batch = create(ai, ctx, count - len(passed), feedback, rules=rules, voice=voice)
+        created = create(ai, ctx, count - len(passed), feedback, rules=rules, voice=voice)
+        batch, feedback = drop_repeats(created, ctx["recent_topics"])
+        ctx["recent_topics"] = ctx["recent_topics"] + [d["topic"] for d in batch]
         if not batch:
             continue
         tag(ai, ctx, batch)
@@ -312,8 +365,7 @@ def generate(conn, ai: AI, now: datetime, *, count: int = 3, rules: str = "", vo
         passed += [d for d in batch if d["review_score"] >= PASS_SCORE]
         failing = [d for d in batch if d["review_score"] < PASS_SCORE]
         weak += failing
-        feedback = [f"{d['topic']}: {d['review_notes'] or 'scored too low'}" for d in failing]
-        ctx["recent_topics"] = ctx["recent_topics"] + [d["topic"] for d in batch]
+        feedback += [f"{d['topic']}: {d['review_notes'] or 'scored too low'}" for d in failing]
         if len(passed) >= count:
             break
     # Still show the best of the rest so there is something to review by noon; the score says how weak it is.
