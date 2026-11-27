@@ -31,8 +31,8 @@ RECENT_DAYS = 14
 TOPIC_STOPWORDS = frozenset("a an and at by for from how in is it its my of on or the this to vs with your".split())
 TOPIC_SPELLINGS = {"cozy": "cosy", "flavor": "flavour", "flavors": "flavours", "colorful": "colourful"}
 TOPIC_DESCRIPTORS = frozenset(
-    "autumn autumnal best budget cheap chilly classic comforting cosy creamy easy hearty homemade midweek night perfect "
-    "quick seasonal simple ultimate warming weeknight".split()
+    "autumn autumnal best budget cheap chilly classic cold comforting cosy creamy easy frosty hearty homemade "
+    "midweek night perfect quick rainy seasonal simple snowy stormy ultimate warming weeknight wet".split()
 )
 DISH_TYPES = frozenset(
     "bake bowl bread cake coffee curry dessert drink latte pasta pie risotto salad sandwich soup stew tart".split()

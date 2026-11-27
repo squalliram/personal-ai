@@ -133,6 +133,7 @@ class DraftTests(unittest.TestCase):
             ("Tomato–basil soup", "Tomato basil soup", True),
             ("Winter squash soup", "Summer squash soup", False),
             ("Winter leek soup", "Leek soup for chilly nights", True),
+            ("Mushroom risotto for frosty nights", "Mushroom risotto for cold nights", True),
             ("Italian tiramisu", "Tiramisu", True),
             ("Tiramisu", "Classic Italian tiramisu", True),
         ]
