@@ -32,7 +32,7 @@ TOPIC_STOPWORDS = frozenset("a an and at by for from how in is it its my of on o
 TOPIC_SPELLINGS = {"cozy": "cosy", "flavor": "flavour", "flavors": "flavours", "colorful": "colourful"}
 TOPIC_DESCRIPTORS = frozenset(
     "autumn autumnal best budget cheap classic comforting cosy creamy easy hearty homemade midweek perfect "
-    "quick seasonal simple ultimate warming weeknight winter".split()
+    "quick seasonal simple ultimate warming weeknight".split()
 )
 FALLBACK_HOURS = (18, 12, 20)
 DRAFT_ID_RE = re.compile(r"[0-9a-f]{16}")
