@@ -414,6 +414,38 @@ def _initial_status(app: Path, target: Path, pending: bool) -> tuple[dict[str, A
     return status, published_at
 
 
+def _notify_failure(app: Path, env: dict[str, str], category: str) -> None:
+    if category == "superseded_release":
+        return
+    db_path = app / "data/notifications.sqlite3"
+    if not (
+        env.get("TELEGRAM_BOT_TOKEN")
+        or env.get("JARVIS_ALERT_WEBHOOK_URL")
+        or env.get("COMMAND_CENTRE_NOTIFICATIONS_DB")
+        or db_path.exists()
+    ):
+        return
+    try:
+        from zoneinfo import ZoneInfo
+
+        from notifications import command_centre_link, notify
+
+        now = _now()
+        today = now.astimezone(ZoneInfo("Europe/London")).date().isoformat()
+        notify_env = {"COMMAND_CENTRE_NOTIFICATIONS_DB": str(db_path), **env}
+        notify(
+            "energy",
+            "failed",
+            f"Energy refresh failed ({category})",
+            command_centre_link(notify_env, "energy"),
+            key=f"energy-refresh-failed:{today}:{category}",
+            env=notify_env,
+            now=now,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _refresh_locked(app: Path, target: Path, interval: int, force: bool, lock_fd: int, expected_sha: str | None) -> int:
     state = app / "data/energy-refresh"
     logger = _logger(state)
@@ -525,6 +557,7 @@ def _refresh_locked(app: Path, target: Path, interval: int, force: bool, lock_fd
         if category == "superseded_release":
             print("ENERGY_REFRESH superseded_release", flush=True)
             return 0
+        _notify_failure(app, env, category)
         return 1
     finally:
         for handler in logger.handlers:

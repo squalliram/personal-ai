@@ -122,6 +122,53 @@ def send_telegram(token: str, chat_id: str, text: str, *, timeout: float = TELEG
         raise NotifyError("Telegram did not accept the message")
 
 
+def send_webhook(
+    url: str,
+    payload: Mapping[str, object],
+    *,
+    secret: str = "",
+    timeout: float = TELEGRAM_TIMEOUT,
+    opener=None,
+) -> None:
+    """One HTTPS JSON POST for a failure alert webhook, no redirects or retries. Raises NotifyError."""
+    target = safe_link(url)
+    if not target:
+        raise NotifyError("Alert webhook URL must be an https link")
+    opener = opener or build_opener(_NoRedirect())
+    headers = {"Content-Type": "application/json", "User-Agent": "personal-ai-notify/1.0"}
+    if secret:
+        headers["Authorization"] = f"Bearer {secret}"
+    request = Request(target, data=json.dumps(dict(payload)).encode("utf-8"), method="POST", headers=headers)
+    try:
+        with opener.open(request, timeout=timeout) as response:
+            status = getattr(response, "status", 200)
+            response.read(1024)
+    except NotifyError:
+        raise
+    except HTTPError as exc:
+        raise NotifyError(f"Alert webhook failed (HTTP {exc.code})") from None
+    except (URLError, TimeoutError, OSError, ValueError) as exc:
+        raise NotifyError(f"Alert webhook failed ({type(exc).__name__})") from None
+    if not 200 <= status < 300:
+        raise NotifyError(f"Alert webhook returned HTTP {status}")
+
+
+def _deliver_webhook(
+    env: Mapping[str, str],
+    payload: Mapping[str, object],
+    webhook: Callable[[str, Mapping[str, object], str], None] | None,
+) -> None:
+    url = safe_link(env.get("JARVIS_ALERT_WEBHOOK_URL", "").strip())
+    if not url:
+        return
+    secret = env.get("JARVIS_ALERT_WEBHOOK_SECRET", "").strip()
+    sender = webhook or (lambda target, body, tok: send_webhook(target, body, secret=tok))
+    try:
+        sender(url, payload, secret)
+    except Exception as exc:  # noqa: BLE001
+        print(f"notifications: alert webhook failed ({type(exc).__name__})", file=sys.stderr)
+
+
 def _message(row) -> str:
     text = f"{ICONS.get(row['outcome'], '')} {row['title']}".strip()
     return f"{text}\n{row['link']}" if row["link"] else text
@@ -179,6 +226,7 @@ def notify(
     env: Mapping[str, str] | None = None,
     now: datetime | None = None,
     send: Callable[[str, str, str], None] = send_telegram,
+    webhook: Callable[[str, Mapping[str, object], str], None] | None = None,
 ) -> int | None:
     """Store a notification and push it to Telegram if configured. Returns its inbox ID, or None if not stored.
 
@@ -217,6 +265,18 @@ def notify(
                 stored = conn.execute("SELECT id FROM notifications WHERE dedupe_key=?", (key,)).fetchone()[0]
             if inserted.rowcount and valid:
                 _send_queue(conn, inserted.lastrowid, stamp, token, chat_id, send, clock)
+            if inserted.rowcount and outcome == "failed":
+                alert_body: dict[str, object] = {
+                    "source": source,
+                    "outcome": outcome,
+                    "title": title,
+                    "timestamp": stamp,
+                    "notification_id": stored,
+                }
+                clean_link = safe_link(link)
+                if clean_link:
+                    alert_body["link"] = clean_link
+                _deliver_webhook(env, alert_body, webhook)
         finally:
             conn.close()
         return stored
