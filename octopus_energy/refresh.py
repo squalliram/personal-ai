@@ -417,22 +417,24 @@ def _initial_status(app: Path, target: Path, pending: bool) -> tuple[dict[str, A
 def _notify_failure(app: Path, env: dict[str, str], category: str) -> None:
     if category == "superseded_release":
         return
-    db_path = app / "data/notifications.sqlite3"
-    if not (
-        env.get("TELEGRAM_BOT_TOKEN")
-        or env.get("JARVIS_ALERT_WEBHOOK_URL")
-        or env.get("COMMAND_CENTRE_NOTIFICATIONS_DB")
-        or db_path.exists()
-    ):
-        return
     try:
         from zoneinfo import ZoneInfo
 
         from notifications import command_centre_link, notify
+        from octopus_energy.cli import load_env
 
+        merged = {**load_env(app / ".env"), **env}
+        db_path = app / "data/notifications.sqlite3"
+        if not (
+            merged.get("TELEGRAM_BOT_TOKEN")
+            or merged.get("JARVIS_ALERT_WEBHOOK_URL")
+            or merged.get("COMMAND_CENTRE_NOTIFICATIONS_DB")
+            or db_path.exists()
+        ):
+            return
         now = _now()
         today = now.astimezone(ZoneInfo("Europe/London")).date().isoformat()
-        notify_env = {"COMMAND_CENTRE_NOTIFICATIONS_DB": str(db_path), **env}
+        notify_env = {"COMMAND_CENTRE_NOTIFICATIONS_DB": str(db_path), **merged}
         notify(
             "energy",
             "failed",

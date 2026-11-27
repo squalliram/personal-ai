@@ -334,15 +334,18 @@ class HostCronFailureAlertTests(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             notify_db = root / "notifications.sqlite3"
-            env = {"COMMAND_CENTRE_NOTIFICATIONS_DB": str(notify_db)}
-            energy_refresh._notify_failure(root, env, "superseded_release")
+            (root / ".env").write_text(f"COMMAND_CENTRE_NOTIFICATIONS_DB={notify_db}\n", encoding="utf-8")
+            energy_refresh._notify_failure(root, {}, "superseded_release")
             self.assertFalse(notify_db.exists())
-            energy_refresh._notify_failure(root, env, "sync_failed")
+            energy_refresh._notify_failure(root, {}, "sync_failed")
+            energy_refresh._notify_failure(root, {}, "partial")
             rows = self._rows(notify_db)
-            self.assertEqual(len(rows), 1)
-            self.assertEqual(rows[0]["source"], "energy")
-            self.assertEqual(rows[0]["outcome"], "failed")
-            self.assertEqual(rows[0]["title"], "Energy refresh failed (sync_failed)")
+            self.assertEqual(len(rows), 2)
+            self.assertEqual(
+                {row["title"] for row in rows},
+                {"Energy refresh failed (sync_failed)", "Energy refresh failed (partial)"},
+            )
+            self.assertTrue(all(row["source"] == "energy" and row["outcome"] == "failed" for row in rows))
 
 
 if __name__ == "__main__":
