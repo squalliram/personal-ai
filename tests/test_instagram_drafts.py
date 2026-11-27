@@ -132,6 +132,7 @@ class DraftTests(unittest.TestCase):
             ("Cosy autumn pumpkin soup", "Cozy autumn soup", False),
             ("Tomato–basil soup", "Tomato basil soup", True),
             ("Winter squash soup", "Summer squash soup", False),
+            ("Winter leek soup", "Leek soup for chilly nights", True),
             ("Italian tiramisu", "Tiramisu", True),
             ("Tiramisu", "Classic Italian tiramisu", True),
         ]
