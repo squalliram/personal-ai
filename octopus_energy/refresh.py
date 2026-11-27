@@ -508,6 +508,7 @@ def _refresh_locked(app: Path, target: Path, interval: int, force: bool, lock_fd
                 status.update(result=outcome, request_state="pending" if _flags(state) else None)
                 _publish_status(app, env, lock_fd, status)
                 _event(logger, "finish", status, began)
+                _notify_failure(app, env, outcome)
                 return 1
             raise RefreshError(_sync_category(history))
         print("ENERGY_REFRESH collection_complete", flush=True)
