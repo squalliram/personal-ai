@@ -82,6 +82,65 @@ class DraftTests(unittest.TestCase):
         self.assertEqual(found[0]["hashtags"], ["#coffee", "#latteart"])
         self.assertIn(drafts.UNTRUSTED, ai.calls[0][0])
 
+    def test_a_recent_topic_is_sent_back_to_create_and_never_returned(self):
+        with self.conn:
+            storage.insert_draft(
+                self.conn,
+                {**drafts.normalise(raw_draft("Cozy autumn soup", "food")), "draft_id": "0" * 16, "hashtags": []},
+                "2026-11-11",
+                "2026-11-11T10:00:00+00:00",
+            )
+        ai = FakeAI(
+            creates=[
+                [raw_draft("Cosy Autumn Soups", "food"), raw_draft("Pear crumble", "food"), raw_draft("Pear crumbles")],
+                [raw_draft("Leek and potato soup", "food"), raw_draft("Mushroom toast", "food")],
+            ],
+            scores=[[90], [85, 80]],
+        )
+        found = drafts.generate(self.conn, ai, MORNING, count=3)
+        self.assertEqual([d["topic"] for d in found], ["Pear crumble", "Leek and potato soup", "Mushroom toast"])
+        second_create = [payload for system, payload in ai.calls if system.startswith("You are the Create")][1]
+        self.assertEqual(
+            second_create["feedback_on_weak_drafts"],
+            [
+                "Cosy Autumn Soups: repeats the recent topic 'Cozy autumn soup'; choose a different dish or drink",
+                "Pear crumbles: repeats the recent topic 'Pear crumble'; choose a different dish or drink",
+            ],
+        )
+        reviewed = [payload for system, payload in ai.calls if system.startswith("You are the Review")][0]
+        self.assertEqual([d["topic"] for d in reviewed["drafts"]], ["Pear crumble"])
+
+    def test_only_repeats_leave_the_day_short_rather_than_reuse_a_topic(self):
+        ai = FakeAI(
+            creates=[[raw_draft("flat white")], [raw_draft("Flat whites")], [raw_draft("flat white")]], scores=[[40]]
+        )
+        self.assertEqual([d["topic"] for d in drafts.generate(self.conn, ai, MORNING, count=2)], ["flat white"])
+
+    def test_repeated_topic_ignores_pillar_names_but_not_the_dish(self):
+        cases = [
+            ("Cozy autumn soup", "Cosy autumn soup", True),
+            ("Spiced butternut squash soup", "Butternut squash soup", True),
+            ("Fridge raid soup", "Fridge raid soup", True),
+            ("Fridge raid soup with leeks", "Fridge raid soup with carrots", False),
+            ("One pot, 5 days: chilli", "One pot, 5 days: chickpea curry", False),
+            ("Cosy leek soup", "Cosy pumpkin soup", False),
+            ("Leek and potato soup", "Roasted tomato soup", False),
+            ("Weeknight mushroom risotto", "Creamy mushroom risotto", True),
+            ("Creme brulee", "Crème brûlée", True),
+            ("Crispy roast potato", "Crispy roast potatoes", True),
+            ("Pumpkin tart", "Pumpkin soup", False),
+            ("Cosy autumn pumpkin soup", "Cozy autumn soup", False),
+            ("Tomato–basil soup", "Tomato basil soup", True),
+            ("Winter squash soup", "Summer squash soup", False),
+            ("Winter leek soup", "Leek soup for chilly nights", True),
+            ("Mushroom risotto for frosty nights", "Mushroom risotto for cold nights", True),
+            ("Italian tiramisu", "Tiramisu", True),
+            ("Tiramisu", "Classic Italian tiramisu", True),
+        ]
+        for topic, earlier, repeats in cases:
+            with self.subTest(topic=topic, earlier=earlier):
+                self.assertEqual(drafts.repeated_topic(topic, [earlier]), earlier if repeats else None)
+
     def test_best_weak_drafts_still_fill_the_day_after_three_rounds(self):
         ai = FakeAI(creates=[[raw_draft("a")], [raw_draft("b")], [raw_draft("c")]], scores=[[40], [60], [10]])
         found = drafts.generate(self.conn, ai, MORNING, count=2)
@@ -252,6 +311,19 @@ class DailyTickTests(unittest.TestCase):
         self.assertIn(
             "photo reel rendering unavailable", self.conn.execute("SELECT error FROM daily_runs").fetchone()[0]
         )
+
+    def test_back_to_back_days_get_different_topics(self):
+        first = FakeAI([[raw_draft("Cozy autumn soup", "food")]], [[90]])
+        self.assertEqual(self.tick(datetime(2026, 11, 19, 10, tzinfo=timezone.utc), first), "ok")
+        second = FakeAI(
+            [[raw_draft("Cosy autumn soup", "food")], [raw_draft("Parsnip and apple soup", "food")]], [[95]]
+        )
+        self.assertEqual(self.tick(datetime(2026, 11, 20, 10, tzinfo=timezone.utc), second), "ok")
+        topics = [row[0] for row in self.conn.execute("SELECT topic FROM drafts ORDER BY created_at")]
+        self.assertEqual(topics, ["Cozy autumn soup", "Parsnip and apple soup"])
+        creates = [payload for system, payload in second.calls if system.startswith("You are the Create")]
+        self.assertEqual(creates[0]["recent_topics"], ["Cozy autumn soup"])
+        self.assertIn("repeats the recent topic 'Cozy autumn soup'", creates[1]["feedback_on_weak_drafts"][0])
 
     def test_one_draft_a_day_at_the_best_audience_hour(self):
         storage.replace_audience_hours(self.conn, {19: 500, 8: 400, 13: 300}, "now")
