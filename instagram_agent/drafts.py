@@ -11,6 +11,7 @@ import secrets
 import shutil
 import sqlite3
 import typing
+import unicodedata
 from datetime import datetime, time, timedelta
 from pathlib import Path
 
@@ -29,7 +30,10 @@ READY_BY = time(12, 0)
 RECENT_DAYS = 14
 TOPIC_STOPWORDS = frozenset("a an and at by for from how in is it its my of on or the this to vs with your".split())
 TOPIC_SPELLINGS = {"cozy": "cosy", "flavor": "flavour", "flavors": "flavours", "colorful": "colourful"}
-PILLAR_WORDS = frozenset(w for name in PILLARS.values() for w in re.findall(r"[a-z0-9]+", name.casefold()))
+TOPIC_DESCRIPTORS = frozenset(
+    "autumn autumnal best budget cheap classic comforting cosy creamy easy hearty homemade midweek perfect "
+    "quick seasonal simple ultimate warming weeknight winter".split()
+)
 FALLBACK_HOURS = (18, 12, 20)
 DRAFT_ID_RE = re.compile(r"[0-9a-f]{16}")
 AI = typing.Any  # OpenAIClient or CloudflareAI: chat_json(system, user, images=...) -> dict, image(prompt) -> bytes
@@ -247,9 +251,29 @@ def recent_topics(conn: sqlite3.Connection, now: datetime) -> list[str]:
     return [row["topic"] for row in rows if not storage.image_review_rejected(row)]
 
 
+def _singular(word: str) -> str:
+    if len(word) <= 3 or not word.endswith("s") or word.endswith("ss"):
+        return word
+    if word.endswith("ies"):
+        return word[:-3] + "y"
+    return word[:-2] if word.endswith("oes") else word[:-1]
+
+
 def _topic_words(topic: str) -> frozenset[str]:
-    words = (TOPIC_SPELLINGS.get(w, w) for w in re.findall(r"[a-z0-9]+", topic.casefold().replace("'", "")))
-    return frozenset(w[:-1] if len(w) > 3 and w.endswith("s") and not w.endswith("ss") else w for w in words)
+    plain = unicodedata.normalize("NFKD", topic.casefold()).encode("ascii", "ignore").decode()
+    words = (TOPIC_SPELLINGS.get(w, w) for w in re.findall(r"[a-z0-9]+", re.sub(r"['’]", "", plain)))
+    return frozenset(_singular(w) for w in words) - TOPIC_STOPWORDS
+
+
+PILLAR_PHRASES = tuple(_topic_words(name) for name in PILLARS.values())
+
+
+def _dish_words(words: frozenset[str]) -> frozenset[str]:
+    """The words naming the dish: without a whole pillar name it contains, or descriptors like "cosy"."""
+    for phrase in PILLAR_PHRASES:
+        if phrase <= words:
+            words -= phrase
+    return words - TOPIC_DESCRIPTORS
 
 
 def repeated_topic(topic: str, recent: list[str]) -> str | None:
@@ -257,18 +281,17 @@ def repeated_topic(topic: str, recent: list[str]) -> str | None:
 
     Pillar names (e.g. "Fridge raid soup") recur by design, so only the words beyond them must differ.
     """
-    words = _topic_words(topic) - TOPIC_STOPWORDS
-    specific = words - PILLAR_WORDS
+    words = _topic_words(topic)
+    dish = _dish_words(words)
     for earlier in recent:
-        other = _topic_words(earlier) - TOPIC_STOPWORDS
-        if words == other:
+        other = _topic_words(earlier)
+        rest = _dish_words(other)
+        if words == other or (dish and dish == rest):
             return earlier
-        rest = other - PILLAR_WORDS
-        if (
-            specific
-            and rest
-            and (specific <= rest or rest <= specific or len(specific & rest) * 5 >= len(specific | rest) * 3)
-        ):
+        smaller = min(len(dish), len(rest))
+        if smaller >= 2 and (dish <= rest or rest <= dish):
+            return earlier
+        if smaller and len(dish & rest) * 5 >= len(dish | rest) * 3:
             return earlier
     return None
 
