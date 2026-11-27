@@ -260,8 +260,8 @@ def _singular(word: str) -> str:
 
 
 def _topic_words(topic: str) -> frozenset[str]:
-    plain = unicodedata.normalize("NFKD", topic.casefold()).encode("ascii", "ignore").decode()
-    words = (TOPIC_SPELLINGS.get(w, w) for w in re.findall(r"[a-z0-9]+", re.sub(r"['’]", "", plain)))
+    plain = "".join(c for c in unicodedata.normalize("NFKD", topic.casefold()) if not unicodedata.combining(c))
+    words = (TOPIC_SPELLINGS.get(w, w) for w in re.findall(r"[^\W_]+", re.sub(r"['’]", "", plain)))
     return frozenset(_singular(w) for w in words) - TOPIC_STOPWORDS
 
 

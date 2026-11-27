@@ -130,6 +130,7 @@ class DraftTests(unittest.TestCase):
             ("Crispy roast potato", "Crispy roast potatoes", True),
             ("Pumpkin tart", "Pumpkin soup", False),
             ("Cosy autumn pumpkin soup", "Cozy autumn soup", False),
+            ("Tomato–basil soup", "Tomato basil soup", True),
         ]
         for topic, earlier, repeats in cases:
             with self.subTest(topic=topic, earlier=earlier):
