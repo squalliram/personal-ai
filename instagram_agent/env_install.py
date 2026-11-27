@@ -28,6 +28,8 @@ ALLOWED = (
     "TELEGRAM_BOT_TOKEN",
     "TELEGRAM_CHAT_ID",
     "COMMAND_CENTRE_URL",
+    "JARVIS_ALERT_WEBHOOK_URL",
+    "JARVIS_ALERT_WEBHOOK_SECRET",
 )
 SAFE_VALUE = re.compile(r"[A-Za-z0-9._~+/=-]+|https://[A-Za-z0-9._~/-]+")
 # Bot tokens contain ':' and group chat IDs start with '-'; only these keys allow them.
@@ -35,6 +37,10 @@ KEY_VALUES = {
     "TELEGRAM_BOT_TOKEN": re.compile(r"[0-9]{1,20}:[A-Za-z0-9_-]{20,100}"),
     "TELEGRAM_CHAT_ID": re.compile(r"-?[0-9]{1,20}"),
     "COMMAND_CENTRE_URL": re.compile(r"https://[A-Za-z0-9._~/-]+"),
+    "JARVIS_ALERT_WEBHOOK_URL": re.compile(
+        r"https://[A-Za-z0-9.-]+(?::[0-9]{1,5})?(?:/[A-Za-z0-9._~!$&'()*+,;=:@%/?#-]*)?"
+    ),
+    "JARVIS_ALERT_WEBHOOK_SECRET": re.compile(r"[A-Za-z0-9._~+/=:-]{8,256}"),
 }
 
 

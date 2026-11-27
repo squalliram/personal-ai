@@ -445,6 +445,19 @@ def make_drafts(conn, env: dict, media_dir: Path, now: datetime | None = None) -
     return outcome
 
 
+def _notify_cron_failure(env: dict, now: datetime, kind: str, title: str) -> None:
+    today = now.astimezone(LONDON).date().isoformat()
+    notify(
+        "instagram",
+        "failed",
+        title,
+        command_centre_link(env, "instagram"),
+        key=f"instagram-{kind}:{today}",
+        env=env,
+        now=now,
+    )
+
+
 def _capture_followers(conn, env: dict, now: datetime) -> str:
     if not (env.get("INSTAGRAM_ACCESS_TOKEN") and env.get("INSTAGRAM_USER_ID")):
         return "follower snapshot off"
@@ -463,23 +476,42 @@ def _capture_followers(conn, env: dict, now: datetime) -> str:
             )
         return "follower snapshot captured"
     except (GraphAPIError, sqlite3.Error) as exc:
+        _notify_cron_failure(
+            env,
+            now,
+            f"followers-failed:{type(exc).__name__}",
+            f"Instagram follower snapshot failed ({type(exc).__name__})",
+        )
         return f"follower snapshot failed ({type(exc).__name__})"
 
 
-def _capture_stories(conn, env: dict) -> str:
+def _capture_stories(conn, env: dict, now: datetime | None = None) -> str:
     if not (env.get("INSTAGRAM_ACCESS_TOKEN") and env.get("INSTAGRAM_USER_ID")):
         return "Story insights off"
     try:
         return f"Story insights {story_insights.capture(conn, graph_client(env, timeout=5, retries=0))}"
     except Exception as exc:  # noqa: BLE001
+        _notify_cron_failure(
+            env,
+            now or _now(),
+            f"story-insights-failed:{type(exc).__name__}",
+            f"Story insights capture failed ({type(exc).__name__})",
+        )
         return f"Story insights failed ({type(exc).__name__})"
 
 
-def _post_reports(conn, env: dict) -> str:
+def _post_reports(conn, env: dict, now: datetime | None = None) -> str:
     """24h/72h post reports after publishing; a problem here never fails the tick."""
+    current = now or _now()
     try:
-        return post_report.tick(conn, env, _now())
+        return post_report.tick(conn, env, current)
     except Exception as exc:  # noqa: BLE001
+        _notify_cron_failure(
+            env,
+            current,
+            f"post-reports-failed:{type(exc).__name__}",
+            f"Instagram post reports failed ({type(exc).__name__})",
+        )
         return f"reports failed ({type(exc).__name__})"
 
 
@@ -512,6 +544,54 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(result, indent=2, ensure_ascii=False))
         return 0 if result["ok"] else 1
 
+    env_file = Path(args.env_file)
+    if args.command == "daily":
+        env = {**load_env(env_file), **os.environ}
+        try:
+            with closing(storage.connect(args.database)) as conn:
+                args.media.mkdir(mode=0o700, parents=True, exist_ok=True)
+                with open(args.media / ".daily.lock", "w") as lock:
+                    try:
+                        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        return 0  # The previous tick is still drafting.
+                    env = {**load_env(env_file), **os.environ}
+                    refreshed = token_refresh.tick(conn, env, env_file, _now())
+                    if refreshed in ("refreshed", "failed", "metadata_failed", "token_changed"):
+                        env = {**load_env(env_file), **os.environ}
+                    now = _now()
+                    if refreshed in ("failed", "metadata_failed"):
+                        _notify_cron_failure(
+                            env, now, f"token-refresh-{refreshed}", f"Instagram token refresh {refreshed}"
+                        )
+                    content_plan.ensure_week(conn, now)
+                    outcome = daily(conn, env, args.media)
+                    render.render_due(conn, args.media, _notify_render(env, _now()), reviewer=image_review.client(env))
+                    _notify_visual_review(conn, env, _now())
+                    content_plan.notify_scripts(conn, env, _now())
+                    published = publish.tick(conn, env, args.media, _now())
+                    reports = _post_reports(conn, env, _now())
+                    followers = _capture_followers(conn, env, _now())
+                    weekly_performance.tick(conn, env, _now())
+                with open(args.media / ".story-insights.lock", "w") as lock:
+                    try:
+                        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        stories = "Story insights busy"
+                    else:
+                        stories = _capture_stories(conn, env, _now())
+        except Exception as exc:  # noqa: BLE001
+            _notify_cron_failure(
+                env,
+                _now(),
+                f"cron-crash:{type(exc).__name__}",
+                f"Instagram cron crashed ({type(exc).__name__})",
+            )
+            print(f"Instagram cron crashed ({type(exc).__name__})", file=sys.stderr)
+            return 1
+        print(outcome, refreshed, published, stories, reports, followers, sep="; ")
+        return 0 if outcome in ("ok", "partial", "skipped", "gave_up") else 1
+
     conn = storage.connect(args.database)
     try:
         if args.command == "import-following":
@@ -523,37 +603,6 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "report":
             print(json.dumps(report(conn), indent=2, ensure_ascii=False))
             return 0
-        env_file = Path(args.env_file)
-        if args.command == "daily":
-            args.media.mkdir(mode=0o700, parents=True, exist_ok=True)
-            with open(args.media / ".daily.lock", "w") as lock:
-                try:
-                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except BlockingIOError:
-                    return 0  # The previous tick is still drafting.
-                env = {**load_env(env_file), **os.environ}
-                refreshed = token_refresh.tick(conn, env, env_file, _now())
-                if refreshed in ("refreshed", "failed", "metadata_failed", "token_changed"):
-                    env = {**load_env(env_file), **os.environ}
-                now = _now()
-                content_plan.ensure_week(conn, now)
-                outcome = daily(conn, env, args.media)
-                render.render_due(conn, args.media, _notify_render(env, _now()), reviewer=image_review.client(env))
-                _notify_visual_review(conn, env, _now())
-                content_plan.notify_scripts(conn, env, _now())
-                published = publish.tick(conn, env, args.media, _now())
-                reports = _post_reports(conn, env)
-                followers = _capture_followers(conn, env, _now())
-                weekly_performance.tick(conn, env, _now())
-            with open(args.media / ".story-insights.lock", "w") as lock:
-                try:
-                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except BlockingIOError:
-                    stories = "Story insights busy"
-                else:
-                    stories = _capture_stories(conn, env)
-            print(outcome, refreshed, published, stories, reports, followers, sep="; ")
-            return 0 if outcome in ("ok", "partial", "skipped", "gave_up") else 1
         env = {**load_env(env_file), **os.environ}
         token, user_id = env.get("INSTAGRAM_ACCESS_TOKEN", ""), env.get("INSTAGRAM_USER_ID", "")
         if not token or not user_id:

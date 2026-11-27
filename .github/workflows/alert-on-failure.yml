@@ -1,0 +1,112 @@
+name: Alert on run failure
+
+# Sends a failure alert through the notify-owner path (Command Centre Inbox + read-only Telegram)
+# and optionally wakes the Jarvis Builder Bot via JARVIS_ALERT_WEBHOOK_URL whenever a monitored
+# Jarvis workflow fails. Also supports a forced-failure test via repository_dispatch
+# (`jarvis-alert-test`) or workflow_dispatch.
+
+on:
+  workflow_run:
+    workflows:
+      - "Deploy command centre"
+      - "Deploy protected energy dashboard"
+      - "Instagram baseline"
+      - "CodeRabbit findings log"
+      - "Test"
+    types: [completed]
+  repository_dispatch:
+    types: [jarvis-alert-test]
+  workflow_dispatch:
+    inputs:
+      source:
+        description: Run name for a forced failure alert test
+        required: false
+        default: "Forced failure test"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  alert:
+    if: >-
+      github.event_name == 'workflow_run' &&
+      contains(fromJSON('["failure","timed_out","startup_failure"]'), github.event.workflow_run.conclusion) &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      github.event.workflow_run.event != 'pull_request' &&
+      (github.event.workflow_run.name != 'Test' ||
+      (github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.event == 'push'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Send failure alert
+        env:
+          NOTIFY_INGEST_TOKEN: ${{ secrets.NOTIFY_INGEST_TOKEN }}
+          COMMAND_CENTRE_URL: ${{ vars.COMMAND_CENTRE_URL }}
+          CPANEL_SSH_HOST: ${{ secrets.CPANEL_SSH_HOST }}
+          CPANEL_SSH_USERNAME: ${{ secrets.CPANEL_SSH_USERNAME }}
+          CPANEL_SSH_PORT: ${{ secrets.CPANEL_SSH_PORT }}
+          CPANEL_SSH_PRIVATE_KEY: ${{ secrets.CPANEL_SSH_PRIVATE_KEY }}
+          CPANEL_SSH_KNOWN_HOSTS: ${{ secrets.CPANEL_SSH_KNOWN_HOSTS }}
+          JARVIS_ALERT_WEBHOOK_URL: ${{ secrets.JARVIS_ALERT_WEBHOOK_URL }}
+          JARVIS_ALERT_WEBHOOK_SECRET: ${{ secrets.JARVIS_ALERT_WEBHOOK_SECRET }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          install -m 700 -d ~/.ssh
+          trap 'rm -f ~/.ssh/id_ed25519' EXIT
+          if [ -n "${CPANEL_SSH_PRIVATE_KEY:-}" ]; then
+            printf '%s\n' "$CPANEL_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+            printf '%s\n' "$CPANEL_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          fi
+          python3 scripts/alert-failure.py
+
+  forced-failure-test:
+    if: >-
+      github.event_name == 'repository_dispatch' ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Force a run failure
+        run: |
+          echo "Simulating a failed Jarvis run to verify failure alerting."
+          exit 1
+      - name: Send failure alert
+        if: failure()
+        env:
+          NOTIFY_INGEST_TOKEN: ${{ secrets.NOTIFY_INGEST_TOKEN }}
+          COMMAND_CENTRE_URL: ${{ vars.COMMAND_CENTRE_URL }}
+          CPANEL_SSH_HOST: ${{ secrets.CPANEL_SSH_HOST }}
+          CPANEL_SSH_USERNAME: ${{ secrets.CPANEL_SSH_USERNAME }}
+          CPANEL_SSH_PORT: ${{ secrets.CPANEL_SSH_PORT }}
+          CPANEL_SSH_PRIVATE_KEY: ${{ secrets.CPANEL_SSH_PRIVATE_KEY }}
+          CPANEL_SSH_KNOWN_HOSTS: ${{ secrets.CPANEL_SSH_KNOWN_HOSTS }}
+          JARVIS_ALERT_WEBHOOK_URL: ${{ secrets.JARVIS_ALERT_WEBHOOK_URL }}
+          JARVIS_ALERT_WEBHOOK_SECRET: ${{ secrets.JARVIS_ALERT_WEBHOOK_SECRET }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          install -m 700 -d ~/.ssh
+          trap 'rm -f ~/.ssh/id_ed25519' EXIT
+          if [ -n "${CPANEL_SSH_PRIVATE_KEY:-}" ]; then
+            printf '%s\n' "$CPANEL_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+            printf '%s\n' "$CPANEL_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          fi
+          python3 scripts/alert-failure.py

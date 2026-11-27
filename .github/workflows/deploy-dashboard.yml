@@ -107,6 +107,9 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           COMMAND_CENTRE_URL: ${{ vars.COMMAND_CENTRE_URL }}
+          # Optional Bot alert webhook for failed host runs.
+          JARVIS_ALERT_WEBHOOK_URL: ${{ secrets.JARVIS_ALERT_WEBHOOK_URL }}
+          JARVIS_ALERT_WEBHOOK_SECRET: ${{ secrets.JARVIS_ALERT_WEBHOOK_SECRET }}
         run: |
           [[ "$CPANEL_APP_PATH" =~ ^/[a-zA-Z0-9_./-]+$ ]] || exit 1
           [[ "$DEPLOY_SHA" =~ ^[a-f0-9]{40}$ ]] || exit 1
@@ -120,6 +123,7 @@ jobs:
             printf 'INSTAGRAM_AUTO_PUBLISH=%s\n' "$INSTAGRAM_AUTO_PUBLISH"
             printf 'TELEGRAM_BOT_TOKEN=%s\nTELEGRAM_CHAT_ID=%s\n' "$TELEGRAM_BOT_TOKEN" "$TELEGRAM_CHAT_ID"
             printf 'COMMAND_CENTRE_URL=%s\n' "$COMMAND_CENTRE_URL"
+            printf 'JARVIS_ALERT_WEBHOOK_URL=%s\nJARVIS_ALERT_WEBHOOK_SECRET=%s\n' "$JARVIS_ALERT_WEBHOOK_URL" "$JARVIS_ALERT_WEBHOOK_SECRET"
             if [ -n "$INSTAGRAM_ACCESS_TOKEN" ]; then
               printf 'INSTAGRAM_PUBLIC_DIR=%s\n' "${CPANEL_APP_PATH%/*}/public_html/ig-media"
               printf 'INSTAGRAM_PUBLIC_URL=https://iramkhan.com/ig-media\n'
